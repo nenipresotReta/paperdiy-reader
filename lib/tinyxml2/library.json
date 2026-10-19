@@ -1,0 +1,5 @@
+{
+  "name": "tinyxml2",
+  "version": "10.0.0",
+  "build": { "srcDir": ".", "includeDir": "." }
+}

@@ -1,0 +1,53 @@
+#pragma once
+#include <cstdint>
+#include <cstddef>
+namespace controls {
+enum class Action {None,Previous,Next,PreviousScreen,NextScreen,Confirm,Shutdown};
+class Buttons {
+  uint8_t held=0;uint32_t since=0,lastRepeat=0;bool repeated=false,chord=false,suppressed=false;
+  bool releaseGuard=false,releaseSeen=false;uint32_t releasedAt=0;
+public:
+  void reset(uint8_t mask,uint32_t now){held=0;since=lastRepeat=now;repeated=chord=false;suppressed=mask!=0;releaseGuard=releaseSeen=false;}
+  // After blocking work, require a continuously released interval. This also
+  // lets the hardware debounce state catch up before accepting a fresh press.
+  void discardUntilReleased(uint32_t now){reset(0,now);releaseGuard=true;}
+  Action update(uint8_t mask,uint32_t now,bool library){
+    if(releaseGuard){
+      if(mask)releaseSeen=false;
+      else if(!releaseSeen){releaseSeen=true;releasedAt=now;}
+      else if(now-releasedAt>=200){releaseGuard=false;releaseSeen=false;}
+      return Action::None;
+    }
+    if(suppressed){if(!mask)suppressed=false;return Action::None;}
+    if(chord){
+      if(!mask){chord=false;held=0;return Action::Confirm;}
+      if(mask==3&&held!=3){held=3;since=now;}
+      if(mask==3&&now-since>=2000){discardUntilReleased(now);return Action::Shutdown;}
+      // Releasing one key cancels the hold timer; a staggered release still
+      // confirms once both keys are up.
+      if(mask!=3){since=now;held=mask;}
+      return Action::None;
+    }
+    if(mask==3){chord=true;held=3;since=now;return Action::None;}
+    if(!held){if(mask){held=mask;since=lastRepeat=now;repeated=false;}return Action::None;}
+    if(!mask){uint8_t released=held;held=0;if(repeated)return Action::None;return released==1?Action::Previous:Action::Next;}
+    if(mask!=held){held=mask;since=lastRepeat=now;repeated=false;return Action::None;}
+    uint32_t elapsed=now-since;
+    uint32_t interval=library&&elapsed>=1400?500:350;
+    if(elapsed>=600&&(!repeated||now-lastRepeat>=interval)){
+      repeated=true;lastRepeat=now;
+      if(library&&elapsed>=1400)return held==1?Action::PreviousScreen:Action::NextScreen;
+      return held==1?Action::Previous:Action::Next;
+    }
+    return Action::None;
+  }
+};
+constexpr unsigned LIBRARY_ROWS=22;
+inline size_t moveSelection(size_t selected,size_t count,int direction,bool screen){
+  if(!count)return 0;
+  if(!screen){if(direction<0)return selected?selected-1:count-1;return selected+1<count?selected+1:0;}
+  size_t pages=(count+LIBRARY_ROWS-1)/LIBRARY_ROWS,pg=selected/LIBRARY_ROWS;
+  pg=direction<0?(pg?pg-1:pages-1):(pg+1)%pages;
+  size_t target=pg*LIBRARY_ROWS+selected%LIBRARY_ROWS;return target<count?target:count-1;
+}
+}

@@ -1,0 +1,7 @@
+# Third-party notices
+
+- [M5Unified](https://github.com/m5stack/M5Unified), commit `e125e73f28b6b83e621e48df432af426bb2ff935`: MIT, © M5Stack. See `licenses/M5Unified-MIT.txt`.
+- [M5GFX](https://github.com/m5stack/M5GFX), 0.2.33 (`347a23274081a105cb9fc0fc3bbf0e15c78e79c3`): MIT, © M5Stack; its bundled components retain their own notices. See `licenses/M5GFX-MIT.txt` and upstream source. EPUB decompression uses its miniz implementation (public-domain notices in the source).
+- [TinyXML2](https://github.com/leethomason/tinyxml2), 10.0.0: zlib, © Lee Thomason. Vendored source and license are in `lib/tinyxml2/`.
+- [Noto Serif CJK SC](https://github.com/notofonts/noto-cjk/tree/Serif2.003), 2.003: SIL Open Font License 1.1, © 2017–2024 Adobe. See `licenses/Noto-OFL.txt`. Build-generated monochrome subsets use the internal name `NativeFont`; the original font is downloaded with a pinned SHA-256 and is not committed.
+- [Arduino-ESP32](https://github.com/espressif/arduino-esp32), supplied by pinned PlatformIO Espressif32 6.12.0: LGPL-2.1 and component-specific licenses. Framework sources and license notices are installed by PlatformIO. See `licenses/Arduino-ESP32-LGPL.txt` and `licenses/ESP-IDF-Apache.txt`; this release distributes application source, not framework binaries. Application source is MIT; this does not relicense dependencies.
