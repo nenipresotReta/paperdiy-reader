@@ -2,72 +2,90 @@
 #include "reading_font.h"
 #include "reader_font.h"
 #include "native_font_data.h"
+
 namespace {
-constexpr size_t COUNT=sizeof(GLYPHS_28)/sizeof(GLYPHS_28[0]);
-const NativeGlyph* glyph(uint32_t cp,bool small=false){
-  const auto* data=small?GLYPHS_24:GLYPHS_28;
-  size_t lo=0,hi=COUNT;
-  while(lo<hi){size_t mid=(lo+hi)/2;if(data[mid].code<cp)lo=mid+1;else hi=mid;}
-  return lo<COUNT&&data[lo].code==cp?&data[lo]:nullptr;
+
+void paint(lgfx::LGFXBase* display, const reader_font::Font& font,
+           uint32_t codepoint, int x, int y, uint32_t color) {
+  reader_font::drawGlyphRuns(font, codepoint, x, y,
+      [display, color](int left, int top, int width) {
+        display->drawFastHLine(left, top, width, color);
+      });
 }
-int blankAdvance(uint32_t cp,int size){
-  if(cp<32||cp==0xfeff||cp==0x200b||cp==0x200c||cp==0x200d||cp==0x2060||cp==0xad||
-     (cp>=0x202a&&cp<=0x202e)||(cp>=0x2066&&cp<=0x2069)||(cp>=0xfe00&&cp<=0xfe0f))return 0;
-  if(cp==0xa0||cp==0x2007)return size/2;
-  if(cp==0x202f||cp==0x2009)return size/4;
-  if(cp==0x2003)return size;
-  return -1;
-}
-void paint(lgfx::LGFXBase* display,const NativeGlyph& g,int x,int y,uint32_t color,int size){
-  for(int row=0;row<size;++row){
-    int col=0;
-    while(col<g.width){
-      while(col<g.width&&!(g.rows[row]&(1u<<(31-col))))++col;
-      int first=col;
-      while(col<g.width&&(g.rows[row]&(1u<<(31-col))))++col;
-      if(col>first)display->drawFastHLine(x+g.left+first,y+row,col-first,color);
-    }
-  }
-}
-class NativeFont:public lgfx::IFont {
-  int size;
+
+class NativeFont : public lgfx::IFont {
+  const reader_font::Font& font;
 public:
-  explicit NativeFont(int px):size(px){}
-  void getDefaultMetric(lgfx::FontMetrics* m)const override{
-    m->height=size;m->y_advance=size;m->baseline=size-4;m->y_offset=4-size;m->x_offset=0;m->width=m->x_advance=size;
+  explicit NativeFont(const reader_font::Font& data) : font(data) {}
+
+  void getDefaultMetric(lgfx::FontMetrics* metrics) const override {
+    metrics->height = font.height;
+    metrics->y_advance = font.lineAdvance;
+    metrics->baseline = font.baseline;
+    metrics->y_offset = -font.baseline;
+    metrics->x_offset = 0;
+    metrics->width = metrics->x_advance = font.pixels;
   }
-  bool updateFontMetric(lgfx::FontMetrics* m,uint16_t cp)const override{
-    int blank=blankAdvance(cp,size);
-    if(blank>=0){m->width=m->x_advance=blank;m->x_offset=0;return true;}
-    if(auto g=glyph(cp,size==24)){m->width=g->width;m->x_advance=g->advance;m->x_offset=g->left;return true;}
-    m->width=m->x_advance=size;m->x_offset=0;return false;
+
+  bool updateFontMetric(lgfx::FontMetrics* metrics, uint16_t codepoint) const override {
+    metrics->x_advance = reader_font::glyphAdvance(font, codepoint);
+    metrics->x_offset = 0;
+    metrics->width = metrics->x_advance;
+    if (const auto* glyph = reader_font::findGlyph(font, codepoint)) {
+      metrics->width = glyph->width;
+      metrics->x_offset = glyph->left;
+    }
+    // U+0000 is the explicit missing-glyph box requested by M5GFX.
+    return codepoint == 0 || reader_font::hasGlyph(font, codepoint);
   }
-  size_t drawChar(lgfx::LGFXBase* display,int32_t x,int32_t y,uint16_t cp,const lgfx::TextStyle* style,lgfx::FontMetrics* m,int32_t& filled)const override{
-    y+=m->y_offset;
-    int blank=blankAdvance(cp,size);if(blank>=0){filled=x+blank;return blank;}
-    if(auto g=glyph(cp,size==24)){paint(display,*g,x,y,style->fore_rgb888,size);filled=x+g->advance;return g->advance;}
-    return drawCharDummy(display,x,y,size,size,style,filled);
+
+  size_t drawChar(lgfx::LGFXBase* display, int32_t x, int32_t y,
+                  uint16_t codepoint, const lgfx::TextStyle* style,
+                  lgfx::FontMetrics*, int32_t& filled) const override {
+    const int32_t scaleX = 65536 * style->size_x;
+    const int32_t scaleY = 65536 * style->size_y;
+    const int top = y - ((font.baseline * scaleY) >> 16);
+    const int advance = reader_font::drawGlyphRuns(font, codepoint, 0, 0,
+        [display, x, top, scaleX, scaleY, style](int left, int row, int width) {
+          const int firstX = (left * scaleX) >> 16;
+          const int lastX = ((left + width) * scaleX) >> 16;
+          const int firstY = (row * scaleY) >> 16;
+          const int lastY = ((row + 1) * scaleY) >> 16;
+          if (lastX > firstX && lastY > firstY) {
+            display->fillRect(x + firstX, top + firstY, lastX - firstX,
+                              lastY - firstY, style->fore_rgb888);
+          }
+        });
+    const int scaledAdvance = (advance * scaleX) >> 16;
+    filled = x + scaledAdvance;
+    return scaledAdvance;
   }
 };
-NativeFont body(28),small(24);
-int advance(uint32_t cp,int size){int blank=blankAdvance(cp,size);if(blank>=0)return blank;if(auto g=glyph(cp,size==24))return g->advance;return size;}
+
+NativeFont body(reader_font::FONT_28), small(reader_font::FONT_24);
+
+} // namespace
+
+const lgfx::IFont* bodyFont() { return &body; }
+int bodyGlyphAdvance(uint32_t codepoint) {
+  return reader_font::glyphAdvance(reader_font::FONT_28, codepoint);
 }
-const lgfx::IFont* bodyFont(){return &body;}
-int bodyGlyphAdvance(uint32_t cp){return advance(cp,28);}
-bool bodyFontHasGlyph(uint32_t cp){return blankAdvance(cp,28)>=0||glyph(cp)!=nullptr;}
-void drawBodyGlyph(const char* text,size_t bytes,int x,int y,uint32_t foreground){
-  uint32_t cp=readerCodepoint(text,bytes);
-  if(auto g=glyph(cp))paint(&M5.Display,*g,x,y,foreground,28);
-  else if(blankAdvance(cp,28)<0){M5.Display.setCursor(x,y);M5.Display.print(text);}
+bool bodyFontHasGlyph(uint32_t codepoint) {
+  return reader_font::hasGlyph(reader_font::FONT_28, codepoint);
 }
-const lgfx::IFont* readerFont(){return &small;}
-int readerGlyphWidth(uint32_t cp){return advance(cp,24);}
-bool readerFontHasGlyph(uint32_t cp){return blankAdvance(cp,24)>=0||glyph(cp,true)!=nullptr;}
-uint32_t readerCodepoint(const char* text,size_t bytes){
-  uint32_t cp=(uint8_t)text[0];if(bytes>1){cp&=(1u<<(7-bytes))-1;for(size_t i=1;i<bytes;++i)cp=(cp<<6)|((uint8_t)text[i]&63);}return cp;
+void drawBodyGlyph(const char* text, size_t bytes, int x, int y, uint32_t foreground) {
+  paint(&M5.Display, reader_font::FONT_28, readerCodepoint(text, bytes), x, y, foreground);
 }
-void drawReaderGlyph(const char* text,size_t bytes,int x,int y,uint32_t foreground){
-  uint32_t cp=readerCodepoint(text,bytes);
-  if(auto g=glyph(cp,true))paint(&M5.Display,*g,x,y,foreground,24);
-  else if(blankAdvance(cp,24)<0){M5.Display.setCursor(x,y);M5.Display.print(text);}
+const lgfx::IFont* readerFont() { return &small; }
+int readerGlyphWidth(uint32_t codepoint) {
+  return reader_font::glyphAdvance(reader_font::FONT_24, codepoint);
+}
+bool readerFontHasGlyph(uint32_t codepoint) {
+  return reader_font::hasGlyph(reader_font::FONT_24, codepoint);
+}
+uint32_t readerCodepoint(const char* text, size_t bytes) {
+  return reader_font::decodeCodepoint(text, bytes);
+}
+void drawReaderGlyph(const char* text, size_t bytes, int x, int y, uint32_t foreground) {
+  paint(&M5.Display, reader_font::FONT_24, readerCodepoint(text, bytes), x, y, foreground);
 }

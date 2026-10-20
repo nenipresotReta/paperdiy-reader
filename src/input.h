@@ -7,6 +7,7 @@ class Buttons {
   uint8_t held=0;uint32_t since=0,lastRepeat=0;bool repeated=false,chord=false,suppressed=false;
   bool releaseGuard=false,releaseSeen=false;uint32_t releasedAt=0;
 public:
+  bool idle() const {return !held&&!chord&&!suppressed&&!releaseGuard;}
   void reset(uint8_t mask,uint32_t now){held=0;since=lastRepeat=now;repeated=chord=false;suppressed=mask!=0;releaseGuard=releaseSeen=false;}
   // After blocking work, require a continuously released interval. This also
   // lets the hardware debounce state catch up before accepting a fresh press.
