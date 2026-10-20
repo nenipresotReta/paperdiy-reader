@@ -7,3 +7,6 @@ extern size_t selectedBook;
 extern String sdError;
 bool scanSD();
 bool openSD(size_t index,bool paginate=true);
+#ifdef PAPERDIY_DIAGNOSTICS
+void logSDCacheInfo();
+#endif

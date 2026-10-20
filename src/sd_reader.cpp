@@ -7,10 +7,17 @@
 #include <algorithm>
 #include "epub_core.h"
 #include "sd_cache.h"
+#include <esp_heap_caps.h>
 bool sdOK=false;
 std::vector<String> sdBooks;
 size_t selectedBook=0;
 String sdError;
+bool sdReadFailure() {
+  sdError="Cannot read SD file";
+  // Force a fresh mount/scan on the next attempt after removal or bus failure.
+  sdOK=false;SD.end();
+  return false;
+}
 uint32_t crcUpdate(uint32_t c,const uint8_t* p,size_t n){
   while(n--){c^=*p++;for(int i=0;i<8;i++)c=(c>>1)^((c&1)?0xedb88320:0);}
   return c;
@@ -63,31 +70,51 @@ bool validUtf8(const char* data,size_t size){
 bool openSD(size_t index,bool paginate){
   uint32_t started=millis();pageOffsets.clear();bookLength=0;
   sdError="";if(index>=sdBooks.size()||!book){sdError="Book unavailable";return false;}
-  File f=SD.open(sdBooks[index]);if(!f){sdError="Cannot read SD file";return false;}
+  File f=SD.open(sdBooks[index]);if(!f)return sdReadFailure();
   bool directory=f.isDirectory();f.close();
   BookCache cache(sdBooks[index],directory);
-  if(cache.load()){selectedBook=index;prefs.putString("sdLast",sdBooks[index]);Serial.printf("SD_OPENED %s ms=%u cached=1\n",sdBooks[index].c_str(),(unsigned)(millis()-started));return true;}
+  if(cache.load()){selectedBook=index;Serial.printf("SD_OPENED %s ms=%u cached=1\n",sdBooks[index].c_str(),(unsigned)(millis()-started));return true;}
+  bookmarks::Anchor anchor;
+  uint32_t legacyOffset=0;
+  if(cache.loadLegacyForMigration(legacyOffset)){
+    anchor=bookmarks::capture(book,bookLength,legacyOffset);
+    Serial.printf("PROGRESS_LEGACY offset=%u bytes=%u\n",legacyOffset,(unsigned)bookLength);
+  }
+  pageOffsets.clear();bookLength=0;
   cache.dependencies.clear();if(!directory)cache.observe("");
-  f=SD.open(sdBooks[index]);if(!f){sdError="Cannot read SD file";return false;}
+  f=SD.open(sdBooks[index]);if(!f)return sdReadFailure();
   Serial.println("CACHE_MISS");
   String lower=sdBooks[index];lower.toLowerCase();bool ok=false;pageOffsets.clear();
   if(lower.endsWith(".txt")){
     bookLength=f.size();if(!bookLength||bookLength>MAX_BOOK){sdError="TXT exceeds 4 MiB / empty";return false;}
     ok=f.read((uint8_t*)book,bookLength)==bookLength;
+    if(!ok){f.close();return sdReadFailure();}
     if(ok&&bookLength>=3&&!memcmp(book,"\xef\xbb\xbf",3)){memmove(book,book+3,bookLength-3);bookLength-=3;}
     if(ok&&!validUtf8(book,bookLength)){sdError="TXT must be UTF-8; convert encoding";ok=false;}
   }else{
     if(!directory&&f.size()>64*1024*1024){sdError="EPUB exceeds 64 MiB";return false;}
-    epub::Importer importer;
+    epub::Importer importer;bool ioFailed=false;
     if(directory){
       String base=sdBooks[index];f.close();
       importer.resourceSize=[&cache](const std::string& name)->size_t{return cache.observe(name);};
-      importer.resourceRead=[base](const std::string& name,void* data,size_t size)->bool{File r=SD.open(base+"/"+name.c_str());return r&&!r.isDirectory()&&r.read((uint8_t*)data,size)==size;};
+      importer.resourceRead=[base,&ioFailed](const std::string& name,void* data,size_t size)->bool{
+        File r=SD.open(base+"/"+name.c_str());
+        bool read=r&&!r.isDirectory()&&r.read((uint8_t*)data,size)==size;
+        if(!read)ioFailed=true;return read;
+      };
     }
     importer.fileSize=directory?0:f.size();importer.output=book;importer.capacity=MAX_BOOK;
     importer.alloc=[](size_t n)->void*{return ps_malloc(n);};importer.tick=[](){delay(1);};
-    importer.read=[&f](uint32_t offset,void* p,size_t n)->size_t{if(!f.seek(offset))return 0;return f.read((uint8_t*)p,n);};
+    importer.xmlMemoryAvailable=[](size_t requiredBytes,size_t largestAllocation){
+      return heap_caps_get_free_size(MALLOC_CAP_SPIRAM)>=requiredBytes&&
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)>=largestAllocation;
+    };
+    importer.read=[&f,&ioFailed](uint32_t offset,void* p,size_t n)->size_t{
+      if(!f.seek(offset)){ioFailed=true;return 0;}
+      size_t read=f.read((uint8_t*)p,n);if(read!=n)ioFailed=true;return read;
+    };
     ok=importer.run();if(ok)bookLength=importer.used;else sdError=importer.error.c_str();
+    if(!ok&&ioFailed){f.close();return sdReadFailure();}
   }
   f.close();if(!ok){bookLength=0;Serial.printf("SD_OPEN_FAILED %s\n",sdError.c_str());return false;}
   book[bookLength]=0;
@@ -96,7 +123,26 @@ bool openSD(size_t index,bool paginate){
   char key[12];snprintf(key,sizeof(key),"s%08lx",(unsigned long)hash);bookmarkKey=key;
   bookIdentity=sdBooks[index];
   Serial.printf("BOOK_PARSE_DONE bytes=%u ms=%u free_psram=%u\n",(unsigned)bookLength,(unsigned)(millis()-started),ESP.getFreePsram());
-  if(!indexBook()){sdError="Pagination failed";return false;}
-  if(!cache.save())Serial.println("CACHE_SAVE_SKIPPED");
-  selectedBook=index;prefs.putString("sdLast",sdBooks[index]);Serial.printf("SD_OPENED %s ms=%u\n",sdBooks[index].c_str(),(unsigned)(millis()-started));return true;
+  bool recoveryRequired=cache.recoveryRequired();
+  if(!indexBook(false,true,anchor.valid?&anchor:nullptr,recoveryRequired)){
+    sdError=(anchor.valid||recoveryRequired)?"Cannot restore saved position":"Pagination failed";return false;
+  }
+  // Commit the migrated position before replacing its old text cache. A
+  // failed NVS write must leave the legacy cache available for another try.
+  bool saved=saveReadingProgress();
+  if(saved&&!cache.save())Serial.println("CACHE_SAVE_SKIPPED");
+  selectedBook=index;Serial.printf("SD_OPENED %s ms=%u\n",sdBooks[index].c_str(),(unsigned)(millis()-started));return true;
 }
+#ifdef PAPERDIY_DIAGNOSTICS
+void logSDCacheInfo(){
+  for(size_t i=0;i<sdBooks.size();++i){
+    File source=SD.open(sdBooks[i]);if(!source)continue;
+    BookCache cache(sdBooks[i],source.isDirectory());source.close();
+    File f=SD.open(cache.path);reader_cache::Header header{};
+    size_t count=f?f.read((uint8_t*)&header,sizeof(header)):0;
+    Serial.printf("CACHE_INFO index=%u header_bytes=%u magic=%08x version=%u layout=%08x text=%u\n",
+      unsigned(i),unsigned(count),header.magic,header.version,header.layout,header.textBytes);
+  }
+  Serial.println("CACHE_INFO_DONE");
+}
+#endif
