@@ -18,3 +18,17 @@ books/
 .env
 *.pem
 *.key
+
+# Personal artwork and ebook formats never belong in a source release.
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.webp
+*.mobi
+*.azw
+*.azw3
+*.fb2
+*.pdf
+*shutdown-mask*.h
+/.paperdiy-cache/

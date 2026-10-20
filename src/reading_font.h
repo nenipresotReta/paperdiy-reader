@@ -1,5 +1,8 @@
 #pragma once
 #include <M5GFX.h>
+#include "font_metrics.h"
+constexpr int BODY_FONT_HEIGHT = reader_font::BODY_HEIGHT;
+constexpr int BODY_FONT_BASELINE = reader_font::BODY_BASELINE;
 const lgfx::IFont* bodyFont();
 int bodyGlyphAdvance(uint32_t codepoint);
 bool bodyFontHasGlyph(uint32_t codepoint);

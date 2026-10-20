@@ -8,8 +8,13 @@
 #include "display_driver.h"
 #include "power.h"
 #include "ui.h"
+#ifdef PAPERDIY_SHUTDOWN_HEADER
+#include PAPERDIY_SHUTDOWN_HEADER
+#endif
 namespace {
 constexpr int TOP=56,ROW=39;
+int lastBattery=-2;
+bool lastCharging=false;
 String fitName(const String& input,int width){
   String out;size_t pos=0;
   while(pos<input.length()){char c[5];size_t n=utf8Char(input.c_str()+pos,input.length()-pos,c);if(M5.Display.textWidth(out+c+"…")>width){out+="…";break;}out+=c;pos+=n;}
@@ -34,22 +39,28 @@ void statusIcon(bool busy=false){
   if(busy){
     M5.Display.fillCircle(518,942,11,TFT_BLACK);
     M5.Display.drawLine(518,942,518,935,TFT_WHITE);M5.Display.drawLine(518,942,524,942,TFT_WHITE);
+  }else if(progressSaveFailed){
+    M5.Display.drawCircle(518,942,11,TFT_BLACK);
+    M5.Display.fillRect(517,935,3,8,TFT_BLACK);M5.Display.fillRect(517,946,3,3,TFT_BLACK);
   }else {M5.Display.drawCircle(518,942,7,TFT_BLACK);M5.Display.fillCircle(518,942,3,TFT_BLACK);}
 }
 void battery(){
   font();M5.Display.fillRect(360,12,172,36,TFT_WHITE);
-  int value=M5.Power.getBatteryLevel();String text=value<0?"--%":String(std::min(100,std::max(0,value)))+"%";
+  int value=M5.Power.getBatteryLevel();lastBattery=value;lastCharging=chargingNow();
+  String text=value<0?"--%":String(std::min(100,std::max(0,value)))+"%";
   int tx=516-M5.Display.textWidth(text);M5.Display.setCursor(tx,16);M5.Display.print(text);
   int x=tx-48;M5.Display.drawRect(x,19,34,18,TFT_BLACK);M5.Display.fillRect(x+34,24,3,8,TFT_BLACK);
   if(value>=0)M5.Display.fillRect(x+3,22,28*std::min(100,std::max(0,value))/100,12,TFT_BLACK);
-  if(chargingNow()){M5.Display.drawLine(x-12,19,x-19,29,TFT_BLACK);M5.Display.drawLine(x-19,29,x-11,29,TFT_BLACK);M5.Display.drawLine(x-11,29,x-18,39,TFT_BLACK);}
+  if(lastCharging){M5.Display.drawLine(x-12,19,x-19,29,TFT_BLACK);M5.Display.drawLine(x-19,29,x-11,29,TFT_BLACK);M5.Display.drawLine(x-11,29,x-18,39,TFT_BLACK);}
 }
 void row(size_t index,size_t first){
   int y=TOP+(index-first)*ROW;bool chosen=index==selectedBook;
   M5.Display.fillRect(16,y,508,ROW,chosen?TFT_BLACK:TFT_WHITE);
   M5.Display.setTextColor(chosen?TFT_WHITE:TFT_BLACK,chosen?TFT_BLACK:TFT_WHITE);
   String name=sdBooks[index].substring(sdBooks[index].lastIndexOf('/')+1);int dot=name.lastIndexOf('.');if(dot>0)name=name.substring(0,dot);
-  bookName(name,24,y+6,488,chosen?TFT_WHITE:TFT_BLACK);
+  M5.Display.setClipRect(16,y,508,ROW);
+  bookName(name,24,y+2,488,chosen?TFT_WHITE:TFT_BLACK);
+  M5.Display.clearClipRect();
 }
 }
 void showLibrary(bool sceneChange){
@@ -73,13 +84,15 @@ void updateLibrarySelection(size_t oldSelection){
 void showBook(bool sceneChange){
   if(pageOffsets.empty())return;
   beginRefresh(sceneChange,true);
-  if(sceneChange){M5.Display.fillScreen(TFT_WHITE);statusIcon();}
+  if(sceneChange){M5.Display.fillScreen(TFT_WHITE);}
   else {M5.Display.fillRect(20,20,500,896,TFT_WHITE);M5.Display.fillRect(120,923,300,37,TFT_WHITE);}
-  font();prepareReaderFont();layoutPage(pageOffsets[pageNumber],true);
+  statusIcon();
+  font();prepareReaderFont();
+  M5.Display.setClipRect(20,20,500,896);layoutPage(pageOffsets[pageNumber],true);M5.Display.clearClipRect();
   font();
-  String number=String(pageNumber+1)+" / "+String(pageOffsets.size());M5.Display.setCursor((540-M5.Display.textWidth(number))/2,930);M5.Display.print(number);
-  endRefresh("page",20,20,500,940);
-  uint32_t offset=pageOffsets[pageNumber];if(prefs.getUInt(bookmarkKey.c_str(),UINT32_MAX)!=offset)prefs.putUInt(bookmarkKey.c_str(),offset);
+  String number=String(pageNumber+1)+" / "+String(pageOffsets.size());M5.Display.setCursor((540-M5.Display.textWidth(number))/2,960-READER_FONT_HEIGHT);M5.Display.print(number);
+  endRefresh("page",20,20,512,940);
+  uint32_t offset=pageOffsets[pageNumber];
   uint32_t end=pageNumber+1<pageOffsets.size()?pageOffsets[pageNumber+1]:bookLength;
   Serial.printf("BOOK_PAGE page=%u total=%u key=%s offset=%u end=%u font_px=%d line_height=%d\n",(unsigned)pageNumber+1,(unsigned)pageOffsets.size(),bookmarkKey.c_str(),offset,end,READER_FONT_PX,READER_LINE_HEIGHT);
 }
@@ -90,9 +103,13 @@ void showLoading(){
 }
 void showError(const String& message){
   beginRefresh();font();M5.Display.fillRect(20,416,500,100,TFT_WHITE);M5.Display.drawRect(20,416,500,100,TFT_BLACK);
-  M5.Display.setCursor(32,448);M5.Display.print(fitName(message,476));endRefresh("error",20,416,500,100);
+  M5.Display.setCursor(32,448);M5.Display.print(fitName(message,476));
+  statusIcon();endRefresh("error",20,416,512,540);
 }
-void updateLibraryBattery(){beginRefresh();battery();endRefresh("battery",360,12,172,36);}
+void updateLibraryBattery(){
+  if(lastBattery==M5.Power.getBatteryLevel()&&lastCharging==chargingNow())return;
+  beginRefresh();battery();endRefresh("battery",360,12,172,36);
+}
 void showShutdownOverlay(){
   beginRefresh(false);
   // Leave a dimmed page and a hollow status icon; no shutdown artwork.
@@ -102,5 +119,9 @@ void showShutdownOverlay(){
   }
   M5.Display.fillRect(504,928,28,28,TFT_WHITE);
   M5.Display.drawCircle(518,942,7,TFT_BLACK);
+#ifdef PAPERDIY_SHUTDOWN_HEADER
+  // Optional local artwork is supplied outside the source repository.
+  M5.Display.drawBitmap(540-SHUTDOWN_W,960-SHUTDOWN_H,SHUTDOWN_MASK,SHUTDOWN_W,SHUTDOWN_H,TFT_BLACK);
+#endif
   endRefresh("shutdown-overlay",0,0,540,960);
 }
