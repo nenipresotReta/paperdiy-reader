@@ -18,6 +18,7 @@ FONT_URL = (
     "Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Regular.otf"
 )
 FONT_PATH = ROOT / ".cache/NotoSerifCJKsc-Regular.otf"
+SUPPLEMENT_PATH = ROOT / "tools/traditional_supplement.txt"
 INK_THRESHOLD = 96
 
 
@@ -86,6 +87,13 @@ def repertoire() -> set[int]:
                     continue
                 if len(text) == 1:
                     codes.add(ord(text))
+    # Fixed Traditional Chinese supplement: Big5 level 1 plus common
+    # Traditional Chinese codepoints. The list is checked in, not scanned at
+    # build time, so generation remains deterministic and book-independent.
+    for line in SUPPLEMENT_PATH.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            codes.add(int(line, 16))
     # Vertical kana repeat marks span two ems. A horizontal line cannot render
     # them at their native dimensions; use the visible missing-glyph box.
     codes.difference_update(range(0x3031, 0x3036))
