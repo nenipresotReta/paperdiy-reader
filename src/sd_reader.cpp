@@ -68,7 +68,7 @@ bool validUtf8(const char* data,size_t size){
   }return true;
 }
 bool openSD(size_t index,bool paginate){
-  uint32_t started=millis();pageOffsets.clear();bookLength=0;
+  uint32_t started=millis();pageOffsets.clear();bookLength=0;bookEnglishHyphens=false;
   sdError="";if(index>=sdBooks.size()||!book){sdError="Book unavailable";return false;}
   File f=SD.open(sdBooks[index]);if(!f)return sdReadFailure();
   bool directory=f.isDirectory();f.close();
@@ -86,6 +86,7 @@ bool openSD(size_t index,bool paginate){
   Serial.println("CACHE_MISS");
   String lower=sdBooks[index];lower.toLowerCase();bool ok=false;pageOffsets.clear();
   if(lower.endsWith(".txt")){
+    bookEnglishHyphens=true; // Plain text uses the reader's English default.
     bookLength=f.size();if(!bookLength||bookLength>MAX_BOOK){sdError="TXT exceeds 4 MiB / empty";return false;}
     ok=f.read((uint8_t*)book,bookLength)==bookLength;
     if(!ok){f.close();return sdReadFailure();}
@@ -113,7 +114,7 @@ bool openSD(size_t index,bool paginate){
       if(!f.seek(offset)){ioFailed=true;return 0;}
       size_t read=f.read((uint8_t*)p,n);if(read!=n)ioFailed=true;return read;
     };
-    ok=importer.run();if(ok)bookLength=importer.used;else sdError=importer.error.c_str();
+    ok=importer.run();if(ok){bookLength=importer.used;bookEnglishHyphens=importer.englishHyphenation;}else sdError=importer.error.c_str();
     if(!ok&&ioFailed){f.close();return sdReadFailure();}
   }
   f.close();if(!ok){bookLength=0;Serial.printf("SD_OPEN_FAILED %s\n",sdError.c_str());return false;}

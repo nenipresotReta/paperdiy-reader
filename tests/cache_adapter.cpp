@@ -74,6 +74,7 @@ struct {
  bool isKey(const char* k){return data.find(k)!=data.end();}
  uint32_t getUInt(const char* k,uint32_t d){if(failRead)return d;auto i=data.find(k);return i==data.end()?d:i->second;}
 } prefs;
+bool bookEnglishHyphens=true;
 void prepareReaderFont(){}
 #define stat(p,s) cacheStat(p,s)
 #include "sd_cache.h"
@@ -88,13 +89,13 @@ void seed(BookCache& c){c.dependencies.clear();c.observe("");bookLength=12;memcp
 void corrupt(const std::string& path,size_t pos){
  std::fstream f(root+path,std::ios::binary|std::ios::in|std::ios::out);f.seekg(pos);char v;f.get(v);v^=1;f.seekp(pos);f.put(v);
 }
-void legacyFixture(BookCache& c,uint32_t layout=0x20261025){
- seed(c);bookmarkKey="b0123456789abcd";
- reader_cache::Header h{};h.magic=reader_cache::MAGIC;h.version=1;h.layout=layout;
+void legacyFixture(BookCache& c,uint32_t layout=0x20261025,uint32_t version=1){
+ seed(c);bookmarkKey=version==1?"b0123456789abcd":"c0123456789abcd";
+ reader_cache::Header h{};h.magic=reader_cache::MAGIC;h.version=version;h.layout=layout;
  h.directory=c.directory;h.textBytes=bookLength;h.pages=pageOffsets.size();h.deps=c.dependencies.size();
  std::vector<uint8_t> data;
  auto append=[&](const void* p,size_t n){auto b=(const uint8_t*)p;data.insert(data.end(),b,b+n);};
- for(const auto& dep:c.dependencies){uint32_t fields[3]={(uint32_t)dep.name.length(),dep.size,dep.mtime};append(fields,sizeof(fields));append(dep.name.c_str(),dep.name.length());}
+ for(const auto& dep:c.dependencies){uint32_t fields[3]={(uint32_t)dep.name.length(),dep.size,dep.mtime};append(fields,sizeof(fields));if(version==2)append(dep.digest,sizeof(dep.digest));append(dep.name.c_str(),dep.name.length());}
  h.metaBytes=data.size();append(pageOffsets.data(),pageOffsets.size()*4);append(book,bookLength);
  memcpy(h.source,c.sourceHash,32);memcpy(h.bookmark,bookmarkKey.c_str(),16);
  SHA256_CTX sha;SHA256_Init(&sha);SHA256_Update(&sha,&h,offsetof(reader_cache::Header,digest));SHA256_Update(&sha,data.data(),data.size());SHA256_Final(h.digest,&sha);
@@ -158,6 +159,20 @@ int main(){
  legacyFixture(c);old=readFile(c.path);seed(c);SD.resetFaults();SD.failRenames={2};assert(!c.save());SD.resetFaults();assert(readFile(c.path)==old&&c.loadLegacyForMigration(offset));
  seed(c);assert(c.save());assert(c.load()&&c.loadLegacyForMigration(offset));
  assert(bookmarkKey=="b0123456789abcd");
+
+ // Prior v2 layouts: read-only recovery verifies digests and preserves the c-key.
+ for(uint32_t layout : {0x20261026u,0x20261030u,0x20261031u,0x20261032u,0x20261033u,0x20261034u,0x20261035u}){
+  SD.remove(c.path+".bak");legacyFixture(c,layout,2);
+  prefs.data["c0123456789abcd"]=7;old=readFile(c.path);
+  assert(!c.load()&&c.loadLegacyForMigration(offset)&&offset==7);
+  assert(bookmarkKey=="c0123456789abcd"&&readFile(c.path)==old);
+ }
+ replaceKeepingTimestamp("/book.txt","DIFFERENT SOURCE LENGTH");
+ assert(!c.loadLegacyForMigration(offset)); // v2 recovery checks content, not just mtime.
+ seed(c);bookEnglishHyphens=false;assert(c.save());
+ bookEnglishHyphens=true;assert(c.load()&&!bookEnglishHyphens);
+ seed(c);bookEnglishHyphens=true;assert(c.save());
+ bookEnglishHyphens=false;assert(c.load()&&bookEnglishHyphens);
 
  // Throttled yielding must not charge a full RTOS tick for every 8 KiB.
  std::string megabyte(1024*1024,'q');writeSource("/throughput.txt",megabyte);

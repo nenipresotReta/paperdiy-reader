@@ -82,6 +82,13 @@ int main() {
   checkFont(FONT_28);
   checkFont(FONT_24);
 
+  // Traditional Chinese supplement: common Big5 characters and the arrow used
+  // by the library must have real 24/28px glyphs rather than the missing box.
+  for (uint32_t codepoint : {0x8aaau, 0x5167u, 0x773eu, 0x2934u}) {
+    assert(hasGlyph(FONT_28, codepoint));
+    assert(hasGlyph(FONT_24, codepoint));
+  }
+
   // j used to be shrunk from 28 to 26px (advance 8, height 27).
   const auto* j = findGlyph(FONT_28, 'j');
   assert(j->advance == 9 && j->height == 30);

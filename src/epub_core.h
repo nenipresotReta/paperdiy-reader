@@ -162,6 +162,7 @@ struct Importer {
     for (auto next = node->FirstChild(); next && ok; next = next->NextSibling()) walk(next, depth + 1, preserve);
     if (block) newline();
   }
+  bool englishHyphenation = false;
   bool run() {
     if (!index()) return false;
     if (resourceRead ? resourceSize("META-INF/encryption.xml") != SIZE_MAX : find("META-INF/encryption.xml") != nullptr) {
@@ -195,6 +196,12 @@ struct Importer {
       if (!parseXML(root, 256 * 1024, opf, "Invalid package XML")) return false;
       auto pkg = child(&opf,"package"), manifest = child(pkg,"manifest"), spine = child(pkg,"spine");
       if (!manifest || !spine) return fail("Missing EPUB spine");
+      auto language = child(child(pkg,"metadata"),"language");
+      if (language && language->GetText()) {
+        std::string tag = language->GetText();
+        for (char& c : tag) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+        englishHyphenation = tag == "en" || tag.compare(0,3,"en-") == 0;
+      }
       auto title = child(child(pkg,"metadata"),"title");
       if (title) { text(title->GetText()); newline(); }
       for (auto ref = spine->FirstChildElement(); ref; ref = ref->NextSiblingElement()) {

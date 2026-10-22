@@ -16,5 +16,5 @@ int main(int argc,char** argv){
   e.resourceSize=[root](const std::string& name)->size_t{auto p=root/name;return std::filesystem::is_regular_file(p)?std::filesystem::file_size(p):SIZE_MAX;};
   e.resourceRead=[root](const std::string& name,void* data,size_t n)->bool{std::ifstream f(root/name,std::ios::binary);return bool(f.read((char*)data,n));};
  }
- if(!e.run()){std::cerr<<e.error<<'\n';return 1;}std::cout.write(out.data(),e.used);return 0;
+ if(!e.run()){std::cerr<<e.error<<'\n';return 1;}if(mode=="--language")std::cerr<<"HYPHEN_LANGUAGE english="<<e.englishHyphenation<<"\n";std::cout.write(out.data(),e.used);return 0;
 }
