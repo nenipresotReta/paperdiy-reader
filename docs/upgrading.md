@@ -32,7 +32,9 @@ The first open can rebuild caches. SD book contents are never rewritten.
 ## Rebuild
 
 Use the source archive for the same tag and the README build commands.
-PlatformIO and the framework/library revisions are pinned; the font downloader
-checks a fixed source checksum. No installed system font or personal file is used.
+The source archive includes the generated OFL bitmap font subset. PlatformIO,
+the framework/library revisions and the font source are pinned. Regenerating
+the subset uses a fixed source checksum; no installed system font or personal
+file is used.
 Third-party source, licenses and revisions are listed in
 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
