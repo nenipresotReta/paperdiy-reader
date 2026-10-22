@@ -14,6 +14,7 @@ std::vector<uint32_t> pageOffsets;
 uint32_t pageNumber=0;
 String bookmarkKey="page",bookIdentity="uploaded";
 bool progressSaveFailed=false;
+bool bookEnglishHyphens=true;
 namespace {
 bool progressAvailable=false;
 String contentKey(bool legacy){
@@ -52,7 +53,10 @@ void prepareReaderFont(){
 }
 // Drawing and cache indexing execute the same layout implementation.
 size_t layoutPage(size_t from,bool draw,int top){
-  pagination::Geometry g;g.top=top;g.lineHeight=READER_LINE_HEIGHT;
+  // The 30 px right margin is also the display-only hang budget; a full-width
+  // closing mark at 510 still ends at or before 540.
+  pagination::Geometry g;g.left=24;g.right=510;g.hangLimit=30;
+  g.top=top;g.lineHeight=READER_LINE_HEIGHT;g.hyphenate=bookEnglishHyphens;
   uint32_t yielded=millis();
   return pagination::page(book,bookLength,from,g,
     [](const char* ch,size_t n){return (uint8_t)ch[0]<128?asciiWidths[(uint8_t)ch[0]]:bodyGlyphAdvance(readerCodepoint(ch,n));},

@@ -115,6 +115,12 @@ with tempfile.TemporaryDirectory() as temp:
     for name, content in [('empty', '<html><body/></html>'), ('whitespace', '<html><head><title>Ignored</title></head><body> \n<p> </p></body></html>'), ('only-image', '<html><body><img src="cover.png"/></body></html>')]:
         run(book(name, content), error='No readable EPUB text')
 
+    # Language metadata controls English patterns without altering extracted text.
+    for tag, expected_language in [('en', 1), ('EN-gb', 1), ('ja', 0), ('fr', 0)]:
+        opf = package.replace('<package>', '<package><metadata><dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">' + tag + '</dc:language></metadata>')
+        result = run(archive('lang-' + tag + '.epub', {**base, 'OPS/book.opf': opf}), mode='--language')
+        assert result.stderr.decode().strip() == f'HYPHEN_LANGUAGE english={expected_language}'
+
     # A 1 MiB flat chapter remains supported; DOM density, not text length, is bounded.
     framing = '<html><body><p></p></body></html>'
     text = 'x' * (1024 * 1024 - len(framing))

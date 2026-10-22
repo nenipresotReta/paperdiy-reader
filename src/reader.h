@@ -18,3 +18,4 @@ bool indexBook(bool reset=false,bool migrateLegacy=true,const bookmarks::Anchor*
 bool initializeProgress();
 bool saveReadingProgress();
 extern bool progressSaveFailed;
+extern bool bookEnglishHyphens;

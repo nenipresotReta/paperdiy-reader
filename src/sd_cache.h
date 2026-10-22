@@ -120,7 +120,7 @@ struct BookCache {
        !bookLength||bookLength>MAX_BOOK||pageOffsets.size()>reader_cache::MAX_PAGES||
        !reader_cache::validOffsets(pageOffsets.data(),pageOffsets.size(),bookLength)||!unchanged())return false;
     reader_cache::Header h{};
-    h.magic=reader_cache::MAGIC;h.version=reader_cache::VERSION;h.layout=reader_cache::LAYOUT;
+    h.magic=reader_cache::MAGIC;h.version=reader_cache::VERSION;h.layout=reader_cache::layoutFor(bookEnglishHyphens);
     h.directory=directory;h.textBytes=bookLength;h.pages=pageOffsets.size();h.deps=dependencies.size();
     for(const auto& dep:dependencies)h.metaBytes+=reader_cache::DEP_BYTES+dep.name.length();
     if(h.metaBytes>reader_cache::MAX_META)return false;
@@ -170,7 +170,7 @@ private:
   bool loadFile(const String& candidate,bool legacy,uint32_t& savedOffset){
     File f=SD.open(candidate,"r");reader_cache::Header h{};
     if(!f||f.read((uint8_t*)&h,sizeof(h))!=sizeof(h))return false;
-    bool valid=legacy?reader_cache::validLegacyHeader(h,f.size(),MAX_BOOK,sourceHash,directory):
+    bool valid=legacy?reader_cache::validMigrationHeader(h,f.size(),MAX_BOOK,sourceHash,directory):
       reader_cache::validHeader(h,f.size(),MAX_BOOK,sourceHash,directory);
     if(!valid)return false;
     Buffer meta((uint8_t*)ps_malloc(h.metaBytes),free);
@@ -183,18 +183,19 @@ private:
     uint8_t digest[32];mbedtls_sha256_finish_ret(&sha,digest);mbedtls_sha256_free(&sha);f.close();
     if(!ok||memcmp(digest,h.digest,32)||!reader_cache::validOffsets(offsets.data(),offsets.size(),h.textBytes))return false;
     dependencies.clear();size_t pos=0;
-    const size_t recordBytes=legacy?reader_cache::LEGACY_DEP_BYTES:reader_cache::DEP_BYTES;
+    const bool v1=h.version==1;
+    const size_t recordBytes=v1?reader_cache::LEGACY_DEP_BYTES:reader_cache::DEP_BYTES;
     for(uint32_t i=0;i<h.deps;++i){
       if(h.metaBytes-pos<recordBytes)return false;
       uint32_t fields[3];memcpy(fields,meta.get()+pos,sizeof(fields));pos+=sizeof(fields);
       CacheDependency dep;dep.size=fields[1];dep.mtime=fields[2];
-      if(!legacy){memcpy(dep.digest,meta.get()+pos,sizeof(dep.digest));pos+=sizeof(dep.digest);}
+      if(!v1){memcpy(dep.digest,meta.get()+pos,sizeof(dep.digest));pos+=sizeof(dep.digest);}
       if(fields[0]>h.metaBytes-pos||!reader_cache::validResource((char*)meta.get()+pos,fields[0])||(!directory&&fields[0]))return false;
       dep.name=String((char*)meta.get()+pos,fields[0]);
       if(dep.name.length()!=fields[0])return false;
       pos+=fields[0];dependencies.push_back(dep);
     }
-    if(pos!=h.metaBytes||!unchanged(legacy)){dependencies.clear();return false;}
+    if(pos!=h.metaBytes||!unchanged(v1)){dependencies.clear();return false;}
     uint32_t offset=0;
     if(prefs.isKey(h.bookmark)){
       offset=prefs.getUInt(h.bookmark,UINT32_MAX);
@@ -203,7 +204,7 @@ private:
     if(offset>=h.textBytes){if(legacy)return false;offset=0;}
     bookLength=h.textBytes;book[bookLength]=0;pageOffsets.swap(offsets);
     bookmarkKey=h.bookmark;bookIdentity=source;savedOffset=offset;
-    if(!legacy)prepareReaderFont();
+    if(!legacy){bookEnglishHyphens=h.layout==reader_cache::LAYOUT;prepareReaderFont();}
     auto page=std::upper_bound(pageOffsets.begin(),pageOffsets.end(),offset);
     pageNumber=page==pageOffsets.begin()?0:page-pageOffsets.begin()-1;
     Serial.printf(legacy?"CACHE_LEGACY bytes=%u pages=%u\n":"CACHE_HIT bytes=%u pages=%u\n",h.textBytes,h.pages);
@@ -216,7 +217,7 @@ private:
     if(!f||f.read((uint8_t*)&h,sizeof(h))!=sizeof(h))return false;
     if(expected&&memcmp(&h,expected,sizeof(h)))return false;
     if(!reader_cache::validHeader(h,f.size(),MAX_BOOK,sourceHash,directory)&&
-       !reader_cache::validLegacyHeader(h,f.size(),MAX_BOOK,sourceHash,directory))return false;
+       !reader_cache::validMigrationHeader(h,f.size(),MAX_BOOK,sourceHash,directory))return false;
     Buffer bytes=buffer();if(!bytes)return false;
     mbedtls_sha256_context sha;
     mbedtls_sha256_init(&sha);mbedtls_sha256_starts_ret(&sha,0);
