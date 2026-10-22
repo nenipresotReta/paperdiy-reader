@@ -4,7 +4,9 @@
 `reader` shares pagination and drawing metrics; `sd_reader` handles discovery;
 `epub_core` imports text; `sd_cache` validates persisted text and page offsets.
 
-The public build generates both font sizes from a pinned OFL font. No local
+The public source includes the generated 24/28 px bitmap subset of the pinned
+OFL Noto Serif CJK font (`src/native_font_data.h`); regenerate it with
+`python tools/build_fonts.py` only when the repertoire or metrics change. No local
 font discovery, book corpus, network service, or shutdown artwork is required.
 Layout changes must bump `reader_cache::LAYOUT`. Bookmarks use byte offsets;
 when extraction changes, migrate a context anchor from the validated old cache
@@ -52,8 +54,8 @@ updates with the same partition table preserve NVS; do not erase flash or change
 book paths if you want to retain progress. SD books are never rewritten.
 
 Hardware acceptance: verify SD mounting, page turns, charging-only LED,
-A+B shutdown, and boot resume. Panel ghosting and power behavior need a real
-device; native tests cannot validate those effects.
+A+B shutdown, boot screen restore, and the loading indicator. Panel ghosting
+and power behavior need a real device; native tests cannot validate those effects.
 The [idle power design](power.md) separates the pinned SDK source review from
 completed basic device checks from remaining stress tests and electrical measurements.
 
