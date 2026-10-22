@@ -2,8 +2,6 @@
 
 M5Stack PaperDIY 的离线 EPUB / TXT 阅读器。基于 ESP32-S3、540×960 电子纸和 A/B 两键，运行时不使用 Wi-Fi 或蓝牙。
 
-当前为 **0.2.1-dev 测试快照**。
-
 ## 特性
 
 - 离线阅读 EPUB / UTF-8 TXT，支持解包的 `.epub` 目录
@@ -132,7 +130,6 @@ python -m esptool --chip esp32s3 --port PORT --baud 921600 \
 - 最多 256 本；单本 EPUB ≤64 MiB；提取正文 ≤4 MiB
 - 未覆盖字符显示占位符
 - N 的网络功能（AP / Web UI）尚未实现，当前仅为占位开关
-- 电子纸残影和功耗表现需要真机验证
 
 ## License
 
