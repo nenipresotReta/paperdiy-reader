@@ -4,15 +4,16 @@
 namespace controls {
 enum class Action {None,Previous,Next,PreviousScreen,NextScreen,Confirm,Shutdown};
 class Buttons {
-  uint8_t held=0;uint32_t since=0,lastRepeat=0;bool repeated=false,chord=false,suppressed=false;
+  uint8_t held=0,pending=0;uint32_t since=0,lastRepeat=0,pendingAt=0;bool repeated=false,chord=false,suppressed=false;
   bool releaseGuard=false,releaseSeen=false;uint32_t releasedAt=0;
+  static constexpr uint32_t DOUBLE_MS=300;
 public:
-  bool idle() const {return !held&&!chord&&!suppressed&&!releaseGuard;}
-  void reset(uint8_t mask,uint32_t now){held=0;since=lastRepeat=now;repeated=chord=false;suppressed=mask!=0;releaseGuard=releaseSeen=false;}
+  bool idle() const {return !held&&!chord&&!suppressed&&!releaseGuard&&!pending;}
+  void reset(uint8_t mask,uint32_t now){held=0;pending=0;since=lastRepeat=pendingAt=now;repeated=chord=false;suppressed=mask!=0;releaseGuard=releaseSeen=false;}
   // After blocking work, require a continuously released interval. This also
   // lets the hardware debounce state catch up before accepting a fresh press.
   void discardUntilReleased(uint32_t now){reset(0,now);releaseGuard=true;}
-  Action update(uint8_t mask,uint32_t now,bool library){
+  Action update(uint8_t mask,uint32_t now,bool library,bool allowRepeat=true){
     if(releaseGuard){
       if(mask)releaseSeen=false;
       else if(!releaseSeen){releaseSeen=true;releasedAt=now;}
@@ -20,6 +21,12 @@ public:
       return Action::None;
     }
     if(suppressed){if(!mask)suppressed=false;return Action::None;}
+    if(pending){
+      if(now-pendingAt>DOUBLE_MS||(mask&&mask!=pending)){
+        uint8_t released=pending;pending=0;
+        return released==1?Action::Previous:Action::Next;
+      }
+    }
     if(chord){
       if(!mask){chord=false;held=0;return Action::Confirm;}
       if(mask==3&&held!=3){held=3;since=now;}
@@ -31,13 +38,23 @@ public:
     }
     if(mask==3){chord=true;held=3;since=now;return Action::None;}
     if(!held){if(mask){held=mask;since=lastRepeat=now;repeated=false;}return Action::None;}
-    if(!mask){uint8_t released=held;held=0;if(repeated)return Action::None;return released==1?Action::Previous:Action::Next;}
+    if(!mask){
+      uint8_t released=held;held=0;
+      if(repeated)return Action::None;
+      if(library){
+        if(pending==released&&now-pendingAt<=DOUBLE_MS){
+          pending=0;
+          return released==1?Action::PreviousScreen:Action::NextScreen;
+        }
+        pending=released;pendingAt=now;return Action::None;
+      }
+      return released==1?Action::Previous:Action::Next;
+    }
     if(mask!=held){held=mask;since=lastRepeat=now;repeated=false;return Action::None;}
     uint32_t elapsed=now-since;
-    uint32_t interval=library&&elapsed>=1400?500:350;
-    if(elapsed>=600&&(!repeated||now-lastRepeat>=interval)){
+    if(elapsed>=600&&(!repeated||now-lastRepeat>=350)){
+      if(!allowRepeat)return Action::None;
       repeated=true;lastRepeat=now;
-      if(library&&elapsed>=1400)return held==1?Action::PreviousScreen:Action::NextScreen;
       return held==1?Action::Previous:Action::Next;
     }
     return Action::None;
