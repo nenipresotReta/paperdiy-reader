@@ -50,6 +50,9 @@ class FontGenerationTests(unittest.TestCase):
     def test_vertical_two_em_symbols_are_explicitly_unsupported(self):
         self.assertTrue(set(range(0x3031, 0x3036)).isdisjoint(builder.repertoire()))
 
+    def test_traditional_supplement_is_in_fixed_repertoire(self):
+        self.assertTrue({0x8aaa, 0x5167, 0x773e, 0x2934} <= builder.repertoire())
+
     def test_atomic_write_failure_preserves_previous_file(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "font.h"
