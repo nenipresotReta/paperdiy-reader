@@ -6,9 +6,19 @@
 static RefreshPolicy policy;
 static bool full;
 static uint32_t started;
+static int normalRotation=0;
 void displayInit(){
-  M5.Display.setRotation(0);if(M5.Display.width()!=540)M5.Display.setRotation(1);
+  M5.Display.setRotation(0);normalRotation=0;
+  if(M5.Display.width()!=540){M5.Display.setRotation(1);normalRotation=1;}
   M5.Display.setAutoDisplay(false);
+}
+void displaySetRotated(bool rotated){
+  // The panel's base portrait rotation is 0 or 1. A 180-degree flip is the
+  // same relative rotation; using the base avoids depending on the absolute
+  // M5GFX rotation index of this panel.
+  int target=(normalRotation+(rotated?2:0))%4;
+  M5.Display.setRotation(target);
+  Serial.printf("DISPLAY_ROTATION base=%d target=%d size=%dx%d\n",normalRotation,target,M5.Display.width(),M5.Display.height());
 }
 bool beginRefresh(bool sceneChange,bool reading){
   powerActivity();

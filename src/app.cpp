@@ -11,16 +11,21 @@
 #if defined(PAPERDIY_DIAGNOSTICS) && defined(PAPERDIY_DEVICE_TESTS)
 #include "../tests/device_epub.h"
 #include "../tests/device_power.h"
+#include "../tests/device_typography.h"
 #endif
 namespace {
-enum class Screen {Library,Reading,Loading,Error};
+enum class Screen {Library,Reading,Loading,Error,Settings};
 Screen screen=Screen::Library;
 controls::Buttons buttons;
 uint32_t errorUntil=0,lastBatteryRefresh=0;
 uint32_t lastCardCheck=0;
 int cardLevel=HIGH,pendingCardLevel=HIGH;
 bool shutdownRequested=false;
-uint8_t keyMask(){return (M5.BtnA.isPressed()?1:0)|(M5.BtnB.isPressed()?2:0);}
+uint8_t keyMask(){
+  uint8_t mask=(M5.BtnA.isPressed()?1:0)|(M5.BtnB.isPressed()?2:0);
+  if(settingsRotated)mask=uint8_t(((mask&1)?2:0)|((mask&2)?1:0));
+  return mask;
+}
 void discardLoadingInput(bool acceptPowerRequest=true){
   M5.update();buttons.discardUntilReleased(millis());
 #ifdef PAPERDIY_DIAGNOSTICS
@@ -51,15 +56,20 @@ void shutdown(){
     }
     Serial.printf("RESUME_SAVED book=%s page=%u offset=%u\n",bookIdentity.c_str(),(unsigned)pageNumber+1,offset);
   }
+  uint32_t bootCode=screen==Screen::Reading?1:screen==Screen::Settings?2:0;
+  prefs.putUInt("bootScr",bootCode);
+  prefs.putUInt("selBook",selectedBook);
+  prefs.putUInt("selSet",settingsSelected?1:0);
   showShutdownOverlay();
 #if defined(PAPERDIY_DIAGNOSTICS) && defined(PAPERDIY_DEVICE_TESTS)
   devicePowerFinish();
 #endif
-  SD.end();prefs.end();
+  SD.end();saveBatteryHistory();prefs.end();
   Serial.println("SHUTDOWN display_complete=1");Serial.flush();
   M5.Power.powerOff();
 }
 void openSelected(){
+  if(settingsSelected){screen=Screen::Settings;showSettings(true);return;}
   if(!leaveReading())return;
   if(!sdOK){showLoading();scanSD();library();discardLoadingInput();return;}
   if(selectedBook>=sdBooks.size())return;
@@ -73,12 +83,30 @@ void dispatch(controls::Action action){
   if(action==Action::None||screen==Screen::Loading)return;
   powerActivity();
   if(action==Action::Shutdown){Serial.println("SHUTDOWN_TRIGGER keys=A+B");shutdown();return;}
+  if(screen==Screen::Settings){
+    if(action==Action::Confirm){library();return;}
+    if(action==Action::Previous){
+      settingsNetwork=!settingsNetwork;updateSettingsNetwork();return;
+    }
+    if(action==Action::Next){
+      settingsRotated=!settingsRotated;
+      prefs.putUInt("rot180",settingsRotated?1:0);
+      displaySetRotated(settingsRotated);
+      showSettings(true);return;
+    }
+    return;
+  }
   if(screen==Screen::Error){library();return;}
   if(action==Action::Confirm){if(screen==Screen::Library)openSelected();else library();return;}
   int direction=(action==Action::Previous||action==Action::PreviousScreen)?-1:1;
   if(screen==Screen::Library){
-    size_t old=selectedBook;bool whole=action==Action::PreviousScreen||action==Action::NextScreen;
-    selectedBook=controls::moveSelection(selectedBook,sdBooks.size(),direction,whole);updateLibrarySelection(old);
+    size_t old=selectedBook;bool oldSettings=settingsSelected;
+    size_t cursor=settingsSelected?0:selectedBook+1;
+    bool whole=action==Action::PreviousScreen||action==Action::NextScreen;
+    cursor=controls::moveSelection(cursor,sdBooks.size()+1,direction,whole);
+    settingsSelected=cursor==0;
+    selectedBook=cursor?cursor-1:0;
+    updateLibrarySelection(old,oldSettings);
   }else if(screen==Screen::Reading&&!pageOffsets.empty()){
     uint32_t before=pageNumber;
     if(direction<0&&pageNumber>0)--pageNumber;
@@ -93,15 +121,17 @@ void diagnosticCommand(const String& line){
   using controls::Action;
 #ifdef PAPERDIY_DEVICE_TESTS
   if(devicePowerCommand(line))return;
+  if(line=="TYPESET_CHECKS"){deviceTypographyChecks();return;}
   if(line=="XML_CHECKS"){deviceEpubChecks();discardLoadingInput();return;}
 #endif
   if(line=="POWER_STATUS")logIdlePowerStatus();
   else if(line=="STATUS"){
-    Serial.printf("STATUS screen=%u sd=%d files=%u selected=%u page=%u total=%u offset=%u key=%s save_failed=%d free_psram=%u stack_free=%u charging=%d\n",
+    Serial.printf("STATUS screen=%u sd=%d files=%u selected=%u page=%u total=%u offset=%u key=%s save_failed=%d free_psram=%u stack_free=%u charging=%d english_hyphens=%d settings=%d rotated=%d\n",
       unsigned(screen),sdOK,unsigned(sdBooks.size()),unsigned(selectedBook),
       unsigned(pageNumber+1),unsigned(pageOffsets.size()),
       pageOffsets.empty()?0:pageOffsets[pageNumber],bookmarkKey.c_str(),progressSaveFailed,
-      ESP.getFreePsram(),unsigned(uxTaskGetStackHighWaterMark(nullptr)),chargingNow());
+      ESP.getFreePsram(),unsigned(uxTaskGetStackHighWaterMark(nullptr)),chargingNow(),bookEnglishHyphens,
+      settingsSelected?1:0,settingsRotated?1:0);
     logDisplayStatus();
   }else if(line=="SCREEN"){
     M5.Display.waitDisplay();Serial.println("SCREEN 540 960 68");
@@ -127,7 +157,7 @@ void diagnosticCommand(const String& line){
   }else if(line.startsWith("OPEN ")){
     char* end=nullptr;const char* number=line.c_str()+5;
     unsigned long n=strtoul(number,&end,10);
-    if(end!=number&&*end==0&&n<sdBooks.size()){selectedBook=n;openSelected();}
+    if(end!=number&&*end==0&&n<sdBooks.size()){settingsSelected=false;selectedBook=n;openSelected();}
   }
 }
 void diagnostics(){
@@ -160,26 +190,51 @@ void appSetup(){
   Serial.begin(115200);delay(300);
   auto cfg=M5.config();cfg.clear_display=false;cfg.internal_imu=false;cfg.internal_rtc=false;cfg.internal_mic=false;cfg.internal_spk=false;
   cfg.pmic_button=true;cfg.fallback_board=m5::board_t::board_M5PaperDIY;M5.begin(cfg);displayInit();
-  Serial.printf("BOOT PaperDIY-Reader 0.2.0 board=%d screen=%dx%d psram=%u network=off\n",M5.getBoard(),M5.Display.width(),M5.Display.height(),ESP.getPsramSize());
+  Serial.printf("BOOT PaperDIY-Reader 0.2.1-dev board=%d screen=%dx%d psram=%u network=off\n",M5.getBoard(),M5.Display.width(),M5.Display.height(),ESP.getPsramSize());
   if(M5.getBoard()!=m5::board_t::board_M5PaperDIY||M5.Display.width()!=540||M5.Display.height()!=960){Serial.println("FATAL board/display mismatch");while(true)delay(1000);}
   // Keep the original namespace and bookmark keys: app-only upgrades preserve progress.
   initializeProgress();book=(char*)ps_malloc(MAX_BOOK+1);heap_caps_malloc_extmem_enable(2048);
+  settingsNetwork=false;settingsSelected=false;
+  settingsRotated=prefs.getUInt("rot180",0)!=0;
+  displaySetRotated(settingsRotated);
   updatePowerIndicator(true);
   if(!book){showError("Not enough memory");while(true)delay(1000);}
+  showLoading();
   scanSD();
   cardLevel=pendingCardLevel=digitalRead(48);
   String lastBook=prefs.getString("sdLast","");
-  bool canResume=sdOK&&!lastBook.isEmpty()&&selectedBook<sdBooks.size()&&sdBooks[selectedBook]==lastBook;
-  if(canResume){
+  size_t lastIndex=sdBooks.size();
+  for(size_t i=0;i<sdBooks.size();++i)if(sdBooks[i]==lastBook){lastIndex=i;break;}
+  bool canResume=sdOK&&!lastBook.isEmpty()&&lastIndex<sdBooks.size();
+  uint32_t bootCode=prefs.getUInt("bootScr",0);
+  auto restoreLibrarySelection=[&](){
+    uint32_t savedBook=prefs.getUInt("selBook",lastIndex<sdBooks.size()?lastIndex:0);
+    bool savedSet=prefs.getUInt("selSet",0)!=0;
+    if(savedBook>=sdBooks.size()){savedBook=0;savedSet=false;}
+    if(savedSet){selectedBook=0;settingsSelected=true;}
+    else {selectedBook=savedBook;settingsSelected=false;}
+  };
+  if(bootCode==1&&canResume){
+    selectedBook=lastIndex;
     // Keep the physical sleep image visible while loading; only the footer
     // busy icon is refreshed, then the original reading page replaces it.
     screen=Screen::Loading;showLoading();
     Serial.printf("BOOT_RESUME_BEGIN book=%s\n",lastBook.c_str());
-    if(openSD(selectedBook)){
+    if(openSD(lastIndex)){
       screen=Screen::Reading;saveReadingProgress();showBook(true);
       Serial.printf("BOOT_RESUMED page=%u offset=%u\n",(unsigned)pageNumber+1,pageOffsets[pageNumber]);
-    }else {Serial.printf("BOOT_RESUME_FAILED error=%s\n",sdError.c_str());library();}
-  }else library();
+    }else {
+      Serial.printf("BOOT_RESUME_FAILED error=%s\n",sdError.c_str());
+      restoreLibrarySelection();screen=Screen::Library;showLibrary(true);
+    }
+  }else if(bootCode==2){
+    restoreLibrarySelection();settingsSelected=true;
+    screen=Screen::Settings;showSettings(true);
+    Serial.println("BOOT_SCREEN settings");
+  }else{
+    restoreLibrarySelection();screen=Screen::Library;showLibrary(true);
+    Serial.printf("BOOT_SCREEN library selected=%u settings=%d\n",(unsigned)selectedBook,settingsSelected?1:0);
+  }
   discardLoadingInput(false);lastBatteryRefresh=millis();
   M5.Power.M5pm1.clearButtonIRQStatus();
   bool keyEnabled=M5.Power.M5pm1.setButtonIRQMaskBits(0);
@@ -191,7 +246,7 @@ void appLoop(){
   if(rawPowerKeys())powerActivity();
   M5.update();updatePowerIndicator();
   if(shutdownRequested||M5.BtnPWR.wasClicked()){Serial.println("SHUTDOWN_TRIGGER pmic=1");shutdown();return;}
-  auto action=buttons.update(keyMask(),millis(),screen==Screen::Library);
+  auto action=buttons.update(keyMask(),millis(),screen==Screen::Library,screen!=Screen::Settings);
 #if defined(PAPERDIY_DIAGNOSTICS) && defined(PAPERDIY_DEVICE_TESTS)
   devicePowerAction(action);
 #endif
@@ -200,7 +255,7 @@ void appLoop(){
     lastCardCheck=millis();int level=digitalRead(48);
     if(level!=cardLevel)powerActivity();
     if(level==pendingCardLevel&&level!=cardLevel){
-      cardLevel=level;sdOK=false;SD.end();sdBooks.clear();selectedBook=0;
+      cardLevel=level;sdOK=false;SD.end();sdBooks.clear();selectedBook=0;settingsSelected=false;
       if(screen==Screen::Library){
         if(level==LOW){showLoading();scanSD();}
         showLibrary();discardLoadingInput();
@@ -216,6 +271,6 @@ void appLoop(){
   devicePowerPoll();
 #endif
 #endif
-  idlePower((screen==Screen::Library||screen==Screen::Reading)&&
+  idlePower((screen==Screen::Library||screen==Screen::Reading||screen==Screen::Settings)&&
       pendingCardLevel==cardLevel,buttons.idle(),cardLevel);
 }
