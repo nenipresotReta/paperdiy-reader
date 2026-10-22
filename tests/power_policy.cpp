@@ -107,7 +107,7 @@ void holdAndChordAfterSleep() {
   assert(buttons.update(2, 2599, true) == Action::None);
   assert(buttons.update(2, 2600, true) == Action::Next);
   assert(!buttons.idle());
-  assert(buttons.update(2, 3400, true) == Action::NextScreen);
+  assert(buttons.update(2, 3400, true) == Action::Next);
   expect(policy.plan(4000, withButtons(buttons)), false, false);
   assert(buttons.update(0, 4010, true) == Action::None);
   assert(buttons.idle());
@@ -161,7 +161,10 @@ void loadingReleaseGuard() {
   assert(buttons.idle());
   expect(policy.plan(3420, withButtons(buttons)), true, true);
   assert(buttons.update(2, 3500, true) == Action::None);
-  assert(buttons.update(0, 3600, true) == Action::Next);
+  assert(buttons.update(0, 3600, true) == Action::None);
+  assert(!buttons.idle());
+  assert(buttons.update(0, 3901, true) == Action::Next);
+  assert(buttons.idle());
 
   buttons.discardUntilReleased(UINT32_MAX - 100);
   assert(buttons.update(0, UINT32_MAX - 100, true) == Action::None);
