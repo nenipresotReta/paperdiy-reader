@@ -10,6 +10,7 @@
 #include "display_driver.h"
 #include "power.h"
 #include "ui.h"
+#include "shutdown_art.h"
 #ifdef PAPERDIY_SHUTDOWN_HEADER
 #include PAPERDIY_SHUTDOWN_HEADER
 #endif
@@ -317,15 +318,17 @@ void saveBatteryHistory(){
 void showShutdownOverlay(){
   beginRefresh(false);
   // Leave a dimmed page and a hollow status icon; no shutdown artwork.
-  constexpr uint8_t keepRows[4]={0b1010,0b0101,0b1010,0b0101};
+  // Ordered monochrome dimming; 50% preserves the original checkerboard.
   for(int y=0;y<960;++y){
-    for(int x=0;x<540;++x)if(!(keepRows[y&3]&(1u<<(x&3))))M5.Display.drawPixel(x,y,TFT_WHITE);
+    for(int x=0;x<540;++x)if(!reader_settings::keepInk(x,y))M5.Display.drawPixel(x,y,TFT_WHITE);
   }
   M5.Display.fillRect(504,928,28,28,TFT_WHITE);
   M5.Display.drawCircle(518,942,7,TFT_BLACK);
+  if(reader_settings::current().art!=3&&!drawStoredShutdownArt()){
 #ifdef PAPERDIY_SHUTDOWN_HEADER
   // Optional local artwork is supplied outside the source repository.
   M5.Display.drawBitmap(540-SHUTDOWN_W,960-SHUTDOWN_H,SHUTDOWN_MASK,SHUTDOWN_W,SHUTDOWN_H,TFT_BLACK);
 #endif
+  }
   endRefresh("shutdown-overlay",0,0,540,960);
 }
