@@ -223,6 +223,12 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
+Host tests compile a generated copy of the pinned M5GFX miniz source with its
+portable byte-read path, matching ESP32 behavior. The upstream x86 path forces
+unaligned typed reads that UBSan correctly rejects. The original dependency is
+unchanged; ASan/UBSan stay enabled and undefined behavior stops the test process.
+CMake checks the expected upstream define before applying this host-only change.
+
 Native tests require CMake, a C/C++17 compiler, Node.js 18+ and OpenSSL headers
 (`libssl-dev` on Ubuntu; `brew install openssl@3 cmake node` on macOS).
 On macOS, pass `-DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"` if needed.
