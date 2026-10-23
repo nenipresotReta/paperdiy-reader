@@ -12,7 +12,7 @@ inline uint8_t navigationMask(uint8_t physicalMask,bool rotated,bool settings){
 class Buttons {
   uint8_t held=0,pending=0;uint32_t since=0,lastRepeat=0,pendingAt=0;bool repeated=false,chord=false,suppressed=false;
   bool releaseGuard=false,releaseSeen=false;uint32_t releasedAt=0;
-  static constexpr uint32_t DOUBLE_MS=300;
+  static constexpr uint32_t DOUBLE_MS=200;
 public:
   bool idle() const {return !held&&!chord&&!suppressed&&!releaseGuard&&!pending;}
   void reset(uint8_t mask,uint32_t now){held=0;pending=0;since=lastRepeat=pendingAt=now;repeated=chord=false;suppressed=mask!=0;releaseGuard=releaseSeen=false;}
