@@ -17,7 +17,7 @@ const path = require('node:path');
 const { test } = require('node:test');
 const vm = require('node:vm');
 
-const sourcePath = path.join(__dirname, '..', 'src', 'network.cpp');
+const sourcePath = path.join(__dirname, '..', 'src', 'web_page.h');
 const firmwareSource = fs.readFileSync(sourcePath, 'utf8');
 const page = firmwareSource.match(/const char INDEX_HTML\[\] PROGMEM = R"HTML\(([\s\S]*?)\)HTML";/);
 assert.ok(page, 'production INDEX_HTML must be present');
