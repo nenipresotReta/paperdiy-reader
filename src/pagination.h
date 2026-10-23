@@ -214,13 +214,17 @@ Line line(const char* text, size_t length, size_t from, Geometry g,
         int hang = w;
         size_t runEnd = p + n;
         size_t q = p + n;
-        while (q < length) {
+        unsigned examined = 0;
+        // Once the margin is exceeded, later nonnegative advances cannot make
+        // the run fit. Scanning its remaining suffix at every line is quadratic.
+        while (q < length && (g.hangLimit <= 0 || hang <= g.hangLimit)) {
           size_t qn = utf8Bytes(text + q, length - q);
           uint32_t qc = codepoint(text + q, qn);
           if (!closing(qc)) break;
           hang += advance(text + q, qn, qc, width);
           runEnd = q + qn;
           q += qn;
+          if ((++examined & 255) == 0) tick();
         }
         if (g.hangLimit <= 0 || hang <= g.hangLimit) {
           current.end = current.next = runEnd;
@@ -229,7 +233,11 @@ Line line(const char* text, size_t length, size_t from, Geometry g,
           while (next < length) {
             size_t nn = utf8Bytes(text + next, length - next);
             uint32_t nc = codepoint(text + next, nn);
-            if (space(nc) || nc == '\r') { next += nn; continue; }
+            if (space(nc) || nc == '\r') {
+              next += nn;
+              if ((++examined & 255) == 0) tick();
+              continue;
+            }
             break;
           }
           if (next >= length) { current.next = length; current.paragraphEnd = true; }

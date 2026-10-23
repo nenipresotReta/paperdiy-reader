@@ -5,7 +5,7 @@ Use the firmware archive attached to the matching [GitHub release](https://githu
 It contains only the public application binary, checksums, instructions and licenses.
 The public build has no shutdown artwork, books, bookmarks, device backup or diagnostic commands.
 
-## Upgrade from v0.1.0
+## Upgrade an existing reader
 
 The `*-app.bin` is an **application-only upgrade**, for this reader with the
 unchanged partition table in [`partitions.csv`](../partitions.csv).
@@ -14,13 +14,13 @@ instructions in the README instead.
 
 1. Unzip the release archive and verify its contents with `shasum -a 256 -c SHA256SUMS`
    (Linux: `sha256sum -c SHA256SUMS`).
-2. Connect the reader by USB. Install esptool in your Python environment and put
+2. Connect the reader by USB. Install `esptool==5.6.0` in your Python environment and put
    the board into download mode if automatic reset cannot connect.
 3. Select this reader's serial port and write only its application partition:
 
 ```sh
-python -m esptool --chip esp32s3 --port PORT --baud 921600 \
-  write-flash 0x10000 paperdiy-reader-v0.2.0-app.bin
+python -m esptool --chip esp32s3 --port PORT --baud 460800 \
+  write-flash 0x10000 paperdiy-reader-v0.3.0-app.bin
 ```
 
 Do not erase flash or overwrite NVS. Keep the SD card's book paths unchanged.
