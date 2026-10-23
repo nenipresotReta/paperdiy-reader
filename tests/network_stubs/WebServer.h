@@ -100,9 +100,8 @@ class WebServer {
     if(cookie.length())requestHeaders["Cookie"]=cookie;
   }
   void invoke(const char* path,HTTPMethod method=HTTP_GET){
-    auto found=routes.find(path);
-    if(found==routes.end()||(found->second.method!=HTTP_ANY&&found->second.method!=method)){if(fallback)fallback();return;}
-    found->second.handler();
+    for(const auto& handler:handlers_)if(handler->canHandle(method,path)){handler->action();return;}
+    if(fallback)fallback();
   }
   void uploadEvent(HTTPUploadStatus status,const String& filename="",size_t bytes=0){
     uploadState.status=status;

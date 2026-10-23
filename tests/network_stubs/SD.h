@@ -23,6 +23,7 @@ class File {
   const char* path()const{return path_.c_str();}
   uint64_t size()const{return node_?node_->size:0;}
   size_t write(const uint8_t* bytes,size_t count);
+  size_t read(uint8_t* out,size_t count){if(!*this)return 0;count=std::min(count,node_->bytes.size()-std::min(readAt_,node_->bytes.size()));memcpy(out,node_->bytes.data()+readAt_,count);readAt_+=count;return count;}
   void flush(){}
   void close(){if(open_&&node_){--node_->openHandles;open_=false;}}
   File openNextFile();
@@ -31,7 +32,7 @@ class File {
   std::string path_,name_;
   std::shared_ptr<MockNode> node_;
   bool open_=false;
-  size_t iterator_=0;
+  size_t iterator_=0,readAt_=0;
   std::vector<std::string> children_;
 };
 struct MockSD {
@@ -83,7 +84,7 @@ inline size_t File::write(const uint8_t* bytes,size_t count){
  if(!*this||!owner_->mounted||owner_->failWrite)return 0;
  if(count>owner_->capacity-owner_->used)return 0;
  // Retain small file contents; large size-limit cases need byte counts only.
- size_t retain=std::min(count,size_t(8192)-std::min(node_->bytes.size(),size_t(8192)));
+ size_t retain=std::min(count,size_t(131072)-std::min(node_->bytes.size(),size_t(131072)));
  node_->bytes.insert(node_->bytes.end(),bytes,bytes+retain);
  node_->size+=count;owner_->used+=count;return count;
 }
