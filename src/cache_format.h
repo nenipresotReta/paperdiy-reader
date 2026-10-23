@@ -4,11 +4,22 @@
 #include <cstring>
 namespace reader_cache {
 constexpr uint32_t MAGIC=0x31434450, VERSION=2;
-// Bump both identifiers together when font, geometry, wrapping, or EPUB text
-// extraction changes; old caches then migrate through a read-only path.
-constexpr uint32_t LAYOUT=0x20261036, LAYOUT_NO_HYPHENS=0x20261037;
-inline uint32_t layoutFor(bool englishHyphens) { return englishHyphens ? LAYOUT : LAYOUT_NO_HYPHENS; }
-inline bool currentLayout(uint32_t value) { return value==LAYOUT || value==LAYOUT_NO_HYPHENS; }
+// Low bits encode independent P/S settings and the text mode. Bump the
+// family for any other geometry/extraction change; old text remains readable
+// for bookmark migration, but its page offsets must never be a cache hit.
+constexpr uint32_t LAYOUT_BASE=0x20261050;
+constexpr uint32_t LAYOUT=LAYOUT_BASE|3,LAYOUT_NO_HYPHENS=LAYOUT_BASE|7,LAYOUT_MARKDOWN=LAYOUT_BASE|11;
+inline uint32_t layoutFor(bool englishHyphens,bool markdown=false,uint8_t style=3) {
+  return LAYOUT_BASE|(markdown?8u:englishHyphens?0u:4u)|(style&3u);
+}
+inline bool currentLayout(uint32_t value) {
+  return (value&~15u)==LAYOUT_BASE&&(value&12u)!=12u;
+}
+inline bool markdownLayout(uint32_t value){return currentLayout(value)&&(value&12u)==8u;}
+inline bool englishHyphens(uint32_t value){return currentLayout(value)&&(value&12u)!=4u;}
+inline bool matchesLayout(uint32_t value,bool markdown,uint8_t style){
+  return currentLayout(value)&&markdownLayout(value)==markdown&&(value&3u)==(style&3u);
+}
 constexpr uint32_t MAX_DEPS=4096,MAX_META=512*1024,MAX_PAGES=65536;
 constexpr uint32_t DEP_BYTES=12+32, LEGACY_DEP_BYTES=12;
 struct Header {
@@ -36,7 +47,7 @@ inline bool validLegacyHeader(const Header& h,uint64_t fileSize,size_t capacity,
 }
 inline bool validMigrationHeader(const Header& h,uint64_t size,size_t capacity,const uint8_t source[32],bool directory){
   return validLegacyHeader(h,size,capacity,source,directory) ||
-    (h.version==2 && !currentLayout(h.layout) && h.bookmark[0]=='c' &&
+    (h.version==2 && h.bookmark[0]=='c' &&
      h.metaBytes>=uint64_t(h.deps)*DEP_BYTES && validEnvelope(h,size,capacity,source,directory));
 }
 inline bool validOffsets(const uint32_t* offsets,size_t count,size_t bytes){

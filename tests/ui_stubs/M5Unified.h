@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -27,6 +28,7 @@ class SimDisplay {
   bool lastFull = false;
   unsigned refreshCount = 0;
   int cursorX = 0, cursorY = 0;
+  int rotation = 0;
   uint32_t textFg = TFT_BLACK;
 
   SimDisplay() : fb(W * H, 255), panel(W * H, 255) {}
@@ -152,7 +154,12 @@ class SimDisplay {
 
   int width() const { return W; }
   int height() const { return H; }
-  void setRotation(int) {}
+  void setRotation(int value) {
+    // This portrait-only fake models the two orientations used by the reader.
+    assert(value == 0 || value == 2);
+    if (value != rotation) std::reverse(fb.begin(), fb.end());
+    rotation = value;
+  }
   void setAutoDisplay(bool) {}
   void waitDisplay() {}
   void setEpdMode(epd_mode_t) {}
@@ -172,8 +179,11 @@ class SimDisplay {
     const int x0 = std::max(0, x), x1 = std::min(W, x + w);
     const int y0 = std::max(0, y), y1 = std::min(H, y + h);
     for (int row = y0; row < y1; ++row)
-      std::copy(fb.begin() + row * W + x0, fb.begin() + row * W + x1,
-                panel.begin() + row * W + x0);
+      for (int column = x0; column < x1; ++column) {
+        const int px = rotation == 2 ? W - 1 - column : column;
+        const int py = rotation == 2 ? H - 1 - row : row;
+        panel[py * W + px] = fb[row * W + column];
+      }
   }
 };
 

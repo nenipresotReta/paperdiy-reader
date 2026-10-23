@@ -17,5 +17,10 @@ size_t layoutPage(size_t from,bool draw,int top=24);
 bool indexBook(bool reset=false,bool migrateLegacy=true,const bookmarks::Anchor* anchor=nullptr,bool requireRecovery=false);
 bool initializeProgress();
 bool saveReadingProgress();
+// A successful import/cache load publishes the exact saved source offset.
+void retainReadingAnchor(uint32_t offset);
+// UINT32_MAX means no current readable page; normal redraw does not move it.
+uint32_t currentReadingOffset();
 extern bool progressSaveFailed;
 extern bool bookEnglishHyphens;
+extern bool bookMarkdown,bookMarkupFallback;

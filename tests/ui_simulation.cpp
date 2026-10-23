@@ -12,6 +12,8 @@
 #include "sd_reader.h"
 #include "ui.h"
 #include "display_driver.h"
+#include "reader_typography.h"
+#include "markdown_samples.h"
 
 std::vector<String> sdBooks;
 bool sdOK = true;
@@ -36,6 +38,7 @@ int readerGlyphWidth(uint32_t codepoint) {
 int bodyGlyphAdvance(uint32_t codepoint) {
   return reader_font::glyphAdvance(reader_font::FONT_28, codepoint);
 }
+const reader_font::Glyph* bodyGlyph(uint32_t cp) { return reader_font::findGlyph(reader_font::FONT_28,cp); }
 bool readerFontHasGlyph(uint32_t codepoint) {
   return reader_font::hasGlyph(reader_font::FONT_24, codepoint);
 }
@@ -43,7 +46,11 @@ bool bodyFontHasGlyph(uint32_t codepoint) {
   return reader_font::hasGlyph(reader_font::FONT_28, codepoint);
 }
 
+struct CodeGlyph { uint32_t cp; int x,y; };
+bool captureCodeGlyphs=false;
+std::vector<CodeGlyph> capturedCodeGlyphs;
 void drawReaderGlyph(const char* text, size_t bytes, int x, int y, uint32_t foreground) {
+  if(captureCodeGlyphs)capturedCodeGlyphs.push_back({readerCodepoint(text,bytes),x,y});
   reader_font::drawGlyphRuns(reader_font::FONT_24, readerCodepoint(text, bytes), x, y,
     [&](int left, int top, int count) {
       M5.Display.drawFastHLine(left, top, count, foreground);
@@ -63,7 +70,8 @@ void powerActivity() {}
 namespace {
 std::vector<char> textBuffer;
 
-void loadBook(const std::string& text) {
+void loadBook(const std::string& text, bool markdown=false) {
+  bookMarkdown=markdown;bookMarkupFallback=false;
   textBuffer.assign(text.begin(), text.end());
   textBuffer.push_back(0);
   book = textBuffer.data();
@@ -221,7 +229,7 @@ int main() {
   // reaches 522, so the clip and refresh must include the 30 px hang zone.
   std::string hang;
   for (int i = 0; i < 17; ++i) hang += "中";
-  hang += "t？\n";
+  hang += "-？\n";
   for (int i = 0; i < 20; ++i) hang += "Second page line with ordinary words. ";
   loadBook(hang);
   showBook(true);
@@ -251,5 +259,61 @@ int main() {
   assert(M5.Display.panel[910 * 540 + 530] == 255);
   assert(M5.Display.panel[910 * 540 + 538] == 255);
 
+  // Protect prose, italic and formula pixels while code deliberately uses its
+  // actual native advance rather than a padded 24 px cell. An independent
+  // old-width render reproduced 0x5d7e6107fc773c9a; its only changed pixels were
+  // this fixture's second-page code area (y >= 529), with offsets still 0/807.
+  std::string asciiSource="## ASCII typography\n\n";
+  for(unsigned pass=0;pass<6;++pass)asciiSource+="A quiet observer checks 0123456789, **bold words**, *italic words*, and a link [label](https://example.invalid). Mixed 中文 and Ελληνικά remain unchanged. Inline $x_1+2$ shares the baseline.\n\n";
+  asciiSource+="```\n";for(unsigned cp=32;cp<=126;++cp)asciiSource+=char(cp);asciiSource+="\n```\n";
+  loadBook(asciiSource,true);
+  assert(bookMarkdown && !bookMarkupFallback);
+  assert(pageOffsets==std::vector<uint32_t>({0,807}));
+  uint64_t asciiRasterHash=1469598103934665603ULL,proseRasterHash=asciiRasterHash;
+  capturedCodeGlyphs.clear();captureCodeGlyphs=true;
+  for(size_t i=0;i<pageOffsets.size();++i){
+    M5.Display.fillScreen(TFT_WHITE);
+    assert(layoutPage(pageOffsets[i],true)==(i+1<pageOffsets.size()?pageOffsets[i+1]:bookLength));
+    for(size_t pixel=0;pixel<M5.Display.fb.size();++pixel){
+      asciiRasterHash=(asciiRasterHash^M5.Display.fb[pixel])*1099511628211ULL;
+      const uint8_t prose=i==1&&pixel/540>=529?255:M5.Display.fb[pixel];
+      proseRasterHash=(proseRasterHash^prose)*1099511628211ULL;
+    }
+  }
+  captureCodeGlyphs=false;
+  // This protected hash also matched the old padded-width renderer exactly.
+  assert(proseRasterHash==0xbf395a2a06ddf2caULL);
+  assert(capturedCodeGlyphs.size()==95);
+  std::vector<uint8_t> codePixels(540*960,255);
+  unsigned codeLines=0;
+  for(size_t i=0;i<capturedCodeGlyphs.size();++i){
+    const auto& glyph=capturedCodeGlyphs[i];assert(glyph.cp==32+i);
+    if(!i||glyph.y!=capturedCodeGlyphs[i-1].y){
+      assert(glyph.x==24&&glyph.y==529+int(codeLines)*40);++codeLines;
+    }else{
+      const auto& previous=capturedCodeGlyphs[i-1];
+      assert(glyph.x==previous.x+reader_font::glyphAdvance(reader_font::FONT_24,previous.cp));
+    }
+    reader_font::drawGlyphRuns(reader_font::FONT_24,glyph.cp,glyph.x,glyph.y,
+      [&](int x,int y,int count){
+        for(int column=x;column<x+count;++column)codePixels[y*540+column]=0;
+      });
+  }
+  assert(codeLines==4); // Removing artificial padding saves one code line.
+  for(size_t pixel=529*540;pixel<codePixels.size();++pixel)
+    assert(M5.Display.fb[pixel]==codePixels[pixel]);
+  assert(asciiRasterHash==0xe54177027cb05b10ULL);
+
+  // Render the production Markdown adapter with native glyphs and real math
+  // commands, including a second page after source-offset pagination.
+  loadBook(markdown_samples::mixed,true);
+  assert(bookMarkdown&&!bookMarkupFallback&&pageOffsets.size()>=2);
+  for(pageNumber=0;pageNumber<pageOffsets.size();++pageNumber){
+    showBook(pageNumber==0);
+    assert(countBlack(24,24,510,916)>500);
+    char output[80];snprintf(output,sizeof(output),"ui-simulation-markdown-%u.pgm",unsigned(pageNumber));
+    writePGM(output);
+  }
+  pageNumber=0;
   puts("UI simulation: first-page Settings, selection refresh, Settings four-glyph page, N partial, R compensation, reading hang-zone: PASS");
 }
