@@ -7,6 +7,8 @@
 #include <algorithm>
 #include "epub_core.h"
 #include "sd_cache.h"
+#include "document_format.h"
+#include "markdown_reader.h"
 #include <esp_heap_caps.h>
 bool sdOK=false;
 std::vector<String> sdBooks;
@@ -33,7 +35,7 @@ void scanDirectory(const String& path,unsigned depth){
       String lower=name;lower.toLowerCase();
       if(f.isDirectory()&&lower.endsWith(".epub")){sdBooks.push_back(full);}
       else if(f.isDirectory()&&depth<3){f.close();scanDirectory(full,depth+1);}
-      else {String lower=name;lower.toLowerCase();if(!f.isDirectory()&&(lower.endsWith(".txt")||lower.endsWith(".epub")))sdBooks.push_back(full);}
+      else if(!f.isDirectory()&&document_format::detect(name.c_str())!=document_format::Kind::Unsupported)sdBooks.push_back(full);
     }
     f.close();delay(1);
   }
@@ -69,11 +71,22 @@ bool validUtf8(const char* data,size_t size){
 }
 bool openSD(size_t index,bool paginate){
   uint32_t started=millis();pageOffsets.clear();bookLength=0;bookEnglishHyphens=false;
+  clearMarkdown();bookMarkdown=false;bookMarkupFallback=false;
   sdError="";if(index>=sdBooks.size()||!book){sdError="Book unavailable";return false;}
+  const auto format=document_format::detect(sdBooks[index].c_str());
+  bookMarkdown=format==document_format::Kind::Markdown;
   File f=SD.open(sdBooks[index]);if(!f)return sdReadFailure();
   bool directory=f.isDirectory();f.close();
   BookCache cache(sdBooks[index],directory);
-  if(cache.load()){selectedBook=index;Serial.printf("SD_OPENED %s ms=%u cached=1\n",sdBooks[index].c_str(),(unsigned)(millis()-started));return true;}
+  if(cache.load()){
+    if(bookMarkdown&&!prepareMarkdown(book,bookLength)){
+      bookMarkdown=false;bookMarkupFallback=true;
+      pageOffsets.clear();
+      if(!indexBook()){sdError="Cannot restore saved position";return false;}
+      Serial.println("MARKDOWN_FALLBACK original_source=1");
+    }
+    selectedBook=index;Serial.printf("SD_OPENED %s ms=%u cached=1\n",sdBooks[index].c_str(),(unsigned)(millis()-started));return true;
+  }
   bookmarks::Anchor anchor;
   uint32_t legacyOffset=0;
   if(cache.loadLegacyForMigration(legacyOffset)){
@@ -84,14 +97,16 @@ bool openSD(size_t index,bool paginate){
   cache.dependencies.clear();if(!directory)cache.observe("");
   f=SD.open(sdBooks[index]);if(!f)return sdReadFailure();
   Serial.println("CACHE_MISS");
-  String lower=sdBooks[index];lower.toLowerCase();bool ok=false;pageOffsets.clear();
-  if(lower.endsWith(".txt")){
+  bool ok=false;pageOffsets.clear();
+  if(format==document_format::Kind::Text||format==document_format::Kind::Markdown){
     bookEnglishHyphens=true; // Plain text uses the reader's English default.
-    bookLength=f.size();if(!bookLength||bookLength>MAX_BOOK){sdError="TXT exceeds 4 MiB / empty";return false;}
+    bookLength=f.size();if(!bookLength||bookLength>document_format::sourceLimit(format)){
+      sdError=bookMarkdown?"Markdown exceeds 1 MiB / empty":"TXT exceeds 4 MiB / empty";return false;
+    }
     ok=f.read((uint8_t*)book,bookLength)==bookLength;
     if(!ok){f.close();return sdReadFailure();}
-    if(ok&&bookLength>=3&&!memcmp(book,"\xef\xbb\xbf",3)){memmove(book,book+3,bookLength-3);bookLength-=3;}
-    if(ok&&!validUtf8(book,bookLength)){sdError="TXT must be UTF-8; convert encoding";ok=false;}
+    if(ok&&format==document_format::Kind::Text&&bookLength>=3&&!memcmp(book,"\xef\xbb\xbf",3)){memmove(book,book+3,bookLength-3);bookLength-=3;}
+    if(ok&&!validUtf8(book,bookLength)){sdError="Text must be UTF-8; convert encoding";ok=false;}
   }else{
     if(!directory&&f.size()>64*1024*1024){sdError="EPUB exceeds 64 MiB";return false;}
     epub::Importer importer;bool ioFailed=false;
@@ -131,7 +146,7 @@ bool openSD(size_t index,bool paginate){
   // Commit the migrated position before replacing its old text cache. A
   // failed NVS write must leave the legacy cache available for another try.
   bool saved=saveReadingProgress();
-  if(saved&&!cache.save())Serial.println("CACHE_SAVE_SKIPPED");
+  if(saved&&!bookMarkupFallback&&!cache.save())Serial.println("CACHE_SAVE_SKIPPED");
   selectedBook=index;Serial.printf("SD_OPENED %s ms=%u\n",sdBooks[index].c_str(),(unsigned)(millis()-started));return true;
 }
 #ifdef PAPERDIY_DIAGNOSTICS

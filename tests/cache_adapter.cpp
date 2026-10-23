@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -21,12 +22,22 @@ static size_t writeBudget=SIZE_MAX;
 static bool corruptOnFlush=false;
 static uint32_t fakeMillis=0,ioMillis=0;
 static unsigned delayCalls=0;
+static std::string watchedSource;
+static size_t sourceReadBytes=0;
+static std::function<void()> onSourceRead,onSourceStat;
+void runOnce(std::function<void()>& callback){
+ if(callback){auto action=std::move(callback);callback=nullptr;action();}
+}
 struct File {
  std::shared_ptr<std::fstream> f;std::string path;
  File()=default;
  File(std::string p,bool write):path(p){f=std::make_shared<std::fstream>(p,std::ios::binary|(write?(std::ios::in|std::ios::out|std::ios::trunc):std::ios::in));}
  explicit operator bool()const{return f&&bool(*f);}
- size_t read(uint8_t* p,size_t n){fakeMillis+=ioMillis;f->read((char*)p,n);return f->gcount();}
+ size_t read(uint8_t* p,size_t n){
+   fakeMillis+=ioMillis;f->read((char*)p,n);size_t count=f->gcount();
+   if(path==watchedSource){sourceReadBytes+=count;runOnce(onSourceRead);}
+   return count;
+ }
  size_t write(const uint8_t* p,size_t n){
    fakeMillis+=ioMillis;n=std::min(n,writeBudget);f->write((char*)p,n);
    if(writeBudget!=SIZE_MAX)writeBudget-=n;
@@ -54,7 +65,12 @@ struct Disk {
  File open(const String& p,const char* mode="r"){if(failWrite&&*mode=='w')return {};return File(root+p,*mode=='w');}
  void resetFaults(){failWrite=false;failRenames.clear();renameCalls=0;writeBudget=SIZE_MAX;corruptOnFlush=false;}
 } SD;
-int cacheStat(const char* p,struct stat* s){std::string path=p;assert(path.rfind("/sd",0)==0);return ::stat((root+path.substr(3)).c_str(),s);}
+int cacheStat(const char* p,struct stat* s){
+ std::string path=p;assert(path.rfind("/sd",0)==0);path=root+path.substr(3);
+ int result=::stat(path.c_str(),s);
+ if(path==watchedSource)runOnce(onSourceStat);
+ return result;
+}
 using mbedtls_sha256_context=SHA256_CTX;
 void mbedtls_sha256_init(mbedtls_sha256_context*){}
 void mbedtls_sha256_free(mbedtls_sha256_context*){}
@@ -76,8 +92,11 @@ struct {
 } prefs;
 bool bookEnglishHyphens=true;
 void prepareReaderFont(){}
+static uint32_t retainedOffset=UINT32_MAX,retainedPage=UINT32_MAX;
+void retainReadingAnchor(uint32_t offset){retainedOffset=offset;retainedPage=pageNumber;}
 #define stat(p,s) cacheStat(p,s)
 #include "sd_cache.h"
+namespace reader_typography {const Style style;}
 #undef stat
 void writeSource(const std::string& p,const std::string& data){std::ofstream(root+p,std::ios::binary)<<data;}
 std::string readFile(const std::string& p){std::ifstream f(root+p,std::ios::binary);return {std::istreambuf_iterator<char>(f),{}};}
@@ -101,6 +120,103 @@ void legacyFixture(BookCache& c,uint32_t layout=0x20261025,uint32_t version=1){
  SHA256_CTX sha;SHA256_Init(&sha);SHA256_Update(&sha,&h,offsetof(reader_cache::Header,digest));SHA256_Update(&sha,data.data(),data.size());SHA256_Final(h.digest,&sha);
  std::ofstream f(root+c.path,std::ios::binary);f.write((char*)&h,sizeof(h));f.write((char*)data.data(),data.size());
 }
+// Keep the image authenticated so wrong-layout rejection cannot pass merely
+// because the checksum became invalid when the layout identifier was changed.
+std::string withLayout(std::string image,uint32_t layout){
+ assert(image.size()>=sizeof(reader_cache::Header));
+ reader_cache::Header h;memcpy(&h,image.data(),sizeof(h));h.layout=layout;
+ SHA256_CTX sha;SHA256_Init(&sha);
+ SHA256_Update(&sha,&h,offsetof(reader_cache::Header,digest));
+ SHA256_Update(&sha,image.data()+sizeof(h),image.size()-sizeof(h));
+ SHA256_Final(h.digest,&sha);memcpy(&image[0],&h,sizeof(h));return image;
+}
+void sourceStampRegression(){
+ const std::string source="/stamp.txt",original(3*8192+1,'a');
+ writeSource(source,original);BookCache c(source,false);
+ seed(c);assert(c.save()&&c.save()); // Both current and backup are authenticated.
+ const std::string image=readFile(c.path);
+ const auto stamp=std::filesystem::last_write_time(root+source);
+ watchedSource=root+source;
+ auto restore=[&](){
+   writeSource(source,original);std::filesystem::last_write_time(root+source,stamp);
+   sourceReadBytes=0;
+ };
+ auto intact=[&](){
+   assert(readFile(c.path)==image&&readFile(c.path+".bak")==image);
+   assert(!SD.exists(c.path+".tmp"));
+ };
+ // Rejected candidates must not publish a book or move a saved anchor.
+ bookLength=777;pageOffsets={0,111};pageNumber=99;
+ bookmarkKey="unchanged-key";bookIdentity="unchanged-identity";
+ retainedOffset=123;retainedPage=456;
+ const auto progress=prefs.data;
+ auto rejected=[&](){
+   assert(!c.load()&&c.recoveryRequired());
+   assert(bookLength==777&&pageOffsets==std::vector<uint32_t>({0,111})&&pageNumber==99);
+   assert(bookmarkKey=="unchanged-key"&&bookIdentity=="unchanged-identity");
+   assert(retainedOffset==123&&retainedPage==456&&prefs.data==progress);
+   intact();
+ };
+ // Stamp mismatches reject both candidates without reading any source bytes.
+ writeSource(source,original+"b");sourceReadBytes=0;rejected();assert(sourceReadBytes==0);
+ restore();std::filesystem::last_write_time(root+source,stamp+std::chrono::seconds(60));
+ rejected();assert(sourceReadBytes==0);
+ restore();assert(SD.remove(source));rejected();assert(sourceReadBytes==0);
+
+ // Equal size/mtime are only a filter: every candidate still hashes all bytes.
+ restore();std::string changed=original;changed[16384]='b';
+ replaceKeepingTimestamp(source,changed);rejected();assert(sourceReadBytes==2*original.size());
+ restore();onSourceStat=[&](){replaceKeepingTimestamp(source,changed);};
+ rejected();assert(!onSourceStat&&sourceReadBytes==2*original.size());
+
+ // A source modified during hashing fails the final stamp check. The backup
+ // then sees the changed stamp and must not rehash that known-stale source.
+ restore();onSourceRead=[&](){
+   std::filesystem::last_write_time(root+source,stamp+std::chrono::seconds(60));
+ };
+ rejected();assert(!onSourceRead&&sourceReadBytes==original.size());
+
+ restore();prefs.data["c0123456789abcd"]=7;
+ assert(c.load()&&sourceReadBytes==original.size());
+ assert(bookLength==12&&!memcmp(book,"hello\nworld\n",12));
+ assert(pageNumber==1&&retainedOffset==7&&retainedPage==1);intact();
+
+ // Current and backup may describe different sources: skip stale current,
+ // then fully verify and publish the matching backup with its exact anchor.
+ writeSource(source,original+"b");seed(c);assert(c.save());
+ restore();assert(c.load()&&sourceReadBytes==original.size());
+ assert(pageNumber==1&&retainedOffset==7&&retainedPage==1);
+ writeSource(c.path,image);writeSource(c.path+".bak",image);
+
+ // Import observes source before parsing. A subsequent change must prevent
+ // save/rotation, whether its stamp changed or only its content changed.
+ restore();seed(c);writeSource(source,original+"b");sourceReadBytes=0;
+ assert(!c.save()&&sourceReadBytes==0);intact();
+ restore();seed(c);replaceKeepingTimestamp(source,changed);sourceReadBytes=0;
+ assert(!c.save()&&sourceReadBytes==original.size());intact();
+ watchedSource.clear();
+}
+void styleCacheRegression(){
+ assert(reader_typography::style.flags()==3);
+ for(bool markdown:{false,true})for(unsigned saved=0;saved<4;++saved){
+  const std::string source=markdown?"/style.md":"/style.txt";
+  writeSource(source,"original style source");BookCache cache(source,false);
+  SD.remove(cache.path);SD.remove(cache.path+".bak");
+  // Authenticated caches from older selectable layouts remain migration inputs.
+  legacyFixture(cache,reader_cache::layoutFor(true,markdown,saved),2);
+  prefs.data["c0123456789abcd"]=7;prefs.data["cnStyle"]=0;
+  const auto progress=prefs.data;const std::string image=readFile(cache.path);
+  bookLength=777;pageOffsets={0,111};pageNumber=99;retainedOffset=123;retainedPage=456;
+  if(saved==3){assert(cache.load()&&retainedOffset==7&&pageNumber==1);}
+  else{
+   assert(!cache.load()&&cache.recoveryRequired());
+   assert(bookLength==777&&pageOffsets==std::vector<uint32_t>({0,111})&&pageNumber==99&&retainedOffset==123);
+   uint32_t offset=0;assert(cache.loadLegacyForMigration(offset)&&offset==7&&retainedOffset==7);
+  }
+  assert(reader_typography::style.flags()==3&&prefs.data==progress&&readFile(cache.path)==image);
+  assert(readFile(source)=="original style source"&&!SD.exists(cache.path+".bak"));
+ }
+}
 int main(){
  root=(std::filesystem::temp_directory_path()/("paperdiy-cache-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))).string();assert(std::filesystem::create_directory(root));
  writeSource("/book.txt","original source");BookCache c("/book.txt",false);
@@ -109,6 +225,14 @@ int main(){
  prefs.data[bookmarkKey]=6;pageOffsets.clear();memset(book,0,12);assert(c.load()&&!c.recoveryRequired());assert(pageNumber==1&&pageOffsets.size()==2&&!memcmp(book,"hello\nworld\n",12));
  prefs.failRead=true;pageNumber=99;assert(!c.load()&&c.recoveryRequired()&&pageNumber==99);
  prefs.failRead=false;assert(c.load()&&pageNumber==1);
+ prefs.data[bookmarkKey]=7;assert(c.load()&&retainedOffset==7&&retainedPage==1);
+ prefs.failRead=true;assert(!c.load()&&retainedOffset==7&&retainedPage==1);
+ prefs.failRead=false;
+ for(uint32_t invalid : {12u,UINT32_MAX-1}){
+   prefs.data[bookmarkKey]=invalid;pageNumber=99;auto before=prefs.data;
+   assert(!c.load()&&c.recoveryRequired()&&pageNumber==99&&prefs.data==before);
+ }
+ prefs.data[bookmarkKey]=6;assert(c.load()&&pageNumber==1);
  corrupt(c.path,std::filesystem::file_size(root+c.path)-1);assert(!c.load());seed(c);assert(c.save());
  corrupt(c.path,offsetof(reader_cache::Header,layout));assert(!c.load());seed(c);assert(c.save());
  std::filesystem::resize_file(root+c.path,40);assert(!c.load());seed(c);assert(c.save());
@@ -161,7 +285,7 @@ int main(){
  assert(bookmarkKey=="b0123456789abcd");
 
  // Prior v2 layouts: read-only recovery verifies digests and preserves the c-key.
- for(uint32_t layout : {0x20261026u,0x20261030u,0x20261031u,0x20261032u,0x20261033u,0x20261034u,0x20261035u}){
+ for(uint32_t layout : {0x20261026u,0x20261030u,0x20261031u,0x20261032u,0x20261033u,0x20261034u,0x20261035u,0x20261036u,0x20261037u,0x20261040u}){
   SD.remove(c.path+".bak");legacyFixture(c,layout,2);
   prefs.data["c0123456789abcd"]=7;old=readFile(c.path);
   assert(!c.load()&&c.loadLegacyForMigration(offset)&&offset==7);
@@ -173,6 +297,41 @@ int main(){
  bookEnglishHyphens=true;assert(c.load()&&!bookEnglishHyphens);
  seed(c);bookEnglishHyphens=true;assert(c.save());
  bookEnglishHyphens=false;assert(c.load()&&bookEnglishHyphens);
+
+ // Markdown caches retain the original bytes (including BOM and syntax),
+ // both supported filename extensions, and offsets into that original source.
+ const std::string rawMarkdown="\xef\xbb\xbf# 标题\n\nfirst **bold** $x_1$.\n\n第二页正文\n";
+ const uint32_t rawSecond=uint32_t(rawMarkdown.find("第二页"));
+ assert(rawSecond!=uint32_t(std::string::npos));
+ for(const std::string& source:{std::string("/notes.md"),std::string("/notes.markdown")}){
+   writeSource(source,rawMarkdown);BookCache md(source,false);
+   assert(md.observe("")==rawMarkdown.size());
+   bookLength=rawMarkdown.size();memcpy(book,rawMarkdown.data(),bookLength);
+   pageOffsets={0,rawSecond};bookmarkKey="c123456789abcde";
+   prefs.data[bookmarkKey]=rawSecond+3;bookEnglishHyphens=false;
+   assert(md.save());const std::string image=readFile(md.path);
+   reader_cache::Header h;memcpy(&h,image.data(),sizeof(h));
+   assert(h.layout==reader_cache::LAYOUT_MARKDOWN);
+   pageOffsets.clear();bookLength=0;memset(book,0,rawMarkdown.size());
+   assert(md.load()&&pageNumber==1&&bookLength==rawMarkdown.size());
+   assert(!memcmp(book,rawMarkdown.data(),bookLength)&&book[bookLength]==0);
+   assert(pageOffsets==std::vector<uint32_t>({0,rawSecond}));
+   assert(bookIdentity==source&&bookmarkKey=="c123456789abcde"&&bookEnglishHyphens);
+   const auto progress=prefs.data;
+   for(uint32_t wrong:{reader_cache::LAYOUT,reader_cache::LAYOUT_NO_HYPHENS}){
+     writeSource(md.path,withLayout(image,wrong));pageNumber=99;
+     assert(!md.load()&&md.recoveryRequired()&&pageNumber==99);
+     assert(prefs.data==progress); // Never migrate/rewrite a mismatched current layout.
+   }
+   writeSource(md.path,image);assert(md.load()&&pageNumber==1);
+   assert(readFile(source)==rawMarkdown&&prefs.data==progress);
+ }
+ // Isolation is symmetric: a digest-valid Markdown layout is not a TXT hit.
+ writeSource("/layout.txt","original source");BookCache plain("/layout.txt",false);
+ seed(plain);bookEnglishHyphens=true;assert(plain.save());
+ const std::string plainImage=readFile(plain.path);
+ writeSource(plain.path,withLayout(plainImage,reader_cache::LAYOUT_MARKDOWN));
+ assert(!plain.load());writeSource(plain.path,plainImage);assert(plain.load());
 
  // Throttled yielding must not charge a full RTOS tick for every 8 KiB.
  std::string megabyte(1024*1024,'q');writeSource("/throughput.txt",megabyte);
@@ -201,7 +360,10 @@ int main(){
  exerciseTransfers(32,1000,1,0);
  exerciseTransfers(2*8192,1,30,UINT32_MAX-20);
 
+ sourceStampRegression();
+ styleCacheRegression();
+
  uint32_t invalid[]={0,6,6};assert(!reader_cache::validOffsets(invalid,3,12));assert(!reader_cache::validResource("../secret",9));
  std::filesystem::remove_all(root);
- puts("cache round-trip, source fingerprints, short writes, readback, rollback/recovery, directory dependencies, read-only legacy migration, bounded cooperative yielding: PASS");
+ puts("cache round-trip, source stamp prefilter/full fingerprints, short writes, readback, rollback/recovery, directory dependencies, read-only legacy migration, bounded cooperative yielding, Markdown raw-source/layout isolation: PASS");
 }

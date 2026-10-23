@@ -1,5 +1,7 @@
 #pragma once
 #include "cache_format.h"
+#include "document_format.h"
+#include "reader_typography.h"
 #include <algorithm>
 #include <cerrno>
 #include <memory>
@@ -73,10 +75,11 @@ struct BookCache {
 
   bool unchanged(bool legacy=false){
     for(const auto& dep:dependencies){
-      if(legacy){
-        uint32_t size,mtime;
-        if(!stamp(dep.name,size,mtime)||size!=dep.size||mtime!=dep.mtime)return false;
-      }else{
+      // A changed stamp rejects cheaply; matching stamps still need the full
+      // fingerprint, including its own before/after stamps, to detect replacement.
+      uint32_t size,mtime;
+      if(!stamp(dep.name,size,mtime)||size!=dep.size||mtime!=dep.mtime)return false;
+      if(!legacy){
         CacheDependency current;current.name=dep.name;
         if(!fingerprint(current)||!same(dep,current))return false;
       }
@@ -120,7 +123,7 @@ struct BookCache {
        !bookLength||bookLength>MAX_BOOK||pageOffsets.size()>reader_cache::MAX_PAGES||
        !reader_cache::validOffsets(pageOffsets.data(),pageOffsets.size(),bookLength)||!unchanged())return false;
     reader_cache::Header h{};
-    h.magic=reader_cache::MAGIC;h.version=reader_cache::VERSION;h.layout=reader_cache::layoutFor(bookEnglishHyphens);
+    h.magic=reader_cache::MAGIC;h.version=reader_cache::VERSION;h.layout=reader_cache::layoutFor(bookEnglishHyphens,document_format::detect(source.c_str())==document_format::Kind::Markdown,reader_typography::style.flags());
     h.directory=directory;h.textBytes=bookLength;h.pages=pageOffsets.size();h.deps=dependencies.size();
     for(const auto& dep:dependencies)h.metaBytes+=reader_cache::DEP_BYTES+dep.name.length();
     if(h.metaBytes>reader_cache::MAX_META)return false;
@@ -173,6 +176,12 @@ private:
     bool valid=legacy?reader_cache::validMigrationHeader(h,f.size(),MAX_BOOK,sourceHash,directory):
       reader_cache::validHeader(h,f.size(),MAX_BOOK,sourceHash,directory);
     if(!valid)return false;
+    const bool markdown=document_format::detect(source.c_str())==document_format::Kind::Markdown;
+    if(!legacy&&!reader_cache::matchesLayout(h.layout,markdown,reader_typography::style.flags()))return false;
+    // A current-family cache of another text mode is not this source's
+    // migration image. Alternate P/S layouts may supply read-only anchors.
+    if(legacy&&reader_cache::currentLayout(h.layout)&&
+       (reader_cache::markdownLayout(h.layout)!=markdown||reader_cache::matchesLayout(h.layout,markdown,reader_typography::style.flags())))return false;
     Buffer meta((uint8_t*)ps_malloc(h.metaBytes),free);
     if(!meta)return false;
     std::vector<uint32_t> offsets(h.pages);
@@ -201,12 +210,13 @@ private:
       offset=prefs.getUInt(h.bookmark,UINT32_MAX);
       if(offset==UINT32_MAX)return false;
     }
-    if(offset>=h.textBytes){if(legacy)return false;offset=0;}
+    if(offset>=h.textBytes)return false; // Never replace an invalid saved position with page zero.
     bookLength=h.textBytes;book[bookLength]=0;pageOffsets.swap(offsets);
     bookmarkKey=h.bookmark;bookIdentity=source;savedOffset=offset;
-    if(!legacy){bookEnglishHyphens=h.layout==reader_cache::LAYOUT;prepareReaderFont();}
+    if(!legacy){bookEnglishHyphens=reader_cache::englishHyphens(h.layout);prepareReaderFont();}
     auto page=std::upper_bound(pageOffsets.begin(),pageOffsets.end(),offset);
     pageNumber=page==pageOffsets.begin()?0:page-pageOffsets.begin()-1;
+    retainReadingAnchor(offset);
     Serial.printf(legacy?"CACHE_LEGACY bytes=%u pages=%u\n":"CACHE_HIT bytes=%u pages=%u\n",h.textBytes,h.pages);
     if(legacy)Serial.printf("CACHE_LEGACY_LAYOUT value=%08x\n",h.layout);
     return true;
