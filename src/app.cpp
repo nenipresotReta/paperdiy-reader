@@ -237,7 +237,7 @@ void appSetup(){
   Serial.printf("BOOT PaperDIY-Reader " PAPERDIY_VERSION " board=%d screen=%dx%d psram=%u network=off\n",M5.getBoard(),M5.Display.width(),M5.Display.height(),ESP.getPsramSize());
   if(M5.getBoard()!=m5::board_t::board_M5PaperDIY||M5.Display.width()!=540||M5.Display.height()!=960){Serial.println("FATAL board/display mismatch");while(true)delay(1000);}
   // Keep the original namespace and bookmark keys: app-only upgrades preserve progress.
-  initializeProgress();
+  if(initializeProgress())reader_settings::load(prefs);
   book=(char*)ps_malloc(MAX_BOOK+1);heap_caps_malloc_extmem_enable(2048);
   networkMode=NetworkMode::Off;settingsSelected=false;settingsId=SettingsId::Network;
   settingsRotated=prefs.getUInt("rot180",0)!=0;

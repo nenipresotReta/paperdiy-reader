@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "reader_settings.h"
 #include <cstddef>
 namespace controls {
 enum class Action {None,Previous,Next,PreviousScreen,NextScreen,Confirm,Shutdown};
@@ -12,7 +13,7 @@ inline uint8_t navigationMask(uint8_t physicalMask,bool rotated,bool settings){
 class Buttons {
   uint8_t held=0,pending=0;uint32_t since=0,lastRepeat=0,pendingAt=0;bool repeated=false,chord=false,suppressed=false;
   bool releaseGuard=false,releaseSeen=false;uint32_t releasedAt=0;
-  static constexpr uint32_t DOUBLE_MS=200;
+  uint32_t doubleMs() const {return reader_settings::current().doubleMs;}
 public:
   bool idle() const {return !held&&!chord&&!suppressed&&!releaseGuard&&!pending;}
   void reset(uint8_t mask,uint32_t now){held=0;pending=0;since=lastRepeat=pendingAt=now;repeated=chord=false;suppressed=mask!=0;releaseGuard=releaseSeen=false;}
@@ -28,7 +29,7 @@ public:
     }
     if(suppressed){if(!mask)suppressed=false;return Action::None;}
     if(pending){
-      if(now-pendingAt>DOUBLE_MS||(mask&&mask!=pending)){
+      if(now-pendingAt>doubleMs()||(mask&&mask!=pending)){
         uint8_t released=pending;pending=0;
         return released==1?Action::Previous:Action::Next;
       }
@@ -48,7 +49,7 @@ public:
       uint8_t released=held;held=0;
       if(repeated)return Action::None;
       if(library){
-        if(pending==released&&now-pendingAt<=DOUBLE_MS){
+        if(pending==released&&now-pendingAt<=doubleMs()){
           pending=0;
           return released==1?Action::PreviousScreen:Action::NextScreen;
         }
