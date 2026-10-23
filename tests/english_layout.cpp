@@ -179,6 +179,49 @@ void paginationRegression() {
   std::string zeros;for(int i=0;i<10000;++i)zeros+="\xe2\x81\xa0";
   assert(pagination::page(zeros.data(),zeros.size(),0,g,fixed,[](const char*,size_t,int,int){},[](){})>0);
 }
+void punctuationWorkRegression() {
+  pagination::Geometry g;
+  g.left=24;g.right=510;g.hangLimit=30;
+  // Count real compositor work instead of timing the host. A doubled suffix
+  // must not be rescanned in full at each line, and drawing must consume it once.
+  for(size_t count : {4096u,8192u,16384u}) {
+    for(const std::string& mark : {std::string("."),std::string("。")}) {
+      std::string text;for(size_t i=0;i<count;++i)text+=mark;
+      size_t measurements=0;
+      auto width=[&](const char* p,size_t n){++measurements;return fixed(p,n);};
+      std::vector<uint32_t> offsets;
+      assert(pagination::index(text.size(),offsets,[&](size_t p){
+        return pagination::page(text.data(),text.size(),p,g,width,
+          [](const char*,size_t,int,int){},[](){});
+      }));
+      assert(measurements<=count*12);
+      std::string visible;
+      for(size_t i=0;i<offsets.size();++i){
+        size_t end=pagination::page(text.data(),text.size(),offsets[i],g,fixed,
+          [&](const char* p,size_t n,int,int){visible.append(p,n);},[](){});
+        assert(end==(i+1<offsets.size()?offsets[i+1]:text.size()));
+      }
+      assert(visible==text);
+    }
+  }
+  // Short runs retain the exact margin decision; long intentionally unbounded
+  // runs and following whitespace still cooperate with the scheduler.
+  g=geometry(56);g.hyphenate=false;g.hangLimit=8;
+  auto fits=pagination::line("representation.)",16,0,g,fixed,[](){});
+  assert(fits.hang==8&&fits.end==16&&fits.next==16);
+  g.hangLimit=7;
+  auto exceeds=pagination::line("representation.)",16,0,g,fixed,[](){});
+  assert(exceeds.hang==0&&exceeds.end==14&&exceeds.next==14);
+  g.hangLimit=0;
+  std::string longRun="representation"+std::string(4096,'.');
+  unsigned ticks=0;
+  auto run=pagination::line(longRun.data(),longRun.size(),0,g,fixed,[&](){++ticks;});
+  assert(run.end==longRun.size()&&ticks>=15);
+  std::string trailing="representation."+std::string(4096,' ');
+  ticks=0;
+  auto whitespace=pagination::line(trailing.data(),trailing.size(),0,g,fixed,[&](){++ticks;});
+  assert(whitespace.end==15&&whitespace.next==trailing.size()&&ticks>=16);
+}
 void readerGeometryRegression() {
   std::string text;
   for(int i=0;i<200;++i)
@@ -243,7 +286,7 @@ void visual(const char* directory) {
   printf("visual bytes=%zu/%zu\n",end,text.size());
 }
 int main(int argc,char** argv) {
-  basic();paginationRegression();readerGeometryRegression();
+  basic();paginationRegression();punctuationWorkRegression();readerGeometryRegression();
   if(argc>1)visual(argv[1]);
   puts("word wrapping, Liang patterns, bounded justification, controls, mixed text, cached/drawn boundaries: PASS");
 }
