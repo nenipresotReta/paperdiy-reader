@@ -76,8 +76,8 @@ void bodyText(const char* text,int x,int y){
   size_t pos=0;int pen=x;
   while(pos<length){
     char ch[5];size_t n=utf8Char(text+pos,length-pos,ch);
-    drawBodyGlyph(ch,n,pen,y,TFT_BLACK);
-    pen+=bodyGlyphAdvance(readerCodepoint(ch,n));pos+=n;
+    drawInterfaceGlyph(ch,n,pen,y,TFT_BLACK);
+    pen+=interfaceGlyphAdvance(readerCodepoint(ch,n));pos+=n;
   }
 }
 int activeModeIndex(){
@@ -90,8 +90,8 @@ void modeRow(int dx,int y){
   static const char* labels[3]={"N","A","U"};
   const int active=activeModeIndex();
   for(int i=0;i<3;++i){
-    if(i!=active)drawBodyGlyph("\xc2\xac",2,MODE_PREFIX_X[i]+dx,y,TFT_BLACK);
-    drawBodyGlyph(labels[i],1,MODE_LETTER_X[i]+dx,y,TFT_BLACK);
+    if(i!=active)drawInterfaceGlyph("\xc2\xac",2,MODE_PREFIX_X[i]+dx,y,TFT_BLACK);
+    drawInterfaceGlyph(labels[i],1,MODE_LETTER_X[i]+dx,y,TFT_BLACK);
   }
 }
 void smallLine(const String& text,int x,int y){
@@ -240,18 +240,19 @@ void updateLibrarySelection(size_t oldSelection,bool oldSettings,SettingsId oldI
 void showBook(bool sceneChange){
   if(pageOffsets.empty())return;
   beginRefresh(sceneChange,true);
+  const int edge=std::min(20,reader_settings::geometry().left-4);
   if(sceneChange){M5.Display.fillScreen(TFT_WHITE);}
   else {M5.Display.fillRect(20,20,520,896,TFT_WHITE);M5.Display.fillRect(120,923,300,37,TFT_WHITE);}
   statusIcon();
   font();prepareReaderFont();
   // The 30 px right margin is also the hang zone; clip and refresh it too.
-  M5.Display.setClipRect(20,20,520,896);layoutPage(pageOffsets[pageNumber],true);M5.Display.clearClipRect();
+  M5.Display.setClipRect(edge,20,540-edge,896);layoutPage(pageOffsets[pageNumber],true);M5.Display.clearClipRect();
   font();
   String number=String(pageNumber+1)+" / "+String(pageOffsets.size());M5.Display.setCursor((540-M5.Display.textWidth(number))/2,960-READER_FONT_HEIGHT);M5.Display.print(number);
-  endRefresh("page",20,20,520,940);
+  endRefresh("page",edge,20,540-edge,940);
   uint32_t offset=pageOffsets[pageNumber];
   uint32_t end=pageNumber+1<pageOffsets.size()?pageOffsets[pageNumber+1]:bookLength;
-  Serial.printf("BOOK_PAGE page=%u total=%u key=%s offset=%u end=%u font_px=%d line_height=%d\n",(unsigned)pageNumber+1,(unsigned)pageOffsets.size(),bookmarkKey.c_str(),offset,end,READER_FONT_PX,READER_LINE_HEIGHT);
+  Serial.printf("BOOK_PAGE page=%u total=%u key=%s offset=%u end=%u font_px=%d line_height=%d\n",(unsigned)pageNumber+1,(unsigned)pageOffsets.size(),bookmarkKey.c_str(),offset,end,reader_settings::geometry().pixels,reader_settings::geometry().lineHeight);
 }
 void showLoading(){
   beginRefresh();font();
@@ -266,16 +267,15 @@ void showError(const String& message){
 void showSettings(bool sceneChange){
   beginRefresh(sceneChange);
   M5.Display.fillScreen(TFT_WHITE);
-  prepareReaderFont();
   if(networkMode==NetworkMode::Ap)apPanel();
   else if(networkMode==NetworkMode::Sta)staPanel();
   else if(networkMode==NetworkMode::Usb)usbPanel();
   int dx=settingsDx();
   modeRow(dx,settingsModeY());
-  if(!settingsRotated)drawBodyGlyph("\xc2\xac",2,SETTINGS_LEFT+dx,settingsRotationY(),TFT_BLACK);
+  if(!settingsRotated)drawInterfaceGlyph("\xc2\xac",2,SETTINGS_LEFT+dx,settingsRotationY(),TFT_BLACK);
   // The panel-side button edge is the far end of the mirrored mode row.
   const int rotationX=MODE_LETTER_X[settingsRotated?2:0]+dx;
-  drawBodyGlyph("R",1,rotationX,settingsRotationY(),TFT_BLACK);
+  drawInterfaceGlyph("R",1,rotationX,settingsRotationY(),TFT_BLACK);
   endRefresh("settings",0,0,540,960);
 }
 void updateSettingsMode(){
@@ -284,7 +284,6 @@ void updateSettingsMode(){
   int rx=settingsRotated?540-(MODE_REFRESH_X+MODE_REFRESH_W):MODE_REFRESH_X;
   int ry=settingsModeY()-12;
   M5.Display.fillRect(rx,ry,MODE_REFRESH_W,MODE_REFRESH_H,TFT_WHITE);
-  prepareReaderFont();
   modeRow(settingsDx(),settingsModeY());
   endRefresh("settings-mode",rx,ry,MODE_REFRESH_W,MODE_REFRESH_H);
 }
@@ -293,7 +292,6 @@ void updateSettingsNetwork(){
   beginRefresh();
   const int y=SETTINGS_CONTENT_TOP+settingsContentDy();
   M5.Display.fillRect(0,y,540,SETTINGS_CONTENT_H,TFT_WHITE);
-  prepareReaderFont();
   if(networkMode==NetworkMode::Ap)apPanel();
   else if(networkMode==NetworkMode::Sta)staPanel();
   else if(networkMode==NetworkMode::Usb)usbPanel();

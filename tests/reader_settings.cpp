@@ -3,6 +3,7 @@
 #include <vector>
 #include <Preferences.h>
 #include "reader_settings.h"
+#include "cache_format.h"
 #include "input.h"
 int main(){
  using namespace reader_settings;
@@ -20,6 +21,14 @@ int main(){
    controls::Buttons b;b.reset(0,0);b.update(2,1000,true);b.update(0,1010,true);b.update(2,1000+gap,true);
    const auto action=b.update(0,1010+gap,true);assert(action==(gap<=interval?controls::Action::NextScreen:controls::Action::Next));
   }
+ }
+ std::set<uint32_t> identities;
+ for(unsigned p=0;p<3;++p)for(unsigned gap:{0u,2u,4u})for(bool punct:{false,true})for(bool hyphen:{false,true})for(bool justify:{false,true}){
+  current()=Config{};current().preset=p;current().spacing=gap;current().punctuation=punct;current().hyphenation=hyphen;current().justify=justify;
+  const uint8_t flags=(punct?1:0)|(gap?2:0);const auto id=reader_cache::layoutFor(true,false,flags);
+  assert(identities.insert(id).second);assert(reader_cache::matchesLayout(id,false,flags));
+  current().doubleMs=333;current().ink=12;current().refresh=0;assert(reader_cache::matchesLayout(id,false,flags));
+  current().preset=(p+1)%3;assert(!reader_cache::matchesLayout(id,false,flags));
  }
  current()=Config{};unsigned ink=0;
  for(int y=0;y<4;++y)for(int x=0;x<4;++x){assert(keepInk(x,y)==bool((x+y)%2));ink+=keepInk(x,y);}assert(ink==8);

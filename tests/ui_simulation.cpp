@@ -291,6 +291,8 @@ void batteryPixelUpdates() {
   rotateSettings(false);
 }
 
+int interfaceGlyphAdvance(uint32_t cp){return reader_font::glyphAdvance(reader_font::FONT_28,cp);}
+void drawInterfaceGlyph(const char* text,size_t bytes,int x,int y,uint32_t color){drawBodyGlyph(text,bytes,x,y,color);}
 int main() {
   displayInit();
   batteryPixelUpdates();
