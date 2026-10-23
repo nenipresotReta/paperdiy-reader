@@ -11,6 +11,8 @@
 #include "network.h"
 #include "document_format.h"
 #include "reader.h"
+#include "reader_settings.h"
+#include "shutdown_art.h"
 #include "sd_reader.h"
 
 Preferences prefs;
@@ -38,7 +40,7 @@ String token(){
 String cookie(){return "diy_token="+token();}
 WebServer& server(){assert(WebServer::current);return *WebServer::current;}
 void reset(uint32_t now=100){
-  networkStop();prefs={};WiFi={};SD={};testClock=now;testCardDetect=LOW;
+  networkStop();reader_settings::current()={};prefs={};WiFi={};SD={};testClock=now;testCardDetect=LOW;
   settingsStaSsid="";settingsStaConfigured=false;sdOK=true;sdBooks.clear();scans=0;
   networkApply(NetworkMode::Ap);
   assert(WebServer::current&&server().running);
@@ -115,6 +117,50 @@ void assertNoTemporary(){
 void assertRejected(){
   assert(server().response.code>=400);assert(server().response.type=="application/json");
   assert(published()==0);assert(scans==0);assertNoTemporary();
+}
+
+void readerSettingsAndArtwork(){
+ reset();
+ assert(request("/api/settings","bad").code==401);
+ auto result=request("/api/settings",cookie());assert(result.code==200&&result.body.indexOf("\"doubleMs\":200")>=0);
+ prefs.blobs["wifiCfgV1"]={1,2,3};prefs.strings["sdLast"]="book";
+ std::map<std::string,String> values={{"punctuation","0"},{"spacing","2"},{"doubleMs","210"},{"preset","0"},{"hyphenation","0"},{"justify","0"},{"refresh","2"},{"ink","30"}};
+ prefs.failWrite=true;assert(request("/api/settings",cookie(),HTTP_POST,values).code==500);assert(reader_settings::current().doubleMs==200);
+ prefs.failWrite=false;assert(request("/api/settings",cookie(),HTTP_POST,values).code==200);
+ assert(reader_settings::current().doubleMs==210&&reader_settings::current().preset==0);
+ const auto saved=prefs.blobs;
+ for(const auto& field:{"punctuation","spacing","doubleMs","preset","hyphenation","justify","refresh","ink"}){
+  auto bad=values;bad[field]="256";if(std::string(field)=="doubleMs")bad[field]="401";
+  assert(request("/api/settings",cookie(),HTTP_POST,bad).code==400&&prefs.blobs==saved);
+ }
+ assert(prefs.blobs["wifiCfgV1"]==std::vector<uint8_t>({1,2,3})&&prefs.strings["sdLast"]=="book");
+ reader_settings::current()={};assert(reader_settings::load(prefs));assert(reader_settings::current().doubleMs==210);
+ const std::vector<String> books={"/Books/keep.epub"};sdBooks=books;SD.add("/Books/keep.epub","keep");
+ std::vector<uint8_t> art(18,0);memcpy(art.data(),"PDI1",4);art[4]=9;art[6]=1;art[16]=128;
+ const auto crc=reader_settings::crc(art.data()+16,2);for(int i=0;i<4;++i)art[12+i]=crc>>(8*i);
+ auto encode=[](const std::vector<uint8_t>& data){String out;const char* a="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";for(size_t i=0;i<data.size();i+=3){size_t n=std::min(size_t(3),data.size()-i);uint32_t v=uint32_t(data[i])<<16;if(n>1)v|=uint32_t(data[i+1])<<8;if(n>2)v|=data[i+2];out+=a[(v>>18)&63];out+=a[(v>>12)&63];out+=n>1?a[(v>>6)&63]:'=';out+=n>2?a[v&63]:'=';}return out;};
+ unsigned serial=0;
+ auto put=[&](bool fail,bool corrupt){
+  const String id=serial++?"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  auto start=request("/api/upload/start",cookie(),HTTP_POST,{{"kind","art"},{"name","shutdown.pdi"},{"size",String(art.size())},{"generation",String(generation())},{"requestId",id}});
+  assert(start.code==200);
+  assert(request("/api/settings",cookie(),HTTP_POST,values).code==409);
+  auto data=art;if(corrupt)data[16]^=1;
+  assert(request("/api/upload/chunk",cookie(),HTTP_POST,{{"id",id},{"offset","0"},{"data",encode(data)}}).code==200);
+  prefs.failWrite=fail;
+  auto commit=request("/api/upload/commit",cookie(),HTTP_POST,{{"id",id}});
+  prefs.failWrite=false;
+  if(!fail&&!corrupt)assert(request("/api/upload/commit",cookie(),HTTP_POST,{{"id",id}}).code==200);
+  return commit.code;
+ };
+ assert(put(false,false)==200);assert(reader_settings::current().art==1&&sdBooks==books);
+ const auto oldImage=SD.files.at("/.paperdiy/shutdown-1.bin")->bytes;
+ assert(put(true,false)==500);assert(reader_settings::current().art==1&&SD.files.at("/.paperdiy/shutdown-1.bin")->bytes==oldImage);
+ assert(put(false,true)==500);assert(reader_settings::current().art==1&&sdBooks==books);
+ assert(request("/api/artwork",cookie(),HTTP_POST,{{"action","remove"}}).code==200&&reader_settings::current().art==3);
+ assert(SD.exists("/Books/keep.epub"));
+ assert(request("/api/artwork",cookie(),HTTP_POST,{{"action","default"}}).code==200&&reader_settings::current().art==0);
+ assertNoTemporary();networkStop();
 }
 void authenticationAndRandomness(){
   reset();assert(WiFi.currentMode==WIFI_AP&&!WiFi.persistentEnabled&&WiFi.maxStations==1);
@@ -401,7 +447,7 @@ void statusAndCleanup(){
 }
 
 int main(){
- authenticationAndRandomness();qrAndTimeout();uploadsAndFilenames();uploadFailures();ownershipAndCatalog();
+ readerSettingsAndArtwork();authenticationAndRandomness();qrAndTimeout();uploadsAndFilenames();uploadFailures();ownershipAndCatalog();
  credentialsAndStation();uploadRecovery();stationReconnectWindow();statusAndCleanup();networkStop();
  assert(WebServer::constructions==WebServer::destructions);
  std::cout<<"network integration passed\n";

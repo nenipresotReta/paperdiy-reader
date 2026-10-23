@@ -11,6 +11,9 @@
 #include "ui.h"
 #include "reader.h"
 #include "sd_reader.h"
+#include "reader_settings.h"
+#include "shutdown_art.h"
+#include "web_page.h"
 
 namespace {
 BoundedWebServer* web=nullptr;
@@ -29,7 +32,7 @@ constexpr char TEMP_PREFIX[]="paperdiy-upload-";
 
 struct UploadState {
   File file;
-  bool active=false;
+  bool active=false,art=false;
   String id,temp,finalPath,sourceName;
   uint32_t expected=0,total=0,lastActivity=0,requestGeneration=0;
 } upload;
@@ -44,62 +47,7 @@ UploadReceipt receipts[RECEIPT_COUNT];
 size_t nextReceipt=0;
 uint8_t chunkBuffer[UPLOAD_CHUNK_SIZE];
 
-const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PaperDIY</title>
-<style>
-body{font-family:system-ui,sans-serif;max-width:640px;margin:auto;padding:24px;color:#111}h1{font-size:24px;margin:0 0 8px}h2{font-size:18px;margin:28px 0 12px}label{display:block;margin:12px 0}input{display:block;width:100%;box-sizing:border-box;padding:10px;margin-top:6px;border:1px solid #aaa;border-radius:4px}button{padding:10px 18px;margin-top:8px}p{color:#555;font-size:14px}li{overflow-wrap:anywhere;margin:6px 0}progress{width:100%}
-</style></head><body>
-<h1>PaperDIY</h1><p id="status">Connecting…</p>
-<h2>Upload book</h2>
-<p>EPUB ≤ 64 MiB · TXT ≤ 4 MiB · Markdown ≤ 1 MiB</p>
-<form id="uploadForm"><input id="file" type="file" accept=".epub,.txt,.md,.markdown" required>
-<button id="uploadButton" type="submit" disabled>Upload</button></form>
-<progress id="progress" max="1" value="0" hidden></progress><p id="uploadMsg"></p>
-<h2>Home Wi-Fi</h2>
-<form id="wifiForm"><label>SSID<input id="ssid" maxlength="32" autocomplete="off" required></label>
-<label>Password<input id="pass" type="password" minlength="8" maxlength="63" autocomplete="new-password" required></label>
-<button id="wifiButton" type="submit">Save</button></form><p id="wifiMsg"></p>
-<h2>Books</h2><ul id="books"></ul>
-<script>
-history.replaceState(null,'','/');
-const $=id=>document.getElementById(id);
-let generation=null,sending=false,polling=false;
-async function json(url,opt){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),12000);try{const r=await fetch(url,{...opt,signal:controller.signal});let j={};try{j=await r.json()}catch(e){if(r.ok)throw new Error('Incomplete response')}if(!r.ok){const err=new Error(j.error||('HTTP '+r.status));err.status=r.status;throw err}return j}finally{clearTimeout(timer)}}
-function post(url,data){return json(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data)});}
-function retryable(error){return !error.status||error.status===408||error.status>=500;}
-async function retrySame(action){for(let attempt=0;;++attempt){try{return await action()}catch(error){if(attempt>=2||!retryable(error))throw error;await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)))}}}
-function newRequestId(){const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');}
-async function uploadState(id){return retrySame(()=>json('/api/upload/status?id='+encodeURIComponent(id)));}
-async function refresh(){if(polling||sending)return;polling=true;try{const s=await json('/api/status');generation=s.uploadGeneration;$('status').textContent=s.sd?((s.busy?'Uploading · ':'')+Math.floor(s.free/1048576)+' MB free'):'SD card unavailable';$('uploadButton').disabled=s.busy||!s.sd;const ul=$('books');ul.textContent='';let offset=0;do{const fs=await json('/api/files?offset='+offset);for(const n of fs.files){const li=document.createElement('li');li.textContent=n;ul.appendChild(li)}offset=fs.next}while(offset!==null)}catch(e){$('status').textContent=e.message;$('uploadButton').disabled=true}finally{polling=false}}
-$('uploadForm').addEventListener('submit',async e=>{
- e.preventDefault();const f=$('file').files[0];if(!f||sending||generation===null)return;
- sending=true;$('uploadButton').disabled=true;$('file').disabled=true;$('progress').hidden=false;$('progress').value=0;$('uploadMsg').textContent='Uploading…';let id=null;
- try{
-  id=newRequestId();const metadata={name:f.name,size:f.size,generation,requestId:id};
-  // Replays use the same request id and admission generation, never a new upload.
-  const start=await retrySame(()=>post('/api/upload/start',metadata));
-  if(start.id!==id)throw new Error('Unexpected upload identity');
-  for(let offset=start.offset;offset<f.size;){
-   const bytes=new Uint8Array(await f.slice(offset,offset+start.chunkSize).arrayBuffer());let raw='';for(const byte of bytes)raw+=String.fromCharCode(byte);
-   const end=offset+bytes.length;let next=offset;
-   for(let attempt=0;;++attempt){
-    try{const result=await post('/api/upload/chunk',{id,offset,data:btoa(raw)});next=result.offset;if(next!==end)throw new Error('Unexpected upload offset');break}
-    catch(error){if(!retryable(error))throw error;const state=await uploadState(id);if(state.state==='receiving'&&state.offset===end){next=end;break}if(state.state!=='receiving'||state.offset!==offset||attempt>=2)throw error}
-   }
-   offset=next;$('progress').value=offset/f.size;
-  }
-  const result=await retrySame(()=>post('/api/upload/commit',{id}));id=null;$('uploadMsg').textContent='Uploaded: '+result.name;$('file').value='';
- }catch(error){
-  let recovered=false;
-  if(id)try{const state=await uploadState(id);if(state.state==='complete'){$('uploadMsg').textContent='Uploaded: '+state.name;$('progress').value=1;$('file').value='';recovered=true}else if(state.state==='receiving')await post('/api/upload/cancel',{id})}catch(ignore){}
-  if(!recovered)$('uploadMsg').textContent=error.message+' Check the book list before retrying.';
- }finally{sending=false;$('file').disabled=false;refresh()}
-});
-$('wifiForm').addEventListener('submit',async e=>{e.preventDefault();$('wifiButton').disabled=true;$('wifiMsg').textContent='Saving…';try{await post('/api/wifi',{ssid:$('ssid').value,pass:$('pass').value});$('pass').value='';$('wifiMsg').textContent='Saved. Select N on the reader to connect.'}catch(err){$('wifiMsg').textContent=err.message}finally{$('wifiButton').disabled=false}});
-refresh();setInterval(refresh,3000);
-</script></body></html>)HTML";
+
 
 void touchAp(){apActivity=millis();}
 String randomString(size_t length){
@@ -288,6 +236,42 @@ void handleWifi(){
   settingsStaSsid=ssid;settingsStaConfigured=true;settingsStaConnected=false;settingsStaError="";settingsStaIp="";
   touchAp();sendJson("{\"ok\":true}");
 }
+void sendSettings(){
+  const auto& c=reader_settings::current();
+  sendJson("{\"punctuation\":"+String(unsigned(c.punctuation))+",\"spacing\":"+String(c.spacing)+
+    ",\"doubleMs\":"+String(c.doubleMs)+",\"preset\":"+String(c.preset)+",\"hyphenation\":"+String(unsigned(c.hyphenation))+
+    ",\"justify\":"+String(unsigned(c.justify))+",\"refresh\":"+String(c.refresh)+",\"ink\":"+String(c.ink)+",\"art\":"+String(c.art)+"}");
+}
+void handleSettingsGet(){if(requireAuth())sendSettings();}
+void handleSettingsSave(){
+  if(!requireAuth())return;
+  if(upload.active){sendError(409,"Wait for the upload to finish.");return;}
+  const char* fields[]={"punctuation","spacing","doubleMs","preset","hyphenation","justify","refresh","ink"};
+  uint32_t v[8];
+  for(unsigned i=0;i<8;++i)if(!web->hasArg(fields[i])||!parseUnsigned(web->arg(fields[i]),v[i])||v[i]>400){sendError(400,"Invalid settings.");return;}
+  if(v[0]>1||v[4]>1||v[5]>1){sendError(400,"Invalid settings.");return;}
+  auto next=reader_settings::current();next.punctuation=v[0];next.spacing=v[1];next.doubleMs=v[2];next.preset=v[3];next.hyphenation=v[4];next.justify=v[5];next.refresh=v[6];next.ink=v[7];
+  // Check before narrowing: values like 256 must never become a valid zero.
+  if(v[1]>4||v[3]>2||v[6]>2||v[7]>100||!reader_settings::valid(next)){sendError(400,"Invalid settings.");return;}
+  if(!reader_settings::save(prefs,next)){sendError(500,"Could not save settings. Please retry.");return;}
+  touchAp();sendSettings();
+}
+void handleArtwork(){
+  if(!requireAuth())return;
+  if(upload.active){sendError(409,"Wait for the upload to finish.");return;}
+  const auto action=web->arg("action");
+  if(action!="remove"&&action!="default"){sendError(400,"Invalid image action.");return;}
+  auto next=reader_settings::current();next.art=action=="remove"?3:0;
+  if(!reader_settings::save(prefs,next)){sendError(500,"Could not save image choice. Please retry.");return;}
+  // Disable the image durably before deleting only our two upload slots.
+  // The compiled private fallback, books and progress are untouched.
+  if(action=="remove"&&cardReady()){
+    for(uint8_t slot=1;slot<=2;++slot)if(SD.exists(shutdown_art::path(slot))&&!SD.remove(shutdown_art::path(slot))){
+      sendError(500,"Image disabled, but SD cleanup failed. Please retry.");return;
+    }
+  }
+  touchAp();sendSettings();
+}
 bool validRequestId(const String& id){
   if(id.length()!=32)return false;
   for(size_t i=0;i<id.length();++i){const char c=id.charAt(i);if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')))return false;}
@@ -309,11 +293,13 @@ void handleUploadStart(){
   if(!requireAuth())return;
   const String requestId=web->hasArg("requestId")?web->arg("requestId"):String();
   if(web->hasArg("requestId")&&!validRequestId(requestId)){sendError(400,"Invalid upload request identity.");return;}
-  const String name=validName(web->arg("name"));
+  const bool art=web->arg("kind")=="art";
+  if(web->hasArg("kind")&&!art){sendError(400,"Invalid upload kind.");return;}
+  const String name=art?String("shutdown.pdi"):validName(web->arg("name"));
   if(name.length()==0){sendError(400,"Use a valid .epub, .txt, .md or .markdown filename, up to 96 UTF-8 bytes.");return;}
   uint32_t size=0,requestedGeneration=0;
   const auto format=document_format::detect(name.c_str());
-  const size_t limit=document_format::sourceLimit(format);
+  const size_t limit=art?shutdown_art::MAX_BYTES:document_format::sourceLimit(format);
   if(!parseUnsigned(web->arg("size"),size)||size==0||size>limit){
     sendError(413,format==document_format::Kind::Text?"TXT must be 1 byte to 4 MiB.":
       format==document_format::Kind::Markdown?"Markdown must be 1 byte to 1 MiB.":"EPUB must be 1 byte to 64 MiB.");return;
@@ -332,14 +318,16 @@ void handleUploadStart(){
     }
   }
   if(upload.active){sendError(409,"Another upload is in progress. Retry when it finishes.");return;}
-  if(sdBooks.size()>=256){sendError(409,"The library is full (256 books).");return;}
+  if(!art&&sdBooks.size()>=256){sendError(409,"The library is full (256 books).");return;}
   if(requestedGeneration!=uploadGeneration){sendError(409,"Upload state changed. Refresh and retry.");return;}
   if(!cardReady()){sendError(503,"SD card unavailable");return;}
   if(size>freeBytes()){sendError(507,"Not enough free space on the SD card.");return;}
   if((!SD.exists("/Books")&&!SD.mkdir("/Books"))||(!SD.exists("/Books/.incoming")&&!SD.mkdir("/Books/.incoming"))){
     sendError(500,"Cannot create the book directory.");return;
   }
-  upload.finalPath=uniquePath("/Books/"+name);
+  if(art&&!SD.exists("/.paperdiy")&&!SD.mkdir("/.paperdiy")){sendError(500,"Cannot create image directory.");return;}
+  upload.art=art;
+  upload.finalPath=art?String(shutdown_art::path(reader_settings::current().art==1?2:1)):uniquePath("/Books/"+name);
   if(upload.finalPath.length()==0){resetUpload();sendError(409,"Cannot allocate a filename.");return;}
   for(unsigned attempt=0;attempt<4;++attempt){
     const String candidate=String("/Books/.incoming/")+TEMP_PREFIX+randomHex(16)+".part";
@@ -414,12 +402,20 @@ void handleUploadCommit(){
   if(!cardReady()){uploadFailure(503,"SD card removed during upload.");return;}
   upload.file.flush();upload.file.close();
   File completed=SD.open(upload.temp);
-  const bool complete=completed&&completed.size()==upload.expected;
+  bool complete=completed&&completed.size()==upload.expected;
+  if(complete&&upload.art)complete=bool(shutdown_art::read(completed));
   if(completed)completed.close();
   if(!complete){uploadFailure(500,"Could not verify the saved file.");return;}
   // Recheck immediately before rename; the destination must never overwrite a book.
-  upload.finalPath=uniquePath(upload.finalPath);
+  if(upload.art){
+    if(SD.exists(upload.finalPath)&&!SD.remove(upload.finalPath)){uploadFailure(500,"Cannot replace inactive image.");return;}
+  }else upload.finalPath=uniquePath(upload.finalPath);
   if(upload.finalPath.length()==0||!SD.rename(upload.temp,upload.finalPath)){uploadFailure(500,"Cannot finalize the book.");return;}
+  const bool artwork=upload.art;
+  if(artwork){
+    auto next=reader_settings::current();next.art=next.art==1?2:1;
+    if(!reader_settings::save(prefs,next)){SD.remove(upload.finalPath);uploadFailure(500,"Could not save image choice. Please retry.");return;}
+  }
   const String savedPath=upload.finalPath;
   const String name=savedPath.substring(savedPath.lastIndexOf('/')+1);
   UploadReceipt& receipt=receipts[nextReceipt];
@@ -427,6 +423,7 @@ void handleUploadCommit(){
   receipt.size=upload.expected;receipt.requestGeneration=upload.requestGeneration;
   nextReceipt=(nextReceipt+1)%RECEIPT_COUNT;
   upload.temp="";resetUpload();
+  if(artwork){touchAp();sendReceipt(receipt);return;}
   // This AP is the only SD writer. Publish the known leaf without unmounting
   // the card or disturbing the selected book and its independent bookmark.
   const String previous=selectedBook<sdBooks.size()?sdBooks[selectedBook]:String();
@@ -465,6 +462,9 @@ void startAp(){
   web->on("/api/status",HTTP_GET,handleStatus);
   web->on("/api/files",HTTP_GET,handleFiles);
   web->on("/api/wifi",HTTP_POST,handleWifi);
+  web->on("/api/settings",HTTP_GET,handleSettingsGet);
+  web->on("/api/settings",HTTP_POST,handleSettingsSave);
+  web->on("/api/artwork",HTTP_POST,handleArtwork);
   web->on("/api/upload/start",HTTP_POST,handleUploadStart);
   web->on("/api/upload/status",HTTP_GET,handleUploadStatus);
   web->on("/api/upload/chunk",HTTP_POST,handleUploadChunk);

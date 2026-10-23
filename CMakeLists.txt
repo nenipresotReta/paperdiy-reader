@@ -106,3 +106,7 @@ add_test(NAME reader_integration COMMAND reader_integration)
 add_test(NAME ui_simulation COMMAND ui_simulation)
 add_test(NAME font_generation COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/font_generation.py")
 add_test(NAME epub_import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/epub_fixtures.py" "$<TARGET_FILE:epub_core>")
+
+add_executable(reader_settings tests/reader_settings.cpp)
+target_include_directories(reader_settings BEFORE PRIVATE tests/network_stubs)
+add_test(NAME reader_settings COMMAND reader_settings)

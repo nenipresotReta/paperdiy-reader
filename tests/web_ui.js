@@ -17,7 +17,7 @@ const path = require('node:path');
 const { test } = require('node:test');
 const vm = require('node:vm');
 
-const sourcePath = path.join(__dirname, '..', 'src', 'network.cpp');
+const sourcePath = path.join(__dirname, '..', 'src', 'web_page.h');
 const firmwareSource = fs.readFileSync(sourcePath, 'utf8');
 const page = firmwareSource.match(/const char INDEX_HTML\[\] PROGMEM = R"HTML\(([\s\S]*?)\)HTML";/);
 assert.ok(page, 'production INDEX_HTML must be present');
@@ -70,6 +70,7 @@ class ProtocolFixture {
     assert.ok(count <= 20, `${route}: retries must be bounded`);
     assert.ok(options.signal instanceof AbortSignal, 'every fetch needs a deadline signal');
 
+    if (route === '/api/settings') return jsonResponse(200,{punctuation:1,spacing:4,doubleMs:200,preset:1,hyphenation:1,justify:1,refresh:1,ink:50,art:0});
     if (route === '/api/status') {
       return jsonResponse(200, { uploadGeneration: this.generation, busy: !!this.active, sd: true, free: 1048576 });
     }
@@ -224,3 +225,49 @@ for (const [fault, description] of [
 ]) {
   test(description, { timeout: 2000 }, () => runScenario(fault));
 }
+
+test('settings use saved values, retain edits on failure, and image actions are explicit', async () => {
+  const elements = new Map();const el=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id)};
+  let config={punctuation:1,spacing:4,doubleMs:200,preset:1,hyphenation:1,justify:1,refresh:1,ink:50,art:0};
+  let fail=false;const posts=[];
+  const context={document:{getElementById:el,createElement:()=>new Element()},history:{replaceState(){}},URLSearchParams,AbortController,crypto:webcrypto,Uint8Array,
+    setTimeout(){return 1},clearTimeout(){},setInterval(){},
+    fetch:async(url,opt={})=>{
+      if(url==='/api/status')return jsonResponse(200,{sd:true,free:10000,uploadGeneration:0});
+      if(url.startsWith('/api/files'))return jsonResponse(200,{files:[],next:null});
+      if(opt.method==='POST'){
+        const data=Object.fromEntries(opt.body);posts.push({url,data});if(fail)return jsonResponse(500,{error:'Storage unavailable'});
+        if(url==='/api/settings')config={...config,...Object.fromEntries(Object.entries(data).map(([k,v])=>[k,Number(v)]))};
+        if(url==='/api/artwork')config.art=data.action==='remove'?3:0;
+      }
+      return jsonResponse(200,config);
+    }};
+  vm.createContext(context);vm.runInContext(productionScript,context);await new Promise(setImmediate);
+  assert.equal(el('doubleMs').value,'200');assert.equal(el('punctuation').checked,true);
+  el('doubleMs').value='210';el('spacing').value='2';el('punctuation').checked=false;
+  const submit=el('settingsForm').handlers.get('submit');fail=true;await submit({preventDefault(){}});
+  assert.equal(el('settingsMsg').textContent,'Storage unavailable');assert.equal(el('doubleMs').value,'210');assert.equal(config.doubleMs,200);assert.equal(el('settingsFields').disabled,false);
+  fail=false;await submit({preventDefault(){}});assert.equal(config.doubleMs,210);assert.equal(config.spacing,2);assert.equal(config.punctuation,0);
+  assert.equal(el('settingsMsg').textContent,'Saved.');assert.equal(posts.at(-1).url,'/api/settings');
+  await el('artRemove').handlers.get('click')();assert.equal(config.art,3);assert.equal(el('artState').textContent,'No image');
+  await el('artDefault').handlers.get('click')();assert.equal(config.art,0);
+});
+
+test('image conversion packs black bits, authenticates payload, and aligns preview bottom right', async()=>{
+  const elements=new Map(),paint=[];let closed=false;
+  const el=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id)};
+  const preview={fillStyle:'',fillRect(...args){if(this.fillStyle==='black')paint.push(args)}};
+  el('artPreview').getContext=()=>preview;
+  const pixels=new Uint8ClampedArray([0,0,0,255,255,255,255,255,0,0,0,255,255,255,255,255,0,0,0,255,255,255,255,255]);
+  const context={document:{getElementById:el,createElement:tag=>tag==='canvas'?{getContext:()=>({fillRect(){},drawImage(){},getImageData:()=>({data:pixels})})}:new Element()},
+    history:{replaceState(){}},URLSearchParams,AbortController,Uint8Array,DataView,File:require('node:buffer').File,crypto:webcrypto,
+    createImageBitmap:async()=>({width:3,height:2,close(){closed=true}}),setTimeout(){return 1},clearTimeout(){},setInterval(){},
+    fetch:async url=>jsonResponse(200,url==='/api/settings'?{punctuation:1,spacing:4,doubleMs:200,preset:1,hyphenation:1,justify:1,refresh:1,ink:50,art:0}:url==='/api/status'?{sd:true,free:1000,uploadGeneration:0}:{files:[],next:null})};
+  vm.createContext(context);vm.runInContext(productionScript,context);await new Promise(setImmediate);
+  const image=await context.prepareImage({type:'image/png',size:100});const bytes=Buffer.from(await image.arrayBuffer());
+  assert.equal(bytes.length,18);assert.equal(bytes.subarray(0,4).toString(),'PDI1');assert.equal(bytes.readUInt16LE(4),3);assert.equal(bytes.readUInt16LE(6),2);
+  assert.deepEqual([...bytes.subarray(16)],[0xa0,0x40]);assert.equal(bytes.readUInt32LE(12),0x9902ef86);
+  assert.deepEqual(paint,[[537,958,1,1],[539,958,1,1],[538,959,1,1]]);assert.ok(closed);
+  await assert.rejects(context.prepareImage({type:'image/png',size:13*1048576}),/12 MiB/);
+  await assert.rejects(context.prepareImage({type:'text/html',size:100}),/PNG/);
+});

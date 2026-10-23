@@ -2,23 +2,24 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include "reader_settings.h"
 namespace reader_cache {
 constexpr uint32_t MAGIC=0x31434450, VERSION=2;
 // Low bits encode independent P/S settings and the text mode. Bump the
 // family for any other geometry/extraction change; old text remains readable
 // for bookmark migration, but its page offsets must never be a cache hit.
-constexpr uint32_t LAYOUT_BASE=0x20261050;
-constexpr uint32_t LAYOUT=LAYOUT_BASE|3,LAYOUT_NO_HYPHENS=LAYOUT_BASE|7,LAYOUT_MARKDOWN=LAYOUT_BASE|11;
+constexpr uint32_t LAYOUT_BASE=0x20262000;
+constexpr uint32_t LAYOUT=LAYOUT_BASE|35,LAYOUT_NO_HYPHENS=LAYOUT_BASE|39,LAYOUT_MARKDOWN=LAYOUT_BASE|43;
 inline uint32_t layoutFor(bool englishHyphens,bool markdown=false,uint8_t style=3) {
-  return LAYOUT_BASE|(markdown?8u:englishHyphens?0u:4u)|(style&3u);
+  return LAYOUT_BASE|reader_settings::layoutBits()|(markdown?8u:englishHyphens?0u:4u)|(style&3u);
 }
 inline bool currentLayout(uint32_t value) {
-  return (value&~15u)==LAYOUT_BASE&&(value&12u)!=12u;
+  return (value&~511u)==LAYOUT_BASE&&(value&12u)!=12u&&((value>>5)&3u)<=2;
 }
 inline bool markdownLayout(uint32_t value){return currentLayout(value)&&(value&12u)==8u;}
 inline bool englishHyphens(uint32_t value){return currentLayout(value)&&(value&12u)!=4u;}
 inline bool matchesLayout(uint32_t value,bool markdown,uint8_t style){
-  return currentLayout(value)&&markdownLayout(value)==markdown&&(value&3u)==(style&3u);
+  return currentLayout(value)&&value==layoutFor(englishHyphens(value),markdown,style);
 }
 constexpr uint32_t MAX_DEPS=4096,MAX_META=512*1024,MAX_PAGES=65536;
 constexpr uint32_t DEP_BYTES=12+32, LEGACY_DEP_BYTES=12;

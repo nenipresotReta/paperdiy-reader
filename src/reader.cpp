@@ -84,10 +84,11 @@ size_t layoutPage(size_t from,bool draw,int top){
   if(bookMarkdown)return layoutMarkdown(from,draw,top);
   // The 30 px right margin is also the display-only hang budget; a full-width
   // closing mark at 510 still ends at or before 540.
-  pagination::Geometry g;g.left=24;g.right=510;g.hangLimit=30;
-  g.top=top;g.lineHeight=READER_LINE_HEIGHT;g.hyphenate=bookEnglishHyphens;
+  const auto shape=reader_settings::geometry();
+  pagination::Geometry g;g.left=shape.left;g.right=shape.right;g.hangLimit=540-g.right;
+  g.top=top;g.lineHeight=shape.lineHeight;g.hyphenate=bookEnglishHyphens&&reader_settings::current().hyphenation;g.justify=reader_settings::current().justify;
   uint32_t yielded=millis();
-  return reader_typography::page(book,bookLength,from,g,reader_typography::style,
+  return reader_typography::page(book,bookLength,from,g,reader_typography::currentStyle(),
     [](uint32_t cp){
       reader_typography::Metrics result;result.advance=cp<128?asciiWidths[cp]:bodyGlyphAdvance(cp);
       if(typography_experiment::punctuation(cp)!=typography_experiment::Punctuation::None)if(const auto* glyph=bodyGlyph(cp)){

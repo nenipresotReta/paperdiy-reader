@@ -175,7 +175,7 @@ void diagnosticCommand(const String& line){
       settingsSelected?1:0,unsigned(networkMode),settingsRotated?1:0,
       settingsApClientConnected?1:0,settingsStaConfigured?1:0,settingsStaConnected?1:0,networkActive()?1:0,
       unsigned(pageOffsets.empty()?0:currentReadingOffset()),
-      unsigned(settingsSelected?settingsId:SettingsId::None),unsigned(reader_typography::style.flags()));
+      unsigned(settingsSelected?settingsId:SettingsId::None),unsigned(reader_typography::currentStyle().flags()));
     logDisplayStatus();
   }else if(line=="SCREEN"){
     M5.Display.waitDisplay();Serial.println("SCREEN 540 960 68");
@@ -237,7 +237,7 @@ void appSetup(){
   Serial.printf("BOOT PaperDIY-Reader " PAPERDIY_VERSION " board=%d screen=%dx%d psram=%u network=off\n",M5.getBoard(),M5.Display.width(),M5.Display.height(),ESP.getPsramSize());
   if(M5.getBoard()!=m5::board_t::board_M5PaperDIY||M5.Display.width()!=540||M5.Display.height()!=960){Serial.println("FATAL board/display mismatch");while(true)delay(1000);}
   // Keep the original namespace and bookmark keys: app-only upgrades preserve progress.
-  initializeProgress();
+  if(initializeProgress())reader_settings::load(prefs);
   book=(char*)ps_malloc(MAX_BOOK+1);heap_caps_malloc_extmem_enable(2048);
   networkMode=NetworkMode::Off;settingsSelected=false;settingsId=SettingsId::Network;
   settingsRotated=prefs.getUInt("rot180",0)!=0;

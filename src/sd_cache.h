@@ -123,7 +123,7 @@ struct BookCache {
        !bookLength||bookLength>MAX_BOOK||pageOffsets.size()>reader_cache::MAX_PAGES||
        !reader_cache::validOffsets(pageOffsets.data(),pageOffsets.size(),bookLength)||!unchanged())return false;
     reader_cache::Header h{};
-    h.magic=reader_cache::MAGIC;h.version=reader_cache::VERSION;h.layout=reader_cache::layoutFor(bookEnglishHyphens,document_format::detect(source.c_str())==document_format::Kind::Markdown,reader_typography::style.flags());
+    h.magic=reader_cache::MAGIC;h.version=reader_cache::VERSION;h.layout=reader_cache::layoutFor(bookEnglishHyphens,document_format::detect(source.c_str())==document_format::Kind::Markdown,reader_typography::currentStyle().flags());
     h.directory=directory;h.textBytes=bookLength;h.pages=pageOffsets.size();h.deps=dependencies.size();
     for(const auto& dep:dependencies)h.metaBytes+=reader_cache::DEP_BYTES+dep.name.length();
     if(h.metaBytes>reader_cache::MAX_META)return false;
@@ -177,11 +177,11 @@ private:
       reader_cache::validHeader(h,f.size(),MAX_BOOK,sourceHash,directory);
     if(!valid)return false;
     const bool markdown=document_format::detect(source.c_str())==document_format::Kind::Markdown;
-    if(!legacy&&!reader_cache::matchesLayout(h.layout,markdown,reader_typography::style.flags()))return false;
+    if(!legacy&&!reader_cache::matchesLayout(h.layout,markdown,reader_typography::currentStyle().flags()))return false;
     // A current-family cache of another text mode is not this source's
     // migration image. Alternate P/S layouts may supply read-only anchors.
     if(legacy&&reader_cache::currentLayout(h.layout)&&
-       (reader_cache::markdownLayout(h.layout)!=markdown||reader_cache::matchesLayout(h.layout,markdown,reader_typography::style.flags())))return false;
+       (reader_cache::markdownLayout(h.layout)!=markdown||reader_cache::matchesLayout(h.layout,markdown,reader_typography::currentStyle().flags())))return false;
     Buffer meta((uint8_t*)ps_malloc(h.metaBytes),free);
     if(!meta)return false;
     std::vector<uint32_t> offsets(h.pages);

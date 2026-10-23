@@ -2,6 +2,7 @@
 #include "reading_font.h"
 #include "reader_font.h"
 #include "native_font_data.h"
+#include "reader_settings.h"
 
 namespace {
 
@@ -66,18 +67,19 @@ NativeFont body(reader_font::FONT_28), small(reader_font::FONT_24);
 
 } // namespace
 
-const lgfx::IFont* bodyFont() { return &body; }
+static const reader_font::Font& activeBody(){return reader_settings::geometry().pixels==24?reader_font::FONT_24:reader_font::FONT_28;}
+const lgfx::IFont* bodyFont() { return reader_settings::geometry().pixels==24?&small:&body; }
 const reader_font::Glyph* bodyGlyph(uint32_t codepoint) {
-  return reader_font::findGlyph(reader_font::FONT_28, codepoint);
+  return reader_font::findGlyph(activeBody(), codepoint);
 }
 int bodyGlyphAdvance(uint32_t codepoint) {
-  return reader_font::glyphAdvance(reader_font::FONT_28, codepoint);
+  return reader_font::glyphAdvance(activeBody(), codepoint);
 }
 bool bodyFontHasGlyph(uint32_t codepoint) {
-  return reader_font::hasGlyph(reader_font::FONT_28, codepoint);
+  return reader_font::hasGlyph(activeBody(), codepoint);
 }
 void drawBodyGlyph(const char* text, size_t bytes, int x, int y, uint32_t foreground) {
-  paint(&M5.Display, reader_font::FONT_28, readerCodepoint(text, bytes), x, y, foreground);
+  paint(&M5.Display, activeBody(), readerCodepoint(text, bytes), x, y, foreground);
 }
 const lgfx::IFont* readerFont() { return &small; }
 int readerGlyphWidth(uint32_t codepoint) {
@@ -92,3 +94,6 @@ uint32_t readerCodepoint(const char* text, size_t bytes) {
 void drawReaderGlyph(const char* text, size_t bytes, int x, int y, uint32_t foreground) {
   paint(&M5.Display, reader_font::FONT_24, readerCodepoint(text, bytes), x, y, foreground);
 }
+
+int interfaceGlyphAdvance(uint32_t cp){return reader_font::glyphAdvance(reader_font::FONT_28,cp);}
+void drawInterfaceGlyph(const char* text,size_t bytes,int x,int y,uint32_t foreground){paint(&M5.Display,reader_font::FONT_28,readerCodepoint(text,bytes),x,y,foreground);}

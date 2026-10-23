@@ -28,7 +28,7 @@ void cooperate(void*){
 }
 bool mathCooperate(void*){cooperate(nullptr);return true;}
 math_layout::Options options(bool display){
-  math_layout::Options value;value.displayStyle=display;value.maxWidth=486;
+  math_layout::Options value;value.displayStyle=display;value.maxWidth=reader_settings::geometry().right-reader_settings::geometry().left;
   value.maxHeight=840;value.keepGoing=mathCooperate;return value;
 }
 bool acceptMath(const char* source,size_t bytes,bool display,void*){
@@ -52,23 +52,24 @@ const math_layout::Result& formula(const markdown::Run& run){
     mathWorkspace,slot(index),math_layout::MAX_COMMANDS);
   return cached.result;
 }
+unsigned emphasisPixels(){return reader_settings::geometry().pixels==24?20:28;}
 uint32_t alternateGlyph(const markdown::Run& run,uint32_t cp){
   if((run.flags&markdown::Emphasis)&&!(run.flags&markdown::Code)&&
       ((cp>='A'&&cp<='Z')||(cp>='a'&&cp<='z'))){
     uint32_t styled=math_font::styled(cp,math_font::Style::Italic);
-    if(math_font::find(styled,28))return styled;
+    if(math_font::find(styled,emphasisPixels()))return styled;
   }
-  if(!(run.flags&markdown::Code)&&!(cp<128?bodyAsciiExists[cp]:bodyFontHasGlyph(cp))&&math_font::find(cp,28))return cp;
+  if(!(run.flags&markdown::Code)&&!(cp<128?bodyAsciiExists[cp]:bodyFontHasGlyph(cp))&&math_font::find(cp,emphasisPixels()))return cp;
   return 0;
 }
 struct Renderer {
   markdown_page::Box glyph(const markdown::Run& run,const char* ch,size_t bytes){
     uint32_t cp=readerCodepoint(ch,bytes);markdown_page::Box box;
     const bool code=(run.flags&markdown::Code)!=0;
-    box.ascent=code?26:BODY_FONT_BASELINE;box.descent=code?8:BODY_FONT_HEIGHT-BODY_FONT_BASELINE;
+    box.ascent=code?26:bodyFontBaseline();box.descent=code?8:bodyFontHeight()-bodyFontBaseline();
     const uint32_t emphasis=alternateGlyph(run,cp);
     if(emphasis){
-      auto g=math_font::find(emphasis,28);box.width=g->advance+std::max<int>(0,g->italicCorrection);
+      auto g=math_font::find(emphasis,emphasisPixels());box.width=g->advance+std::max<int>(0,g->italicCorrection);
       box.ascent=std::max<int>(box.ascent,-g->top);
       box.descent=std::max<int>(box.descent,g->top+g->height);
       box.ink=g->width&&g->height;box.inkLeft=g->left;box.inkRight=g->left+g->width;
@@ -101,10 +102,10 @@ struct Renderer {
     const bool code=(run.flags&markdown::Code)!=0;
     const uint32_t emphasis=alternateGlyph(run,cp);
     auto paint=[&](int left){
-      if(emphasis)math_font::drawGlyphRuns(emphasis,28,left,baseline,
+      if(emphasis)math_font::drawGlyphRuns(emphasis,emphasisPixels(),left,baseline,
         [](int xx,int yy,int width){M5.Display.drawFastHLine(xx,yy,width,TFT_BLACK);});
       else if(code)drawReaderGlyph(ch,bytes,left,baseline-26);
-      else drawBodyGlyph(ch,bytes,left,baseline-BODY_FONT_BASELINE);
+      else drawBodyGlyph(ch,bytes,left,baseline-bodyFontBaseline());
     };
     paint(x);
     if(run.flags&(markdown::Strong|markdown::Heading))paint(x+1);
@@ -134,7 +135,9 @@ bool prepareMarkdown(const char* source,size_t bytes){
 }
 size_t layoutMarkdown(size_t from,bool draw,int top){
   Renderer renderer;markdown_page::Geometry geometry;geometry.top=top;
+  const auto shape=reader_settings::geometry();geometry.left=shape.left;geometry.right=shape.right;geometry.lineHeight=shape.lineHeight;
+  geometry.hyphenate=reader_settings::current().hyphenation;geometry.justify=reader_settings::current().justify;
   formulaFailed=false;
-  const size_t next=markdown_page::page(document,from,draw,geometry,renderer,[](){cooperate(nullptr);},reader_typography::style);
+  const size_t next=markdown_page::page(document,from,draw,geometry,renderer,[](){cooperate(nullptr);},reader_typography::currentStyle());
   return formulaFailed?from:next;
 }
