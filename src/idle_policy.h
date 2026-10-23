@@ -12,6 +12,10 @@ struct Inputs {
   bool inputIdle;
   bool rawPressed;
   bool usbConnected;
+  bool radioActive;
+  constexpr Inputs(bool stable, bool idle, bool pressed, bool usb, bool radio=false)
+      : stableScene(stable), inputIdle(idle), rawPressed(pressed),
+        usbConnected(usb), radioActive(radio) {}
 };
 
 struct Plan {
@@ -47,8 +51,9 @@ public:
         uint32_t(now - lastActivity) < IDLE_DELAY_MS)
       return {};
 
-    // USB debugging and failed sleep attempts still permit idle CPU throttling.
-    bool sleep = !inputs.usbConnected && !failurePending;
+    // Manual light sleep suspends Wi-Fi; a live AP/STA must keep servicing the
+    // radio. It can still throttle the idle CPU, just like USB debugging.
+    bool sleep = !inputs.usbConnected && !inputs.radioActive && !failurePending;
     return {true, sleep, sleep ? MAX_SLEEP_MS : 0};
   }
 };
