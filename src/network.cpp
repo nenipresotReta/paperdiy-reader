@@ -1,5 +1,4 @@
 #include <WiFi.h>
-#include "web_page.h"
 #include <DNSServer.h>
 #include <SD.h>
 #include <algorithm>
@@ -12,6 +11,9 @@
 #include "ui.h"
 #include "reader.h"
 #include "sd_reader.h"
+#include "reader_settings.h"
+#include "shutdown_art.h"
+#include "web_page.h"
 
 namespace {
 BoundedWebServer* web=nullptr;
@@ -30,7 +32,7 @@ constexpr char TEMP_PREFIX[]="paperdiy-upload-";
 
 struct UploadState {
   File file;
-  bool active=false;
+  bool active=false,art=false;
   String id,temp,finalPath,sourceName;
   uint32_t expected=0,total=0,lastActivity=0,requestGeneration=0;
 } upload;
@@ -234,6 +236,42 @@ void handleWifi(){
   settingsStaSsid=ssid;settingsStaConfigured=true;settingsStaConnected=false;settingsStaError="";settingsStaIp="";
   touchAp();sendJson("{\"ok\":true}");
 }
+void sendSettings(){
+  const auto& c=reader_settings::current();
+  sendJson("{\"punctuation\":"+String(unsigned(c.punctuation))+",\"spacing\":"+String(c.spacing)+
+    ",\"doubleMs\":"+String(c.doubleMs)+",\"preset\":"+String(c.preset)+",\"hyphenation\":"+String(unsigned(c.hyphenation))+
+    ",\"justify\":"+String(unsigned(c.justify))+",\"refresh\":"+String(c.refresh)+",\"ink\":"+String(c.ink)+",\"art\":"+String(c.art)+"}");
+}
+void handleSettingsGet(){if(requireAuth())sendSettings();}
+void handleSettingsSave(){
+  if(!requireAuth())return;
+  if(upload.active){sendError(409,"Wait for the upload to finish.");return;}
+  const char* fields[]={"punctuation","spacing","doubleMs","preset","hyphenation","justify","refresh","ink"};
+  uint32_t v[8];
+  for(unsigned i=0;i<8;++i)if(!web->hasArg(fields[i])||!parseUnsigned(web->arg(fields[i]),v[i])||v[i]>400){sendError(400,"Invalid settings.");return;}
+  if(v[0]>1||v[4]>1||v[5]>1){sendError(400,"Invalid settings.");return;}
+  auto next=reader_settings::current();next.punctuation=v[0];next.spacing=v[1];next.doubleMs=v[2];next.preset=v[3];next.hyphenation=v[4];next.justify=v[5];next.refresh=v[6];next.ink=v[7];
+  // Check before narrowing: values like 256 must never become a valid zero.
+  if(v[1]>4||v[3]>2||v[6]>2||v[7]>100||!reader_settings::valid(next)){sendError(400,"Invalid settings.");return;}
+  if(!reader_settings::save(prefs,next)){sendError(500,"Could not save settings. Please retry.");return;}
+  touchAp();sendSettings();
+}
+void handleArtwork(){
+  if(!requireAuth())return;
+  if(upload.active){sendError(409,"Wait for the upload to finish.");return;}
+  const auto action=web->arg("action");
+  if(action!="remove"&&action!="default"){sendError(400,"Invalid image action.");return;}
+  auto next=reader_settings::current();next.art=action=="remove"?3:0;
+  if(!reader_settings::save(prefs,next)){sendError(500,"Could not save image choice. Please retry.");return;}
+  // Disable the image durably before deleting only our two upload slots.
+  // The compiled private fallback, books and progress are untouched.
+  if(action=="remove"&&cardReady()){
+    for(uint8_t slot=1;slot<=2;++slot)if(SD.exists(shutdown_art::path(slot))&&!SD.remove(shutdown_art::path(slot))){
+      sendError(500,"Image disabled, but SD cleanup failed. Please retry.");return;
+    }
+  }
+  touchAp();sendSettings();
+}
 bool validRequestId(const String& id){
   if(id.length()!=32)return false;
   for(size_t i=0;i<id.length();++i){const char c=id.charAt(i);if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')))return false;}
@@ -255,11 +293,13 @@ void handleUploadStart(){
   if(!requireAuth())return;
   const String requestId=web->hasArg("requestId")?web->arg("requestId"):String();
   if(web->hasArg("requestId")&&!validRequestId(requestId)){sendError(400,"Invalid upload request identity.");return;}
-  const String name=validName(web->arg("name"));
+  const bool art=web->arg("kind")=="art";
+  if(web->hasArg("kind")&&!art){sendError(400,"Invalid upload kind.");return;}
+  const String name=art?String("shutdown.pdi"):validName(web->arg("name"));
   if(name.length()==0){sendError(400,"Use a valid .epub, .txt, .md or .markdown filename, up to 96 UTF-8 bytes.");return;}
   uint32_t size=0,requestedGeneration=0;
   const auto format=document_format::detect(name.c_str());
-  const size_t limit=document_format::sourceLimit(format);
+  const size_t limit=art?shutdown_art::MAX_BYTES:document_format::sourceLimit(format);
   if(!parseUnsigned(web->arg("size"),size)||size==0||size>limit){
     sendError(413,format==document_format::Kind::Text?"TXT must be 1 byte to 4 MiB.":
       format==document_format::Kind::Markdown?"Markdown must be 1 byte to 1 MiB.":"EPUB must be 1 byte to 64 MiB.");return;
@@ -278,14 +318,16 @@ void handleUploadStart(){
     }
   }
   if(upload.active){sendError(409,"Another upload is in progress. Retry when it finishes.");return;}
-  if(sdBooks.size()>=256){sendError(409,"The library is full (256 books).");return;}
+  if(!art&&sdBooks.size()>=256){sendError(409,"The library is full (256 books).");return;}
   if(requestedGeneration!=uploadGeneration){sendError(409,"Upload state changed. Refresh and retry.");return;}
   if(!cardReady()){sendError(503,"SD card unavailable");return;}
   if(size>freeBytes()){sendError(507,"Not enough free space on the SD card.");return;}
   if((!SD.exists("/Books")&&!SD.mkdir("/Books"))||(!SD.exists("/Books/.incoming")&&!SD.mkdir("/Books/.incoming"))){
     sendError(500,"Cannot create the book directory.");return;
   }
-  upload.finalPath=uniquePath("/Books/"+name);
+  if(art&&!SD.exists("/.paperdiy")&&!SD.mkdir("/.paperdiy")){sendError(500,"Cannot create image directory.");return;}
+  upload.art=art;
+  upload.finalPath=art?String(shutdown_art::path(reader_settings::current().art==1?2:1)):uniquePath("/Books/"+name);
   if(upload.finalPath.length()==0){resetUpload();sendError(409,"Cannot allocate a filename.");return;}
   for(unsigned attempt=0;attempt<4;++attempt){
     const String candidate=String("/Books/.incoming/")+TEMP_PREFIX+randomHex(16)+".part";
@@ -360,12 +402,20 @@ void handleUploadCommit(){
   if(!cardReady()){uploadFailure(503,"SD card removed during upload.");return;}
   upload.file.flush();upload.file.close();
   File completed=SD.open(upload.temp);
-  const bool complete=completed&&completed.size()==upload.expected;
+  bool complete=completed&&completed.size()==upload.expected;
+  if(complete&&upload.art)complete=bool(shutdown_art::read(completed));
   if(completed)completed.close();
   if(!complete){uploadFailure(500,"Could not verify the saved file.");return;}
   // Recheck immediately before rename; the destination must never overwrite a book.
-  upload.finalPath=uniquePath(upload.finalPath);
+  if(upload.art){
+    if(SD.exists(upload.finalPath)&&!SD.remove(upload.finalPath)){uploadFailure(500,"Cannot replace inactive image.");return;}
+  }else upload.finalPath=uniquePath(upload.finalPath);
   if(upload.finalPath.length()==0||!SD.rename(upload.temp,upload.finalPath)){uploadFailure(500,"Cannot finalize the book.");return;}
+  const bool artwork=upload.art;
+  if(artwork){
+    auto next=reader_settings::current();next.art=next.art==1?2:1;
+    if(!reader_settings::save(prefs,next)){SD.remove(upload.finalPath);uploadFailure(500,"Could not save image choice. Please retry.");return;}
+  }
   const String savedPath=upload.finalPath;
   const String name=savedPath.substring(savedPath.lastIndexOf('/')+1);
   UploadReceipt& receipt=receipts[nextReceipt];
@@ -373,6 +423,7 @@ void handleUploadCommit(){
   receipt.size=upload.expected;receipt.requestGeneration=upload.requestGeneration;
   nextReceipt=(nextReceipt+1)%RECEIPT_COUNT;
   upload.temp="";resetUpload();
+  if(artwork){touchAp();sendReceipt(receipt);return;}
   // This AP is the only SD writer. Publish the known leaf without unmounting
   // the card or disturbing the selected book and its independent bookmark.
   const String previous=selectedBook<sdBooks.size()?sdBooks[selectedBook]:String();
@@ -411,6 +462,9 @@ void startAp(){
   web->on("/api/status",HTTP_GET,handleStatus);
   web->on("/api/files",HTTP_GET,handleFiles);
   web->on("/api/wifi",HTTP_POST,handleWifi);
+  web->on("/api/settings",HTTP_GET,handleSettingsGet);
+  web->on("/api/settings",HTTP_POST,handleSettingsSave);
+  web->on("/api/artwork",HTTP_POST,handleArtwork);
   web->on("/api/upload/start",HTTP_POST,handleUploadStart);
   web->on("/api/upload/status",HTTP_GET,handleUploadStatus);
   web->on("/api/upload/chunk",HTTP_POST,handleUploadChunk);
