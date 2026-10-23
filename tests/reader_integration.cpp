@@ -4,13 +4,14 @@
 #include <array>
 #include <tuple>
 #include <type_traits>
+#include <set>
 #include "native_font_data.h"
 #include "../src/reader.cpp"
 
 const lgfx::IFont* bodyFont(){static lgfx::IFont font;return &font;}
 const lgfx::IFont* readerFont(){return bodyFont();}
-int bodyGlyphAdvance(uint32_t cp){return reader_font::glyphAdvance(reader_font::FONT_28,cp);}
-const reader_font::Glyph* bodyGlyph(uint32_t cp){return reader_font::findGlyph(reader_font::FONT_28,cp);}
+int bodyGlyphAdvance(uint32_t cp){return reader_font::glyphAdvance((reader_settings::geometry().pixels==24?reader_font::FONT_24:reader_font::FONT_28),cp);}
+const reader_font::Glyph* bodyGlyph(uint32_t cp){return reader_font::findGlyph((reader_settings::geometry().pixels==24?reader_font::FONT_24:reader_font::FONT_28),cp);}
 uint32_t readerCodepoint(const char* text,size_t bytes){return reader_font::decodeCodepoint(text,bytes);}
 using Mark=std::tuple<std::string,int,int>;
 static std::vector<Mark> bodyMarks;
@@ -33,7 +34,7 @@ void assertContains(uint32_t offset){
  assert(pageOffsets[pageNumber]<=offset);
  assert(pageNumber+1==pageOffsets.size()||offset<pageOffsets[pageNumber+1]);
 }
-static_assert(std::is_const<decltype(reader_typography::style)>::value,"Production typography must be immutable");
+static_assert(std::is_const<decltype(reader_typography::style)>::value,"Standalone default style remains immutable");
 void typographyRegression(){
  std::string source;
  for(unsigned i=0;i<160;++i)source+="她说：“《春日》很好。”中文EPUB3第12章。**原文** 中 A 。 ";
@@ -62,7 +63,24 @@ void typographyRegression(){
  }
  clearMarkdown();bookMarkdown=false;bodyMarks.clear();
 }
+void settingsReflowRegression(){
+ std::string source;for(unsigned i=0;i<400;++i)source+="中文Markdown3与标点：“hello.” Internationalization allows different line lengths.\n";
+ for(bool markdown:{false,true}){
+  reader_settings::current()={};bookMarkdown=markdown;bookMarkupFallback=false;bookEnglishHyphens=true;reset(source);
+  const auto key=contentKey(false);const auto exact=uint32_t(source.find("Internationalization",source.size()/2));prefs.values[key]=exact;
+  std::set<size_t> totals;
+  for(uint8_t preset:{uint8_t(0),uint8_t(1),uint8_t(2)}){
+   auto& c=reader_settings::current();c.preset=preset;c.spacing=preset==0?2:4;c.hyphenation=preset!=0;c.justify=preset!=0;
+   assert(indexBook());assertContains(exact);assert(currentReadingOffset()==exact);totals.insert(pageOffsets.size());
+   assert(saveReadingProgress()&&prefs.values[key]==exact);
+   for(auto offset:pageOffsets){const auto end=layoutPage(offset,false);bodyMarks.clear();assert(layoutPage(offset,true)==end);}
+  }
+  assert(totals.size()==3);assert(!memcmp(book,source.data(),source.size()));
+ }
+ reader_settings::current()={};clearMarkdown();bookMarkdown=false;bookMarkupFallback=false;
+}
 int main(){
+ settingsReflowRegression();
  typographyRegression();
  std::string text;
  for(int i=0;i<300;++i)text+="Paragraph "+std::to_string(i)+". Enough text to wrap into stable pages. 中文段落。\n";

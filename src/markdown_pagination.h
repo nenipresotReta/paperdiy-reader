@@ -7,7 +7,7 @@
 
 namespace markdown_page {
 struct Box { int width=0,ascent=0,descent=0,inkLeft=0,inkRight=0;bool ink=false; };
-struct Geometry { int left=24,right=510,top=24,bottom=916,lineHeight=40; };
+struct Geometry { int left=24,right=510,top=24,bottom=916,lineHeight=40; bool hyphenate=true,justify=true; };
 inline bool formula(const markdown::Run& run){
   return run.kind==markdown::Kind::MathInline||run.kind==markdown::Kind::MathBlock;
 }
@@ -78,8 +78,9 @@ size_t page(const markdown::Document& doc,size_t from,bool draw,
     const auto& first=runAt(doc,p);
     pagination::Geometry g;g.left=geometry.left+std::min<int>(first.indent,8)*18;
     g.right=geometry.right;g.hangLimit=std::min(12,540-g.right);
-    g.hyphenate=(first.flags&(markdown::Code|markdown::Preformatted))==0;
-    g.justify=g.hyphenate&&(first.flags&markdown::Heading)==0;
+    const bool prose=(first.flags&(markdown::Code|markdown::Preformatted))==0;
+    g.hyphenate=geometry.hyphenate&&prose;
+    g.justify=geometry.justify&&prose&&(first.flags&markdown::Heading)==0;
     const bool display=first.kind==markdown::Kind::MathBlock;
     if(display||first.kind==markdown::Kind::Rule||
         (formula(first)&&renderer.math(first).width>g.right-g.left))g.left=geometry.left;

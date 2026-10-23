@@ -175,7 +175,7 @@ void diagnosticCommand(const String& line){
       settingsSelected?1:0,unsigned(networkMode),settingsRotated?1:0,
       settingsApClientConnected?1:0,settingsStaConfigured?1:0,settingsStaConnected?1:0,networkActive()?1:0,
       unsigned(pageOffsets.empty()?0:currentReadingOffset()),
-      unsigned(settingsSelected?settingsId:SettingsId::None),unsigned(reader_typography::style.flags()));
+      unsigned(settingsSelected?settingsId:SettingsId::None),unsigned(reader_typography::currentStyle().flags()));
     logDisplayStatus();
   }else if(line=="SCREEN"){
     M5.Display.waitDisplay();Serial.println("SCREEN 540 960 68");
