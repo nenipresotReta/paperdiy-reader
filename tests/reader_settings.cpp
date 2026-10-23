@@ -5,6 +5,7 @@
 #include "reader_settings.h"
 #include "cache_format.h"
 #include "input.h"
+#include "shutdown_art.h"
 int main(){
  using namespace reader_settings;
  Preferences store;store.blobs["wifiCfgV1"]={1,2,3};store.strings["sdLast"]="keep";
@@ -33,5 +34,8 @@ int main(){
  current()=Config{};unsigned ink=0;
  for(int y=0;y<4;++y)for(int x=0;x<4;++x){assert(keepInk(x,y)==bool((x+y)%2));ink+=keepInk(x,y);}assert(ink==8);
  current().ink=0;assert(!keepInk(1,0));current().ink=100;assert(keepInk(0,0));
+ std::vector<uint8_t> art(18,0);memcpy(art.data(),"PDI1",4);art[4]=9;art[6]=1;art[16]=128;
+ uint32_t checksum=crc(art.data()+16,2);for(int i=0;i<4;i++)art[12+i]=checksum>>(8*i);
+ assert(shutdown_art::valid(art.data(),art.size()));art[17]^=1;assert(!shutdown_art::valid(art.data(),art.size()));
  current()=Config{};
 }

@@ -19,6 +19,7 @@
 
 std::vector<String> sdBooks;
 bool sdOK = true;
+bool drawStoredShutdownArt(){return false;}
 size_t selectedBook = 0;
 String sdError;
 
