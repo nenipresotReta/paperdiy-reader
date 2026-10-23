@@ -1,4 +1,6 @@
 """Synthetic EPUB regression and resource-boundary tests; no external books."""
+import json
+import random
 import subprocess
 import sys
 import tempfile
@@ -14,10 +16,53 @@ chapter = '<html><body><p>Hello 世界 &amp; EPUB.</p><script>hidden</script><p>
 base = {'mimetype': 'application/epub+zip', 'META-INF/container.xml': container,
         'OPS/book.opf': package, 'OPS/chapter.xhtml': chapter}
 cases = 0
+sidecars = 0
+NONE = 2**32 - 1
+
+
+def metadata(result):
+    meta = json.loads(result.stderr)
+    if not meta['ready']:
+        assert meta['records'] == [] and meta['resources'] == []
+        return meta
+    text = result.stdout
+    records, resources = meta['records'], meta['resources']
+    previous_resource_end = 0
+    for resource in resources:
+        assert previous_resource_end <= resource['begin'] <= resource['end'] <= len(text)
+        text[resource['begin']:resource['end']].decode('utf-8', errors='strict')
+        previous_resource_end = resource['end']
+    previous_text_end = 0
+    for index, record in enumerate(records):
+        begin, end = record['begin'], record['end']
+        assert 0 <= begin <= end <= len(text)
+        text[begin:end].decode('utf-8', errors='strict')
+        if record['parent'] != NONE:
+            assert record['parent'] < index
+            parent = records[record['parent']]
+            assert parent['begin'] <= begin <= end <= parent['end']
+            assert parent['resource'] == record['resource']
+        if record['resource'] != NONE:
+            resource = resources[record['resource']]
+            assert resource['begin'] <= begin <= end <= resource['end']
+        if record['kind'] in ('text', 'break'):
+            assert previous_text_end <= begin
+            previous_text_end = end
+    # Every meaningful output byte is represented exactly once by text/title
+    # spans. Generated block separators may remain uncovered by design.
+    represented = b''.join(text[r['begin']:r['end']] for r in records if r['kind'] in ('text', 'break', 'title'))
+    strip_space = lambda value: bytes(c for c in value if c not in b' \t\n\r')
+    assert strip_space(represented) == strip_space(text), ('metadata omitted source text', represented[:100], text[:100])
+    return meta
+
+
+def payload(result, record):
+    return result.stdout[record['begin']:record['end']].decode('utf-8')
+
 
 
 def run(path, expected=None, error=None, mode=None):
-    global cases
+    global cases, sidecars
     result = subprocess.run([exe, str(path)] + ([mode] if mode else []), capture_output=True, timeout=15)
     # A signal/ASan abort must never satisfy a negative test.
     assert result.returncode == (1 if error else 0), (path.name, result.returncode, result.stderr.decode(errors='replace'))
@@ -29,6 +74,17 @@ def run(path, expected=None, error=None, mode=None):
             assert 'Hello 世界 & EPUB.' in output and 'Second paragraph.' in output and 'hidden' not in output
         else:
             assert output == expected, (path.name, repr(output[:160]), repr(expected[:160]))
+    # Every old success/error fixture also traverses the optional observer path.
+    # This is a byte-for-byte comparison, including normalization and ordering.
+    if mode is None:
+        observed = subprocess.run([exe, str(path), '--structure'], capture_output=True, timeout=15)
+        assert observed.returncode == result.returncode, (path.name, observed.stderr)
+        assert observed.stdout == result.stdout, (path.name, 'sidecar changed flat text')
+        if not error:
+            metadata(observed)
+        else:
+            assert observed.stderr == result.stderr
+        sidecars += 1
     cases += 1
     return result
 
@@ -121,6 +177,99 @@ with tempfile.TemporaryDirectory() as temp:
         result = run(archive('lang-' + tag + '.epub', {**base, 'OPS/book.opf': opf}), mode='--language')
         assert result.stderr.decode().strip() == f'HYPHEN_LANGUAGE english={expected_language}'
 
+    # Semantic records preserve actual flattened UTF-8 byte ranges. Formatting
+    # and CSS never modify text, generate list labels or select a new font.
+    rich_chapter = ('<html xml:lang="zh-Hans"><body><section><h2>第二章</h2>'
+        '<p style="margin: 9em">First <em>em <strong>both </strong></em>last '
+        '<span xml:lang="ja">日本語</span><span lang=""> unknown</span> </p>'
+        '<blockquote><p>quote</p><p>next</p></blockquote>'
+        '<ul><li>item<ul><li>nested</li></ul></li></ul>'
+        '<pre> x\n \t<b>code </b><i> </i></pre>'
+        '<p><code>end</code><br/>line<sup>2</sup><sub>3</sub></p></section></body></html>')
+    rich_package = package.replace('<package>', '<package><metadata><title>Book </title><language>EN-gb</language></metadata>')
+    rich = archive('structure-rich.epub', {**base, 'OPS/book.opf': rich_package, 'OPS/chapter.xhtml': rich_chapter})
+    expected_rich = 'Book\n\n第二章\n\nFirst em both last 日本語 unknown\n\nquote\n\nnext\n\nitem\n\nnested\n\n x\n     code\n\nend\nline23\n\n'
+    run(rich, expected=expected_rich)
+    result = run(rich, expected=expected_rich, mode='--structure')
+    meta = metadata(result)
+    assert meta['ready'] and meta['resources'][0]['path'] == 'OPS/chapter.xhtml'
+    records = meta['records']
+    headings = [r for r in records if r['kind'] == 'heading']
+    assert len(headings) == 1 and headings[0]['level'] == 2 and payload(result, headings[0]) == '第二章'
+    assert headings[0]['language'] == 'zh-hans'
+    title = next(r for r in records if r['kind'] == 'title')
+    assert payload(result, title) == 'Book' and title['language'] == 'en-gb' and title['resource'] == NONE
+    text_runs = [r for r in records if r['kind'] == 'text']
+    assert any(payload(result, r) == 'both ' and r['flags'] == 3 for r in text_runs)
+    assert any(payload(result, r) == '日本語' and r['language'] == 'ja' for r in text_runs)
+    assert any(payload(result, r) == ' unknown' and r['language'] == '' for r in text_runs)
+    assert any(payload(result, r) == 'code' and r['flags'] & 9 == 9 for r in text_runs)
+    assert any(payload(result, r) == 'end' and r['flags'] & 4 for r in text_runs)
+    assert any(payload(result, r) == '2' and r['flags'] & 16 for r in text_runs)
+    assert any(payload(result, r) == '3' and r['flags'] & 32 for r in text_runs)
+    quote_record = next(r for r in records if r['kind'] == 'quote')
+    assert payload(result, quote_record) == 'quote\n\nnext\n\n'
+    list_items = [r for r in records if r['kind'] == 'list-item']
+    assert len(list_items) == 2 and payload(result, list_items[0]) == 'item\n\nnested\n\n'
+    pre = next(r for r in records if r['kind'] == 'pre')
+    assert payload(result, pre) == ' x\n     code' and pre['flags'] & 8
+    assert len([r for r in records if r['kind'] == 'break']) == 1
+
+    # A failed optional allocation/budget never aborts the flat text import and
+    # never exposes a usable prefix that could silently hide later paragraphs.
+    for mode, status in [('--structure-oom', 4), ('--structure-record-budget', 3),
+                         ('--structure-path-budget', 3), ('--structure-resource-budget', 3)]:
+        failed = run(rich, expected=expected_rich, mode=mode)
+        failed_meta = metadata(failed)
+        assert not failed_meta['ready'] and failed_meta['status'] == status
+
+    notes_result = run(root / 'notes.epub', expected='Body 1.\n\nBody 2.\n\nNote.\n\n', mode='--structure')
+    note_meta = metadata(notes_result)
+    assert [r['spine'] for r in note_meta['resources']] == [0, 2, 1]
+    assert [r['auxiliary'] for r in note_meta['resources']] == [0, 0, 1]
+    assert [r['path'] for r in note_meta['resources']] == ['OPS/chapter.xhtml', 'OPS/chapter2.xhtml', 'OPS/notes.xhtml']
+    assert [payload(notes_result, r) for r in note_meta['resources']] == ['Body 1.\n\n', 'Body 2.\n\n', 'Note.\n\n']
+
+    # Empty and whitespace-only nested blocks can rewind a trailing text span.
+    # All positions remain ordered, contained and at UTF-8 boundaries.
+    for index, body in enumerate([
+        '<p>A<em> </em><strong> </strong><div/><div> </div>B</p>',
+        '<pre>é<b>  </b><em>  </em><div/>尾</pre>',
+        '<pre> <ul><li>bar</li></ul></pre>',
+        '<pre> <ol><ul><li>𠮷</li></ul></ol></pre>',
+        '<div> <p> <span> </span></p><p>𠮷</p></div>',
+        '<section><blockquote><div><p>x </p></div></blockquote></section>',
+        '<ol><li><p>One</p><p>Two</p></li><li>Three</li></ol>',
+        '<dl><dt>Term</dt><dd>Detail</dd></dl><table><tr><td>cell</td></tr></table>',
+    ]):
+        path = book('structure-boundary-' + str(index), '<html><body>' + body + '</body></html>')
+        flat = subprocess.run([exe, str(path)], capture_output=True, check=True, timeout=15)
+        observed = run(path, expected=flat.stdout.decode(), mode='--structure')
+        assert metadata(observed)['ready']
+
+    rng = random.Random(733)
+    inline_tags = ('em', 'strong', 'span', 'code')
+    block_tags = ('p', 'div', 'blockquote', 'ul', 'ol', 'li', 'pre')
+    def random_node(depth):
+        if depth == 0 or rng.randrange(3) == 0:
+            return rng.choice(('Text', '漢字', '𠮷', ' ', '  ', '\n', '\t', 'é'))
+        tag = rng.choice(inline_tags + block_tags)
+        return '<' + tag + '>' + ''.join(random_node(depth - 1) for _ in range(rng.randrange(1, 4))) + '</' + tag + '>'
+    random_content = '<html><body>' + ''.join('<section>' + random_node(5) + '</section>' for _ in range(200)) + '<p>END</p></body></html>'
+    random_path = book('structure-random-nesting', random_content)
+    random_flat = subprocess.run([exe, str(random_path)], capture_output=True, check=True, timeout=15)
+    random_result = run(random_path, expected=random_flat.stdout.decode(), mode='--structure')
+    assert metadata(random_result)['ready']
+
+    # Exhausted record/language budgets abandon all metadata, but the whole
+    # original text, including the final sentinel, remains available.
+    dense = book('structure-budget', '<html><body>' + '<p>x</p>' * 5000 + '<p>END</p></body></html>')
+    dense_result = run(dense, expected=('x\n\n' * 5000 + 'END\n\n'), mode='--structure')
+    assert metadata(dense_result)['status'] == 3
+    languages = book('structure-language-budget', '<html><body><p>' + ''.join(f'<span lang="x-{i}">x</span>' for i in range(32)) + 'END</p></body></html>')
+    language_result = run(languages, expected=('x' * 32 + 'END\n\n'), mode='--structure')
+    assert metadata(language_result)['status'] == 3
+
     # A 1 MiB flat chapter remains supported; DOM density, not text length, is bounded.
     framing = '<html><body><p></p></body></html>'
     text = 'x' * (1024 * 1024 - len(framing))
@@ -141,4 +290,4 @@ with tempfile.TemporaryDirectory() as temp:
     for allocation in range(1, 7):
         run(valid, error='PSRAM' if allocation > 1 else 'ZIP directory', mode=f'--fail-alloc={allocation}')
 
-print(f'EPUB syntax, Unicode, text fidelity, ZIP integrity and resource budgets: {cases} cases PASS')
+print(f'EPUB syntax, Unicode, text fidelity, ZIP integrity, bounded semantics: {cases} cases + {sidecars} byte-identical sidecars PASS')
