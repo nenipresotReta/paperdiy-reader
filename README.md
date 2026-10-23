@@ -2,7 +2,7 @@
 
 M5Stack PaperDIY 的 EPUB / TXT / Markdown 阅读器。中英文排版、离线数学公式、独立阅读进度与分页缓存。
 
-A/B 翻页；短按 A+B 打开或返回，长按 2 秒关机。书库双击翻整屏。热点网页支持传书与配网。
+A/B 翻页；短按 A+B 打开或返回，长按 2 秒关机。书库双击翻整屏。热点网页支持传书、配网、阅读设置与关机图片。
 
 [下载与升级](docs/upgrading.md) · [操作说明](docs/usage.md) · [Markdown 与公式](docs/markdown.md) · [版本说明](docs/releases/v0.3.0.md)
 
