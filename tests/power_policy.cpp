@@ -37,6 +37,10 @@ void policyBoundaries() {
   // A raw press must block sleep even before hardware debounce accepts it.
   expect(policy.plan(3100, {true, true, true, false}), false, false);
   expect(policy.plan(3100, {true, true, false, true}), true, false);
+  // A battery-powered AP/STA stays connected without giving up CPU throttling.
+  expect(policy.plan(3100, {true, true, false, false, true}), true, false);
+  expect(policy.plan(3100, {true, true, true, false, true}), false, false);
+  // Turning the network off restores normal battery idle sleep immediately.
   expect(policy.plan(3100, ready), true, true);
 
   policy.noteActivity(3100);
