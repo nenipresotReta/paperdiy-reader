@@ -294,3 +294,22 @@ Cleanup recognizes only fixed fixture paths with exact SHA-256 contents and
 an exact dummy Wi-Fi record; it must never replace real saved credentials.
 Remove the flag after acceptance. An optional `PAPERDIY_SHUTDOWN_HEADER` may
 name a private bitmap header; keep it and its build configuration outside Git.
+
+## Public release checks
+
+Build releases from the reviewed public branch, with diagnostics and the optional
+shutdown header disabled. `src/version.h` supplies the firmware version. Keep the
+README short; user-facing changes and upgrade details live under `docs/`.
+
+`python tools/check_public_source.py --index .` checks every staged source blob;
+`--tree DIR` checks the unpacked source artifact. The allowlist rejects generated
+files, private paths, artwork, credential markers and non-regular entries. It does
+not replace an outgoing-history review or the separate firmware audit. Test it
+with `python tests/public_source.py`. CI runs this gate, the pinned font-source
+checks, all native tests and the default public firmware build, with read-only
+repository permissions and Actions pinned to full commit IDs.
+
+Source archives come from the exact release commit. Firmware packages contain
+only the application image, upgrade instructions, checksums and matching license
+notices. Record the source commit and SHA-256 digests. Do not package a working
+directory, merged flash, NVS, SD content, logs, source font caches or private builds.
