@@ -21,7 +21,12 @@ NONE = 2**32 - 1
 
 
 def metadata(result):
-    meta = json.loads(result.stderr)
+    try:
+        meta = json.loads(result.stderr)
+    except json.JSONDecodeError as error:
+        raise AssertionError(
+            'Invalid EPUB structure diagnostics: ' + result.stderr.decode(errors='replace')
+        ) from error
     if not meta['ready']:
         assert meta['records'] == [] and meta['resources'] == []
         return meta

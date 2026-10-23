@@ -4,7 +4,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(SANITIZE "Enable address and undefined behavior sanitizers" ON)
 if(SANITIZE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+  add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address,undefined)
 endif()
 add_compile_options(-UNDEBUG)
@@ -63,7 +63,21 @@ add_executable(ui_simulation tests/ui_simulation.cpp src/markdown_reader.cpp src
 target_include_directories(ui_simulation BEFORE PRIVATE tests/ui_stubs tests/stubs src "${M5GFX_DIR}/src")
 target_link_libraries(ui_simulation PRIVATE OpenSSL::Crypto markdown_core)
 target_compile_options(ui_simulation PRIVATE -Wno-deprecated-declarations)
-add_library(miniz STATIC "${M5GFX_DIR}/src/lgfx/utility/lgfx_miniz.c")
+# M5GFX miniz forces typed unaligned reads on x86. Those reads violate C
+# alignment rules under UBSan even though the hardware accepts them. Build a
+# host-only copy using the same portable byte reads as the ESP32 target;
+# keep the pinned dependency and all sanitizer checks intact.
+file(READ "${M5GFX_DIR}/src/lgfx/utility/lgfx_miniz.c" MINIZ_SOURCE)
+set(MINIZ_UNALIGNED_DEFINE "\n#define MINIZ_USE_UNALIGNED_LOADS_AND_STORES 1\n")
+string(REGEX MATCHALL "${MINIZ_UNALIGNED_DEFINE}" MINIZ_DEFINES "${MINIZ_SOURCE}")
+list(LENGTH MINIZ_DEFINES MINIZ_DEFINE_COUNT)
+if(NOT MINIZ_DEFINE_COUNT EQUAL 1)
+  message(FATAL_ERROR "M5GFX miniz changed: review the portable host configuration")
+endif()
+string(REPLACE "${MINIZ_UNALIGNED_DEFINE}"
+  "\n#define MINIZ_USE_UNALIGNED_LOADS_AND_STORES 0\n" MINIZ_PORTABLE "${MINIZ_SOURCE}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/lgfx_miniz_portable.c" "${MINIZ_PORTABLE}")
+add_library(miniz STATIC "${CMAKE_CURRENT_BINARY_DIR}/lgfx_miniz_portable.c")
 add_executable(epub_core tests/epub_core.cpp lib/tinyxml2/tinyxml2.cpp)
 target_include_directories(epub_core PRIVATE lib/tinyxml2 "${M5GFX_DIR}/src")
 target_link_libraries(epub_core PRIVATE miniz)
