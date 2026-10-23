@@ -1,0 +1,23 @@
+PaperDIY Math bitmap subset
+
+Derived from STIX Two Math Regular, version 2.13 b171, SIL OFL 1.1.
+Copyright 2001-2021 The STIX Fonts Project Authors
+https://github.com/stipub/stixfonts
+
+Pinned upstream tag: v2.13b171
+Source: https://raw.githubusercontent.com/stipub/stixfonts/v2.13b171/fonts/static_otf/STIXTwoMath-Regular.otf
+SHA-256: 3a5f3f26f40d5698b3c62dd085d48d6663696a3f80825aab8b553d5097518e8c
+License: STIXTwoMath-OFL.txt in this directory, copied from the same tag.
+
+Only generated monochrome bitmap subsets at native 14, 20 and 28 pixel
+sizes are distributed. The source OTF and temporary outline/cmap build
+artifacts are not part of the repository. The derivative subset name is
+"PaperDIY Math". No glyph outlines are rescaled at runtime. Variant
+outlines, MATH constants and italic corrections come from the original
+OpenType MATH table; they are not guessed from character bounding boxes.
+
+Rebuild with tools/build_math_fonts.py. The checked-in data records Pillow,
+FreeType and fontTools versions, source hash, and monochrome threshold.
+The initial generator environment used Pillow 12.2.0, FreeType 2.14.3 and
+fontTools 4.62.1. Font sources and derived bitmap font data remain under
+SIL OFL 1.1; the project MIT license covers its original renderer code.

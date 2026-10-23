@@ -1,0 +1,15 @@
+NativeFont bitmap subset
+
+Derived from Noto Serif CJK SC Regular 2.003, SIL OFL 1.1.
+Copyright 2017-2024 Adobe; upstream reserved font name: Noto.
+The derivative uses the internal name NativeFont.
+
+Pinned commit: 9b0f1436e455d902de067a2501422e5dc71ad16b
+Source: https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Regular.otf
+SHA-256: 2a2eae2628df83556c54018c41e20fa532c1b862c5256ae8b3f23feb918d12ca
+License: Noto-OFL.txt in this directory.
+
+Rebuild native 24/28 px monochrome glyphs with tools/build_fonts.py.
+The fixed repertoire is selected from Unicode ranges and the source cmap.
+No installed system font, private font or book corpus is used.
+The generated font data remains SIL OFL 1.1; original renderer code is MIT.
