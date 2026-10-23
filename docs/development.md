@@ -63,13 +63,13 @@ network/rotation book is listed, leaving 21 ordinary books on the first screen.
 Wire ID 2 is retired and must not be reused. Existing V2 snapshots selecting
 that page restore Network read-only, preserving the selected book path.
 
-Punctuation compression and Han/ASCII spacing are always enabled through a
-const production style. No page or button toggles them. The legacy `cnStyle`
+Punctuation compression and Han/ASCII spacing default to enabled and are
+configured through the AP WebUI. No device page or button toggles them. The legacy `cnStyle`
 NVS key is ignored and preserved; startup does not write or delete it.
 
 `reader_typography.h` applies these options to TXT/EPUB and Markdown prose.
 Compression uses native glyph ink bounds, capped at 14 px while keeping 2 px of
-ink separation. Spacing adds 4 px only between adjacent Han and ASCII letters
+ink separation. Spacing adds 0, 2 or 4 px only between adjacent Han and ASCII letters
 or digits; explicit spaces and unsupported boundaries are left alone. Markdown
 code/preformatted runs, math objects and rules block contextual adjustments on
 both sides. Code uses each native 24 px glyph's actual advance, without the old
@@ -77,8 +77,9 @@ both sides. Code uses each native 24 px glyph's actual advance, without the old
 font. Preserve source spaces, indentation and newlines, with no code
 justification or hyphenation. No font regeneration is required. Page geometry
 and formula internals retain their own rules.
-The fixed enabled layout keeps the existing enabled cache identity and exact
-source anchors. Other historical layout variants remain read-only migration inputs.
+Reading presets select native 24/28 px fonts and geometry; interface glyphs
+remain fixed. Layout changes preserve exact source anchors. Historical cache
+layouts remain read-only migration inputs.
 
 ## Progress and caches
 
@@ -98,9 +99,10 @@ shutdown and a successful cache load must preserve that exact offset; only a
 real page change adopts the new page's start. The in-memory anchor is tied to
 the content key and the containing page, including persistence failure/retry.
 
-The layout family `0x20261050` encodes the P/S flags and text mode in its low
-bits: hyphenated text, non-hyphenated text, or Markdown. A cache hit must match
-both the current mode and P/S flags. Other layouts can provide verified text
+The layout family `0x20262000` encodes P/S, compact spacing, reading preset,
+hyphenation preference, alignment and document mode in nine low bits. A cache
+hit must match every geometry-affecting option. Double-click timing, refresh
+policy, sleep ink and artwork do not invalidate pagination. Other layouts can provide verified text
 for read-only anchor migration, but cannot supply current page boundaries or
 change the runtime style. Other geometry or extraction changes require a new
 layout family. A temporary raw Markdown fallback must not replace a valid
@@ -319,3 +321,29 @@ Source archives come from the exact release commit. Firmware packages contain
 only the application image, upgrade instructions, checksums and matching license
 notices. Record the source commit and SHA-256 digests. Do not package a working
 directory, merged flash, NVS, SD content, logs, source font caches or private builds.
+
+## Web settings and sleep artwork
+
+`reader_settings.h` owns validated defaults, bounded geometry presets and the
+20-byte `readerCfgV1` NVS wire record. It has a version, reserved-byte checks and
+CRC; missing/corrupt values use defaults without a startup write. A successful
+single-blob write publishes a new runtime configuration. No legacy preference,
+Wi-Fi or bookmark key is rewritten. The legacy `cnStyle` remains ignored.
+
+`web_page.h` contains the English AP page; `/api/settings` GET/POST and
+`/api/artwork` POST use the same session authentication as book upload. Full
+settings requests are validated before narrowing, persistence or application.
+Uploads block concurrent setting/image-choice mutations. Reading already left
+its scene and saved its anchor before AP mode; the next book open uses the new
+cache identity and reflows. No background network service is added.
+
+Artwork shares the bounded, receipt-backed chunk protocol with `kind=art`.
+The `PDI1` mask has a 16-byte header (magic, LE width/height, four reserved zero
+bytes, LE payload CRC32) and row-aligned MSB-first black bits, at most 540×960.
+The browser handles image codecs; firmware validates bounded dimensions,
+length and checksum before rendering. It writes an inactive SD slot and only
+then atomically switches the NVS image choice. Failed uploads or NVS writes
+leave the active image intact. Two `/.paperdiy/shutdown-{1,2}.bin` slots are
+excluded from book discovery. Remove disables the choice before deleting these
+slots; with no card inserted, the disabled choice persists without SD cleanup.
+The private compiled fallback remains outside the repository.
