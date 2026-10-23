@@ -1,6 +1,8 @@
 #include <M5Unified.h>
 #include <algorithm>
+#include <cstring>
 #include "reader.h"
+#include "qr_wrapper.h"
 #include "reader_font.h"
 #include "reading_font.h"
 #include "sd_reader.h"
@@ -11,16 +13,32 @@
 #ifdef PAPERDIY_SHUTDOWN_HEADER
 #include PAPERDIY_SHUTDOWN_HEADER
 #endif
-bool settingsSelected=false,settingsNetwork=false,settingsRotated=false;
+bool settingsSelected=false,settingsRotated=false;
+SettingsId settingsId=SettingsId::Network;
+NetworkMode networkMode=NetworkMode::Off;
+String settingsApSsid,settingsApPassword,settingsApUrl;
+bool settingsApClientConnected=false;
+String settingsStaSsid,settingsStaIp,settingsStaError;
+bool settingsStaConfigured=false,settingsStaConnected=false;
 namespace {
 constexpr int TOP=56,ROW=39;
 constexpr int BATTERY_CELL_X=504,BATTERY_CELL_Y=8,BATTERY_CELL_W=28,BATTERY_CELL_H=28;
 constexpr int BATTERY_X=506,BATTERY_Y=16,BATTERY_W=22,BATTERY_H=12;
-constexpr int SETTINGS_LEFT=32,SETTINGS_TOP=641,SETTINGS_LINE=112,SETTINGS_W=44,SETTINGS_H=151;
+constexpr int SETTINGS_LEFT=32,SETTINGS_TOP=641,SETTINGS_LINE=112,SETTINGS_W=260,SETTINGS_H=151;
+constexpr int MODE_STEP=108;
+constexpr int MODE_PREFIX_X[3]={32,32+MODE_STEP,32+2*MODE_STEP};
+constexpr int MODE_LETTER_X[3]={48,48+MODE_STEP,48+2*MODE_STEP};
+// Network content and button controls occupy separate physical panel areas.
+// Mirror the content area as well as the controls when rotating the display.
+constexpr int SETTINGS_CONTENT_TOP=112,SETTINGS_CONTENT_H=400;
+constexpr int MODE_REFRESH_X=24;
+constexpr int MODE_REFRESH_W=300,MODE_REFRESH_H=64;
 int settingsDx(){return settingsRotated?540-SETTINGS_LEFT-SETTINGS_W-SETTINGS_LEFT:0;}
-int settingsDy(){return settingsRotated?960-SETTINGS_TOP-SETTINGS_H-SETTINGS_TOP:0;}
-int lastBattery=-2;
-bool lastCharging=false;
+// In physical panel coordinates the mode row stays above R in both orientations.
+int settingsModeY(){return settingsRotated?960-SETTINGS_TOP-SETTINGS_H+SETTINGS_LINE:SETTINGS_TOP;}
+int settingsRotationY(){return settingsRotated?960-SETTINGS_TOP-SETTINGS_H:SETTINGS_TOP+SETTINGS_LINE;}
+int settingsContentDy(){return settingsRotated?960-2*SETTINGS_CONTENT_TOP-SETTINGS_CONTENT_H:0;}
+int lastBatteryFill=-1; // No battery pixels have been painted yet.
 int batteryHistory=-1;
 bool batteryHistoryLoaded=false;
 void loadBatteryHistory(){
@@ -53,6 +71,93 @@ void bookName(const String& name,int x,int y,int width,uint32_t foreground){
   }
   M5.Display.setFont(readerFont());
 }
+void bodyText(const char* text,int x,int y){
+  const size_t length=strlen(text);
+  size_t pos=0;int pen=x;
+  while(pos<length){
+    char ch[5];size_t n=utf8Char(text+pos,length-pos,ch);
+    drawBodyGlyph(ch,n,pen,y,TFT_BLACK);
+    pen+=bodyGlyphAdvance(readerCodepoint(ch,n));pos+=n;
+  }
+}
+int activeModeIndex(){
+  if(networkMode==NetworkMode::Sta)return 0;
+  if(networkMode==NetworkMode::Ap)return 1;
+  if(networkMode==NetworkMode::Usb)return 2;
+  return -1;
+}
+void modeRow(int dx,int y){
+  static const char* labels[3]={"N","A","U"};
+  const int active=activeModeIndex();
+  for(int i=0;i<3;++i){
+    if(i!=active)drawBodyGlyph("\xc2\xac",2,MODE_PREFIX_X[i]+dx,y,TFT_BLACK);
+    drawBodyGlyph(labels[i],1,MODE_LETTER_X[i]+dx,y,TFT_BLACK);
+  }
+}
+void smallLine(const String& text,int x,int y){
+  font();
+  M5.Display.setCursor(x,y);
+  M5.Display.print(fitName(text,540-x-24));
+}
+void qrCode(const String& data,int x,int y,int size){
+  uint8_t matrix[64*64];
+  const int count=qrMatrix(data.c_str(),matrix,6);
+  if(count<=0)return;
+  const int scale=size/(count+8);
+  if(scale<1)return;
+  const int total=(count+8)*scale;
+  const int left=x+(size-total)/2;
+  const int top=y+(size-total)/2;
+  M5.Display.fillRect(x,y,size,size,TFT_WHITE);
+  for(int row=0;row<count;++row)
+    for(int col=0;col<count;++col)
+      if(matrix[row*count+col])
+        M5.Display.fillRect(left+(col+4)*scale,top+(row+4)*scale,scale,scale,TFT_BLACK);
+}
+void apPanel(){
+  const int dy=settingsContentDy();
+  if(settingsApSsid.length()==0){
+    bodyText("AP not running",32,120+dy);
+    return;
+  }
+  constexpr int qrY=112,qrSize=294,qrX=(540-qrSize)/2;
+  const String payload=settingsApClientConnected?settingsApUrl:
+    String("WIFI:T:WPA;S:")+settingsApSsid+";P:"+settingsApPassword+";H:false;;";
+  qrCode(payload,qrX,qrY+dy,qrSize);
+  const String caption=settingsApClientConnected?"Web UI":"Wi-Fi";
+  font();
+  smallLine(caption,(540-M5.Display.textWidth(caption))/2,414+dy);
+  smallLine(String("SSID: ")+settingsApSsid,24,448+dy);
+  smallLine(String("PASS: ")+settingsApPassword,24,480+dy);
+}
+void staPanel(){
+  const int dy=settingsContentDy();
+  bodyText("STA",32,112+dy);
+  font();
+  int y=160+dy;
+  String ssidLine=settingsStaConfigured?String("SSID: ")+settingsStaSsid:String("No WiFi config");
+  M5.Display.setCursor(32,y);
+  M5.Display.print(fitName(ssidLine,484));
+  y+=36;
+  if(settingsStaConfigured){
+    String status=settingsStaError.length()?settingsStaError:String(settingsStaConnected?"Connected":"Connecting...");
+    M5.Display.setCursor(32,y);
+    M5.Display.print(fitName(status,484));
+    y+=36;
+    if(settingsStaConnected){
+      M5.Display.setCursor(32,y);
+      M5.Display.print(String("IP: ")+settingsStaIp);
+    }
+  }else{
+    M5.Display.setCursor(32,y);
+    M5.Display.print("Configure in A mode");
+  }
+}
+void usbPanel(){
+  const int dy=settingsContentDy();
+  bodyText("USB Storage",32,112+dy);
+  smallLine("Not enabled in this build",32,160+dy);
+}
 void statusIcon(bool busy=false){
   M5.Display.fillRect(504,928,28,28,TFT_WHITE);
   if(busy){
@@ -63,13 +168,19 @@ void statusIcon(bool busy=false){
     M5.Display.fillRect(517,935,3,8,TFT_BLACK);M5.Display.fillRect(517,946,3,3,TFT_BLACK);
   }else {M5.Display.drawCircle(518,942,7,TFT_BLACK);M5.Display.fillCircle(518,942,3,TFT_BLACK);}
 }
-void battery(){
-  int raw=M5.Power.getBatteryLevel();bool charging=chargingNow();
-  int value=batteryLevelForDisplay(raw,charging);lastBattery=value;lastCharging=charging;
+int batteryFillWidth(int value){
+  return value<0?0:(BATTERY_W-4)*std::min(100,value)/100;
+}
+void battery(int value){
+  lastBatteryFill=batteryFillWidth(value);
   M5.Display.fillRect(BATTERY_CELL_X,BATTERY_CELL_Y,BATTERY_CELL_W,BATTERY_CELL_H,TFT_WHITE);
   M5.Display.drawRect(BATTERY_X,BATTERY_Y,BATTERY_W,BATTERY_H,TFT_BLACK);
   M5.Display.fillRect(BATTERY_X+BATTERY_W,BATTERY_Y+4,2,4,TFT_BLACK);
-  if(value>=0)M5.Display.fillRect(BATTERY_X+2,BATTERY_Y+2,(BATTERY_W-4)*std::min(100,value)/100,BATTERY_H-4,TFT_BLACK);
+  if(lastBatteryFill>0)M5.Display.fillRect(BATTERY_X+2,BATTERY_Y+2,lastBatteryFill,BATTERY_H-4,TFT_BLACK);
+}
+void battery(){
+  int raw=M5.Power.getBatteryLevel();bool charging=chargingNow();
+  battery(batteryLevelForDisplay(raw,charging));
 }
 void row(size_t index,int rowIndex,bool chosen){
   int y=TOP+rowIndex*ROW;
@@ -80,36 +191,35 @@ void row(size_t index,int rowIndex,bool chosen){
   bookName(name,24,y+2,488,chosen?TFT_WHITE:TFT_BLACK);
   M5.Display.clearClipRect();
 }
-void settingsRow(bool chosen){
-  int y=TOP;
+void settingsRow(size_t index,int rowIndex,bool chosen){
+  int y=TOP+rowIndex*ROW;
   M5.Display.fillRect(16,y,508,ROW,chosen?TFT_BLACK:TFT_WHITE);
   M5.Display.setTextColor(chosen?TFT_WHITE:TFT_BLACK,chosen?TFT_BLACK:TFT_WHITE);
   M5.Display.setClipRect(16,y,508,ROW);
-  bookName("Settings",24,y+2,488,chosen?TFT_WHITE:TFT_BLACK);
+  bookName(settings_registry::ENTRIES[index].title,24,y+2,488,chosen?TFT_WHITE:TFT_BLACK);
   M5.Display.clearClipRect();
 }
 }
 void showLibrary(bool sceneChange){
   beginRefresh(sceneChange);M5.Display.fillScreen(TFT_WHITE);font();battery();
-  size_t cursor=settingsSelected?0:selectedBook+1;
+  size_t cursor=settings_registry::libraryCursor(selectedBook,settingsSelected,settingsId);
   size_t page=cursor/controls::LIBRARY_ROWS;
-  size_t firstBook=page?page*controls::LIBRARY_ROWS-1:0;
-  if(page==0){
-    settingsRow(settingsSelected);
-    for(size_t r=1;r<controls::LIBRARY_ROWS&&r-1<sdBooks.size();++r)
-      row(r-1,int(r),!settingsSelected&&selectedBook==r-1);
-  }else{
-    for(size_t r=0;r<controls::LIBRARY_ROWS&&firstBook+r<sdBooks.size();++r)
-      row(firstBook+r,int(r),!settingsSelected&&selectedBook==firstBook+r);
+  size_t first=page*controls::LIBRARY_ROWS;
+  size_t firstBook=first>=settings_registry::COUNT?first-settings_registry::COUNT:0;
+  for(size_t r=0;r<controls::LIBRARY_ROWS;++r){
+    const size_t entry=first+r;
+    if(entry<settings_registry::COUNT)settingsRow(entry,int(r),entry==cursor);
+    else if(entry-settings_registry::COUNT<sdBooks.size())
+      row(entry-settings_registry::COUNT,int(r),entry==cursor);
   }
   if(!sdOK){font();String text="sd card mount failed";M5.Display.setCursor((540-M5.Display.textWidth(text))/2,450);M5.Display.print(text);}
   statusIcon();endRefresh("library",0,0,540,960);
   Serial.printf("LIBRARY books=%u selected=%u settings=%d first=%u rows=%u mounted=%d\n",(unsigned)sdBooks.size(),(unsigned)selectedBook,settingsSelected?1:0,(unsigned)firstBook,controls::LIBRARY_ROWS,sdOK);
 }
-void updateLibrarySelection(size_t oldSelection,bool oldSettings){
-  if(oldSelection==selectedBook&&oldSettings==settingsSelected)return;
-  size_t oldCursor=oldSettings?0:oldSelection+1;
-  size_t newCursor=settingsSelected?0:selectedBook+1;
+void updateLibrarySelection(size_t oldSelection,bool oldSettings,SettingsId oldId){
+  size_t oldCursor=settings_registry::libraryCursor(oldSelection,oldSettings,oldId);
+  size_t newCursor=settings_registry::libraryCursor(selectedBook,settingsSelected,settingsId);
+  if(oldCursor==newCursor)return;
   size_t page=newCursor/controls::LIBRARY_ROWS;
   if(oldCursor/controls::LIBRARY_ROWS!=page){showLibrary(false);return;}
   int oldRow=int(oldCursor%controls::LIBRARY_ROWS);
@@ -117,8 +227,8 @@ void updateLibrarySelection(size_t oldSelection,bool oldSettings){
   beginRefresh();font();
   auto drawRow=[&](size_t cursor,bool chosen){
     int r=int(cursor%controls::LIBRARY_ROWS);
-    if(page==0&&r==0){settingsRow(chosen);return;}
-    size_t book=page==0?size_t(r-1):page*controls::LIBRARY_ROWS-1+size_t(r);
+    if(cursor<settings_registry::COUNT){settingsRow(cursor,r,chosen);return;}
+    size_t book=cursor-settings_registry::COUNT;
     if(book<sdBooks.size())row(book,r,chosen);
   };
   drawRow(oldCursor,false);drawRow(newCursor,true);
@@ -157,29 +267,46 @@ void showSettings(bool sceneChange){
   beginRefresh(sceneChange);
   M5.Display.fillScreen(TFT_WHITE);
   prepareReaderFont();
-  int dx=settingsDx(),dy=settingsDy();
-  if(!settingsNetwork)drawBodyGlyph("\xc2\xac",2,SETTINGS_LEFT+dx,SETTINGS_TOP+dy,TFT_BLACK);
-  drawBodyGlyph("N",1,48+dx,SETTINGS_TOP+dy,TFT_BLACK);
-  if(!settingsRotated)drawBodyGlyph("\xc2\xac",2,SETTINGS_LEFT+dx,SETTINGS_TOP+SETTINGS_LINE+dy,TFT_BLACK);
-  drawBodyGlyph("R",1,48+dx,SETTINGS_TOP+SETTINGS_LINE+dy,TFT_BLACK);
+  if(networkMode==NetworkMode::Ap)apPanel();
+  else if(networkMode==NetworkMode::Sta)staPanel();
+  else if(networkMode==NetworkMode::Usb)usbPanel();
+  int dx=settingsDx();
+  modeRow(dx,settingsModeY());
+  if(!settingsRotated)drawBodyGlyph("\xc2\xac",2,SETTINGS_LEFT+dx,settingsRotationY(),TFT_BLACK);
+  // The panel-side button edge is the far end of the mirrored mode row.
+  const int rotationX=MODE_LETTER_X[settingsRotated?2:0]+dx;
+  drawBodyGlyph("R",1,rotationX,settingsRotationY(),TFT_BLACK);
   endRefresh("settings",0,0,540,960);
 }
-void updateSettingsNetwork(){
+void updateSettingsMode(){
+  if(settingsId!=SettingsId::Network)return;
   beginRefresh();
-  int dx=settingsDx(),dy=settingsDy();
-  int rx=settingsRotated?540-(24+100):24;
-  int ry=settingsRotated?960-(SETTINGS_TOP+SETTINGS_LINE+64):SETTINGS_TOP-12;
-  M5.Display.fillRect(rx,ry,100,64,TFT_WHITE);
+  int rx=settingsRotated?540-(MODE_REFRESH_X+MODE_REFRESH_W):MODE_REFRESH_X;
+  int ry=settingsModeY()-12;
+  M5.Display.fillRect(rx,ry,MODE_REFRESH_W,MODE_REFRESH_H,TFT_WHITE);
   prepareReaderFont();
-  if(!settingsNetwork)drawBodyGlyph("\xc2\xac",2,SETTINGS_LEFT+dx,SETTINGS_TOP+dy,TFT_BLACK);
-  drawBodyGlyph("N",1,48+dx,SETTINGS_TOP+dy,TFT_BLACK);
-  endRefresh("settings-n",rx,ry,100,64);
+  modeRow(settingsDx(),settingsModeY());
+  endRefresh("settings-mode",rx,ry,MODE_REFRESH_W,MODE_REFRESH_H);
 }
+void updateSettingsNetwork(){
+  if(settingsId!=SettingsId::Network)return;
+  beginRefresh();
+  const int y=SETTINGS_CONTENT_TOP+settingsContentDy();
+  M5.Display.fillRect(0,y,540,SETTINGS_CONTENT_H,TFT_WHITE);
+  prepareReaderFont();
+  if(networkMode==NetworkMode::Ap)apPanel();
+  else if(networkMode==NetworkMode::Sta)staPanel();
+  else if(networkMode==NetworkMode::Usb)usbPanel();
+  endRefresh("settings-network",0,y,540,SETTINGS_CONTENT_H);
+}
+
 void updateLibraryBattery(){
   int raw=M5.Power.getBatteryLevel();bool charging=chargingNow();
   int level=batteryLevelForDisplay(raw,charging);
-  if(level==lastBattery&&charging==lastCharging)return;
-  beginRefresh();battery();
+  // Only the quantized fill is visible; charging freezes the displayed level
+  // but has no separate icon. Keep sampling/history even when no pixel changes.
+  if(batteryFillWidth(level)==lastBatteryFill)return;
+  beginRefresh();battery(level);
   endRefresh("battery",BATTERY_CELL_X,BATTERY_CELL_Y,BATTERY_CELL_W,BATTERY_CELL_H);
 }
 void saveBatteryHistory(){

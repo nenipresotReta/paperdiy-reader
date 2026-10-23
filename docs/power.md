@@ -13,6 +13,9 @@ After one second without activity, lower the CPU from 240 MHz to 80 MHz.
 On battery power, also enter manual light sleep with a one-second timer fallback.
 On USB or other external power, only lower the CPU frequency; keep the processor
 awake so USB enumeration, serial access, and firmware upload remain available.
+An active AP or STA also blocks manual light sleep, which would suspend Wi-Fi;
+idle CPU throttling remains enabled. Leaving settings disables the radio and
+restores the ordinary battery sleep policy.
 Restore 240 MHz before processing input, loading a book, or refreshing the screen.
 
 Only sleep at the application loop boundary: no loading, display update, storage
@@ -44,6 +47,16 @@ reset or power-off behavior.
 There is no automatic shutdown. Light sleep preserves the loaded book, page
 index, framebuffer, and navigation state. It must not restart the application,
 remount an unchanged SD card, or reload a book after each pause.
+
+## Battery icon updates
+
+The existing library sampling interval is unchanged. Redraw only when the
+18-pixel interior fill changes; percentages and charge transitions that produce
+identical pixels do not request a display update. Continue tracking the latest
+discharge estimate even when no refresh is needed. Initial paint and scene or
+rotation changes still draw the whole icon. The [host comparison](research-2026-10.md)
+verifies identical pixel traces with fewer requests; current/energy savings
+have not been measured.
 
 ## USB and power-source detection
 

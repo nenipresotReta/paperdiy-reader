@@ -1,0 +1,12 @@
+{
+  "name": "paperdiy-md4c",
+  "version": "0.5.2",
+  "license": "MIT",
+  "build": {
+    "srcDir": ".",
+    "includeDir": ".",
+    "srcFilter": [
+      "+<md4c.c>"
+    ]
+  }
+}

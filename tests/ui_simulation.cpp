@@ -11,7 +11,11 @@
 #include "reading_font.h"
 #include "sd_reader.h"
 #include "ui.h"
+#include "reader_typography.h"
+#include "resume_store.h"
 #include "display_driver.h"
+#include "qr_wrapper.h"
+#include "markdown_samples.h"
 
 std::vector<String> sdBooks;
 bool sdOK = true;
@@ -39,11 +43,18 @@ int bodyGlyphAdvance(uint32_t codepoint) {
 bool readerFontHasGlyph(uint32_t codepoint) {
   return reader_font::hasGlyph(reader_font::FONT_24, codepoint);
 }
+const reader_font::Glyph* bodyGlyph(uint32_t codepoint) {
+  return reader_font::findGlyph(reader_font::FONT_28, codepoint);
+}
 bool bodyFontHasGlyph(uint32_t codepoint) {
   return reader_font::hasGlyph(reader_font::FONT_28, codepoint);
 }
 
+struct CodeGlyph { uint32_t cp; int x,y; };
+bool captureCodeGlyphs=false;
+std::vector<CodeGlyph> capturedCodeGlyphs;
 void drawReaderGlyph(const char* text, size_t bytes, int x, int y, uint32_t foreground) {
+  if(captureCodeGlyphs)capturedCodeGlyphs.push_back({readerCodepoint(text,bytes),x,y});
   reader_font::drawGlyphRuns(reader_font::FONT_24, readerCodepoint(text, bytes), x, y,
     [&](int left, int top, int count) {
       M5.Display.drawFastHLine(left, top, count, foreground);
@@ -57,13 +68,15 @@ void drawBodyGlyph(const char* text, size_t bytes, int x, int y, uint32_t foregr
     });
 }
 
-bool chargingNow() { return false; }
+bool simulatedCharging=false;
+bool chargingNow() { return simulatedCharging; }
 void powerActivity() {}
 
 namespace {
 std::vector<char> textBuffer;
 
-void loadBook(const std::string& text) {
+void loadBook(const std::string& text, bool markdown = false) {
+  bookMarkdown=markdown;bookMarkupFallback=false;
   textBuffer.assign(text.begin(), text.end());
   textBuffer.push_back(0);
   book = textBuffer.data();
@@ -91,17 +104,196 @@ int countBlack(int x0, int y0, int x1, int y1) {
   return count;
 }
 
-void writePGM(const char* path) {
+void writePGM(const char* path, bool physical = false) {
   FILE* file = fopen(path, "wb");
   assert(file);
   fprintf(file, "P5\n540 960\n255\n");
-  assert(fwrite(M5.Display.fb.data(), 1, M5.Display.fb.size(), file) ==
-         M5.Display.fb.size());
+  const auto& pixels = physical ? M5.Display.panel : M5.Display.fb;
+  assert(fwrite(pixels.data(), 1, pixels.size(), file) == pixels.size());
   fclose(file);
+}
+
+void rotateSettings(bool rotated) {
+  settingsRotated = rotated;
+  displaySetRotated(rotated);
+  assert(M5.Display.rotation == (rotated ? 2 : 0));
+}
+
+std::vector<uint8_t> crop(int x, int y, int width, int height) {
+  std::vector<uint8_t> pixels;
+  for (int row = y; row < y + height; ++row)
+    pixels.insert(pixels.end(), M5.Display.fb.begin() + row * 540 + x,
+                  M5.Display.fb.begin() + row * 540 + x + width);
+  return pixels;
+}
+
+void expectedGlyph(std::vector<uint8_t>& pixels, uint32_t cp, int x, int y) {
+  reader_font::drawGlyphRuns(reader_font::FONT_28, cp, x, y,
+    [&](int left, int top, int count) {
+      for (int column = left; column < left + count; ++column)
+        pixels[top * 540 + column] = 0;
+    });
+}
+
+void expectControls(NetworkMode mode, bool rotated) {
+  // Check the full native glyph bitmaps, not merely whether each region has ink.
+  // N/A/U pen positions are exactly 108 px apart in either orientation.
+  const int letters[3] = {rotated ? 264 : 48, rotated ? 372 : 156,
+                          rotated ? 480 : 264};
+  assert(letters[1] - letters[0] == 108 && letters[2] - letters[1] == 108);
+  const int modeY = rotated ? 280 : 641, rY = rotated ? 168 : 753;
+  const int rX = rotated ? 480 : 48;
+  const char labels[] = "NAU";
+  const int active = mode == NetworkMode::Sta ? 0 : mode == NetworkMode::Ap ? 1 :
+                     mode == NetworkMode::Usb ? 2 : -1;
+  std::vector<uint8_t> expected(540 * 960, 255);
+  for (int i = 0; i < 3; ++i) {
+    if (i != active) expectedGlyph(expected, 0xac, letters[i] - 16, modeY);
+    expectedGlyph(expected, labels[i], letters[i], modeY);
+  }
+  if (!rotated) expectedGlyph(expected, 0xac, rX - 16, rY);
+  expectedGlyph(expected, 'R', rX, rY);
+  for (int top : {modeY, rY}) {
+    for (int y = top; y < top + reader_font::BODY_HEIGHT; ++y)
+      for (int x = 0; x < 540; ++x) {
+        const uint8_t value = expected[y * 540 + x];
+        assert(M5.Display.fb[y * 540 + x] == value);
+        const int px = rotated ? 539 - x : x, py = rotated ? 959 - y : y;
+        assert(M5.Display.panel[py * 540 + px] == value);
+      }
+  }
+  const int physicalModeY = rotated ? 960 - modeY - reader_font::BODY_HEIGHT : modeY;
+  const int physicalRY = rotated ? 960 - rY - reader_font::BODY_HEIGHT : rY;
+  assert(physicalModeY == 641 && physicalRY == 753);
+  // A 28 px R cell stays at the physical left/button side after the flip.
+  const int physicalRLeft = rotated ? 540 - rX - 28 : rX;
+  assert(physicalRLeft >= 24 && physicalRLeft < 80);
+  assert(countBlack(0, 0, 540, 112) == 0);  // no settings-page heading
+}
+
+void expectPartialModeChange(NetworkMode next, bool rotated) {
+  const auto before = M5.Display.panel;
+  networkMode = next;
+  updateSettingsMode();
+  const int lx = rotated ? 216 : 24, ly = rotated ? 268 : 629;
+  assert(!M5.Display.lastFull);
+  assert(M5.Display.lastRefreshX == lx && M5.Display.lastRefreshY == ly);
+  assert(M5.Display.lastRefreshW == 300 && M5.Display.lastRefreshH == 64);
+  const int px = 24, py = rotated ? 628 : 629;
+  unsigned changed = 0, erased = 0;
+  for (int y = 0; y < 960; ++y)
+    for (int x = 0; x < 540; ++x) {
+      const size_t index = size_t(y) * 540 + x;
+      if (before[index] != M5.Display.panel[index]) {
+        ++changed;
+        assert(x >= px && x < px + 300 && y >= py && y < py + 64);
+        if (before[index] == 0 && M5.Display.panel[index] == 255) ++erased;
+      }
+    }
+  assert(changed > 0 && erased > 0);
+  expectControls(next, rotated); // including actual clearing of the active prefix
+}
+void expectSingleQr(const char* payload, bool rotated) {
+  // Match the complete symbol and its four-module quiet zone to the expected
+  // payload; no second QR or text may occupy the surrounding QR-height band.
+  uint8_t matrix[64 * 64];
+  const int modules = qrMatrix(payload, matrix, 6);
+  assert(modules == 41);
+  constexpr int size = 294, scale = 6, left = 123;
+  const int top = rotated ? 448 : 112;
+  for (int y = 0; y < size; ++y)
+    for (int x = 0; x < 540; ++x) {
+      const int col = (x - left) / scale - 4, row = y / scale - 4;
+      const bool dark = x >= left && x < left + size &&
+        col >= 0 && col < modules && row >= 0 && row < modules &&
+        matrix[row * modules + col];
+      assert(black(x, top + y) == dark);
+    }
+}
+
+void expectPartialNetworkChange(bool connected, bool rotated) {
+  const auto before = M5.Display.panel;
+  settingsApClientConnected = connected;
+  updateSettingsNetwork();
+  assert(!M5.Display.lastFull);
+  assert(M5.Display.lastRefreshX == 0);
+  assert(M5.Display.lastRefreshY == (rotated ? 448 : 112));
+  assert(M5.Display.lastRefreshW == 540 && M5.Display.lastRefreshH == 400);
+  unsigned changed = 0, erased = 0;
+  for (int y = 0; y < 960; ++y)
+    for (int x = 0; x < 540; ++x) {
+      const size_t index = size_t(y) * 540 + x;
+      if (before[index] != M5.Display.panel[index]) {
+        ++changed;
+        // Both panel orientations reserve exactly this physical area.
+        assert(y >= 112 && y < 512);
+        if (before[index] == 0 && M5.Display.panel[index] == 255) ++erased;
+      }
+    }
+  assert(changed > 0 && erased > 0);
+  expectSingleQr(connected ? "http://192.168.4.1/?t=1234567890abcdef1234567890abcdef" :
+                 "WIFI:T:WPA;S:PaperDIY-TEST;P:ABCDEFGHJKLM;H:false;;", rotated);
+  expectControls(NetworkMode::Ap, rotated);
 }
 }  // namespace
 
+
+void batteryPixelUpdates() {
+  auto sample = [](int level, bool charging, int expectedFill, bool rotated,
+                   bool shouldRefresh) {
+    const unsigned before = M5.Display.refreshCount;
+    const auto oldPixels = M5.Display.panel;
+    M5.Power.battery = level;
+    simulatedCharging = charging;
+    updateLibraryBattery();
+    assert(M5.Display.refreshCount == before + unsigned(shouldRefresh));
+    // Assert the actual native logical AND physical battery pixels.
+    for (int y = 18; y < 26; ++y) for (int x = 508; x < 526; ++x) {
+      const uint8_t expected = x < 508 + expectedFill ? 0 : 255;
+      assert(M5.Display.fb[y * 540 + x] == expected);
+      const int px = rotated ? 539 - x : x, py = rotated ? 959 - y : y;
+      assert(M5.Display.panel[py * 540 + px] == expected);
+    }
+    if (!shouldRefresh) assert(M5.Display.panel == oldPixels);
+  };
+  // Even an unknown battery must draw the frame on its first paint.
+  sample(-1, false, 0, false, true);
+  assert(black(506, 16));
+  for (bool rotated : {false, true}) {
+    rotateSettings(rotated);
+    M5.Power.battery = 86;
+    simulatedCharging = false;
+    showLibrary(true);
+    sample(87, false, 15, rotated, false);
+    sample(88, false, 15, rotated, false);
+    // Charging has no separate on-screen bolt and preserves discharge history.
+    sample(100, true, 15, rotated, false);
+    sample(50, true, 15, rotated, false);
+    sample(89, false, 16, rotated, true);
+    sample(88, false, 15, rotated, true);
+    for (int i = 0; i < 100; ++i)
+      sample(86 + i % 3, false, 15, rotated, false);
+    sample(-1, false, 0, rotated, true);
+    sample(0, false, 0, rotated, false);
+    sample(5, false, 0, rotated, false);
+    sample(6, false, 1, rotated, true);
+    sample(100, false, 18, rotated, true);
+    // The latest discharge estimate is retained even when its pixels matched.
+    sample(87, false, 15, rotated, true);
+    sample(88, false, 15, rotated, false);
+    saveBatteryHistory();
+    assert(prefs.getUInt("battLast", 999) == 88);
+    sample(99, true, 15, rotated, false);
+    saveBatteryHistory();
+    assert(prefs.getUInt("battLast", 999) == 88);
+  }
+  simulatedCharging = false;
+  rotateSettings(false);
+}
+
 int main() {
+  displayInit();
+  batteryPixelUpdates();
   M5.Power.battery = 87;
   for (int i = 1; i <= 25; ++i) {
     if (i == 1) sdBooks.push_back("/books/模拟书籍 01.epub");
@@ -109,18 +301,23 @@ int main() {
     else sdBooks.push_back("/books/Book " + std::to_string(i) + ".epub");
   }
   settingsSelected = false;
-  settingsNetwork = false;
+  networkMode = NetworkMode::Off;
   settingsRotated = false;
+  assert(nextNetworkMode(NetworkMode::Off) == NetworkMode::Sta);
+  assert(nextNetworkMode(NetworkMode::Sta) == NetworkMode::Ap);
+  assert(nextNetworkMode(NetworkMode::Ap) == NetworkMode::Usb);
+  assert(nextNetworkMode(NetworkMode::Usb) == NetworkMode::Off);
+  assert(bodyFontHasGlyph('&'));
 
-  // First library page: Settings at row 0, books 0..20 at rows 1..21.
+  // One virtual settings book leads the library; real books 0..20 fill rows 1..21.
   showLibrary(true);
   assert(M5.Display.lastFull);
   assert(M5.Display.lastRefreshX == 0 && M5.Display.lastRefreshW == 540);
-  assert(!black(17, 57));                      // Settings row is not selected
-  assert(black(17, 96));                       // first book row is selected
-  assert(countBlack(24, 57, 500, 94) > 0);     // Settings text is drawn
+  assert(!black(17, 57));                      // Network & Rotation row is not selected
+  assert(black(17, 96));                      // first book row is selected
+  assert(countBlack(24, 57, 500, 94) > 0);     // Network & Rotation text is drawn
   assert(countBlack(24, 875, 500, 913) > 0);   // 21st book row is drawn
-  assert(!black(20, 914));                     // 22nd book row is not on page 1
+  assert(!black(20, 914));                     // next book row is not on page 1
   assert(countBlack(360, 12, 532, 48) > 0);    // battery area
   const int fullBattery = countBlack(504, 8, 532, 36);
   M5.Power.battery = 20;
@@ -146,7 +343,7 @@ int main() {
   assert(M5.Display.lastRefreshW == 508 && M5.Display.lastRefreshH == 78);
   selectedBook = 0;
 
-  // Settings row selected, then book 0 selected again.
+  // First virtual setting selected, then real book 0 selected again.
   settingsSelected = true;
   selectedBook = 0;
   showLibrary(true);
@@ -158,70 +355,116 @@ int main() {
   assert(M5.Display.lastRefreshX == 16 && M5.Display.lastRefreshY == 56);
   assert(M5.Display.lastRefreshW == 508 && M5.Display.lastRefreshH == 78);
 
-  // Settings only exists on the first page. Book 21 starts page 2 at row 0.
-  selectedBook = 21;
+  // Virtual settings stay on page 1. Book 21 starts page 2 at row 0.
+  settingsSelected=false;selectedBook = 21;
   showLibrary(true);
   assert(black(17, 57));
   assert(!black(17, 96));
-  assert(countBlack(24, 57, 500, 94) > 0);     // book title, not Settings
+  assert(countBlack(24, 57, 500, 94) > 0);     // book title, not Network & Rotation
   selectedBook = 0;
   settingsSelected = false;
   showLibrary(true);
 
-  // Settings page: only the four glyphs, at the agreed coordinates.
-  settingsNetwork = false;
-  settingsRotated = false;
-  showSettings(true);
-  assert(M5.Display.lastFull);
-  assert(countBlack(0, 0, 540, 600) == 0);
-  assert(countBlack(0, 820, 540, 960) == 0);
-  assert(countBlack(32, 641, 46, 680) > 0);    // ¬ of ¬N
-  assert(countBlack(48, 641, 80, 680) > 0);    // N
-  assert(countBlack(32, 753, 46, 792) > 0);    // ¬ of ¬R
-  assert(countBlack(48, 753, 80, 792) > 0);    // R
-  assert(countBlack(504, 928, 532, 956) == 0);// no status icon
-  writePGM("ui-simulation-settings.pgm");
+  // Verify all complete settings scenes, including their actual physical panel
+  // orientation. The network area is mirrored to y=448 when the controls move.
+  settingsApSsid = "PaperDIY-TEST";
+  settingsApPassword = "ABCDEFGHJKLM";
+  settingsApUrl = "http://192.168.4.1/?t=1234567890abcdef1234567890abcdef";
+  settingsApClientConnected = false;
+  settingsStaSsid = "Home";
+  settingsStaConfigured = true;
+  settingsStaConnected = true;
+  settingsStaIp = "192.168.1.23";
+  settingsStaError = "";
+  for (NetworkMode mode : {NetworkMode::Off, NetworkMode::Sta,
+                           NetworkMode::Ap, NetworkMode::Usb}) {
+    rotateSettings(false);
+    networkMode = mode;
+    showSettings(true);
+    assert(M5.Display.lastFull);
+    expectControls(mode, false);
+    const auto info = crop(0, 112, 540, 400);
+    if (mode == NetworkMode::Off) {
+      assert(countBlack(0, 112, 540, 600) == 0);
+      writePGM("ui-simulation-settings.pgm", true);
+    } else if (mode == NetworkMode::Ap) {
+      expectSingleQr("WIFI:T:WPA;S:PaperDIY-TEST;P:ABCDEFGHJKLM;H:false;;", false);
+      assert(countBlack(200, 414, 340, 438) > 0);
+      assert(countBlack(24, 448, 500, 472) > 0);
+      assert(countBlack(24, 480, 500, 504) > 0);
+      writePGM("ui-simulation-settings-ap.pgm", true);
+    } else if (mode == NetworkMode::Sta) {
+      assert(countBlack(32, 112, 200, 150) > 0);
+      assert(countBlack(32, 160, 500, 190) > 0);
+      assert(countBlack(32, 196, 300, 226) > 0);
+      assert(countBlack(32, 232, 400, 262) > 0);
+    } else {
+      assert(countBlack(32, 112, 400, 150) > 0);
+      assert(countBlack(32, 160, 450, 190) > 0);
+    }
 
-  // N on: only its ¬ disappears; the partial refresh covers the N line.
-  settingsNetwork = true;
-  updateSettingsNetwork();
-  assert(M5.Display.lastRefreshX == 24 && M5.Display.lastRefreshY == 629);
-  assert(M5.Display.lastRefreshW == 100 && M5.Display.lastRefreshH == 64);
-  assert(countBlack(32, 641, 46, 680) == 0);
-  assert(countBlack(48, 641, 80, 680) > 0);
-  settingsNetwork = false;
+    rotateSettings(true);
+    showSettings(true);
+    assert(M5.Display.lastFull);
+    expectControls(mode, true);
+    assert(crop(0, 448, 540, 400) == info);
+    if (mode == NetworkMode::Ap)
+      expectSingleQr("WIFI:T:WPA;S:PaperDIY-TEST;P:ABCDEFGHJKLM;H:false;;", true);
+    for (int y = 448; y < 848; ++y)
+      for (int x = 0; x < 540; ++x)
+        assert(M5.Display.panel[(959 - y) * 540 + 539 - x] ==
+               info[(y - 448) * 540 + x]);
+    if (mode == NetworkMode::Off)
+      writePGM("ui-simulation-settings-rotated.pgm", true);
+    else if (mode == NetworkMode::Ap)
+      writePGM("ui-simulation-settings-ap-rotated.pgm", true);
+  }
+
+  // A station association replaces the join symbol with the web symbol. A
+  // disconnect restores the join symbol. Each update preserves controls and
+  // erases the previous QR, including when the framebuffer is rotated.
+  for (bool rotated : {false, true}) {
+    rotateSettings(rotated);
+    networkMode = NetworkMode::Ap;
+    settingsApClientConnected = false;
+    showSettings(true);
+    expectPartialNetworkChange(true, rotated);
+    writePGM(rotated ? "ui-simulation-settings-web-rotated.pgm" :
+                       "ui-simulation-settings-web.pgm", true);
+    expectPartialNetworkChange(false, rotated);
+    expectPartialNetworkChange(true, rotated);
+  }
+
+  // Partial row updates must preserve every other physical pixel and remove
+  // the previous prefix in both orientations. No network area redraw is needed.
+  for (bool rotated : {false, true}) {
+    rotateSettings(rotated);
+    networkMode = NetworkMode::Off;
+    showSettings(true);
+    for (NetworkMode next : {NetworkMode::Sta, NetworkMode::Ap, NetworkMode::Usb})
+      expectPartialModeChange(next, rotated);
+  }
+
+  settingsApSsid = "";
+  settingsApPassword = "";
+  settingsApUrl = "";
+  settingsApClientConnected = false;
+  settingsStaSsid = "";
+  settingsStaIp = "";
+  settingsStaError = "";
+  settingsStaConfigured = false;
+  settingsStaConnected = false;
+  networkMode = NetworkMode::Off;
+  rotateSettings(false);
   showSettings(true);
 
-  // R on: the Settings group is compensated to stay at the same panel
-  // position after the global 180-degree rotation. The logical draw is the
-  // mirrored group, with N at 641/464 and R at 753/480.
-  settingsRotated = true;
-  settingsNetwork = false;
-  showSettings(true);
-  assert(M5.Display.lastFull);
-  assert(countBlack(0, 0, 540, 100) == 0);
-  assert(countBlack(0, 600, 540, 960) == 0);
-  assert(countBlack(32, 641, 80, 680) == 0);   // no unrotated N group
-  assert(countBlack(32, 753, 80, 792) == 0);   // no unrotated R group
-  assert(countBlack(464, 168, 500, 200) > 0);  // ¬N in mirrored position
-  assert(countBlack(480, 280, 520, 315) > 0);  // R in mirrored position
-
-  // Rotated N toggle refreshes the mirrored rectangle and removes its ¬.
-  settingsNetwork = true;
-  updateSettingsNetwork();
-  assert(M5.Display.lastRefreshX == 416 && M5.Display.lastRefreshY == 143);
-  assert(M5.Display.lastRefreshW == 100 && M5.Display.lastRefreshH == 64);
-  assert(countBlack(464, 168, 478, 200) == 0);
-  assert(countBlack(480, 168, 510, 200) > 0);
-  settingsNetwork = false;
-  settingsRotated = false;
-  showSettings(true);
+  assert(reader_typography::style.flags()==3);
 
   // Reading: the question mark starts at the old text edge (510) and its ink
   // reaches 522, so the clip and refresh must include the 30 px hang zone.
   std::string hang;
   for (int i = 0; i < 17; ++i) hang += "中";
-  hang += "t？\n";
+  hang += "-？\n";
   for (int i = 0; i < 20; ++i) hang += "Second page line with ordinary words. ";
   loadBook(hang);
   showBook(true);
@@ -251,5 +494,61 @@ int main() {
   assert(M5.Display.panel[910 * 540 + 530] == 255);
   assert(M5.Display.panel[910 * 540 + 538] == 255);
 
-  puts("UI simulation: first-page Settings, selection refresh, Settings four-glyph page, N partial, R compensation, reading hang-zone: PASS");
+  // Protect prose, italic and formula pixels while code deliberately uses its
+  // actual native advance rather than a padded 24 px cell. An independent
+  // old-width render reproduced 0x5d7e6107fc773c9a; its only changed pixels were
+  // this fixture's second-page code area (y >= 529), with offsets still 0/807.
+  std::string asciiSource="## ASCII typography\n\n";
+  for(unsigned pass=0;pass<6;++pass)asciiSource+="A quiet observer checks 0123456789, **bold words**, *italic words*, and a link [label](https://example.invalid). Mixed 中文 and Ελληνικά remain unchanged. Inline $x_1+2$ shares the baseline.\n\n";
+  asciiSource+="```\n";for(unsigned cp=32;cp<=126;++cp)asciiSource+=char(cp);asciiSource+="\n```\n";
+  loadBook(asciiSource,true);
+  assert(bookMarkdown && !bookMarkupFallback);
+  assert(pageOffsets==std::vector<uint32_t>({0,807}));
+  uint64_t asciiRasterHash=1469598103934665603ULL,proseRasterHash=asciiRasterHash;
+  capturedCodeGlyphs.clear();captureCodeGlyphs=true;
+  for(size_t i=0;i<pageOffsets.size();++i){
+    M5.Display.fillScreen(TFT_WHITE);
+    assert(layoutPage(pageOffsets[i],true)==(i+1<pageOffsets.size()?pageOffsets[i+1]:bookLength));
+    for(size_t pixel=0;pixel<M5.Display.fb.size();++pixel){
+      asciiRasterHash=(asciiRasterHash^M5.Display.fb[pixel])*1099511628211ULL;
+      const uint8_t prose=i==1&&pixel/540>=529?255:M5.Display.fb[pixel];
+      proseRasterHash=(proseRasterHash^prose)*1099511628211ULL;
+    }
+  }
+  captureCodeGlyphs=false;
+  // This protected hash also matched the old padded-width renderer exactly.
+  assert(proseRasterHash==0xbf395a2a06ddf2caULL);
+  assert(capturedCodeGlyphs.size()==95);
+  std::vector<uint8_t> codePixels(540*960,255);
+  unsigned codeLines=0;
+  for(size_t i=0;i<capturedCodeGlyphs.size();++i){
+    const auto& glyph=capturedCodeGlyphs[i];assert(glyph.cp==32+i);
+    if(!i||glyph.y!=capturedCodeGlyphs[i-1].y){
+      assert(glyph.x==24&&glyph.y==529+int(codeLines)*40);++codeLines;
+    }else{
+      const auto& previous=capturedCodeGlyphs[i-1];
+      assert(glyph.x==previous.x+reader_font::glyphAdvance(reader_font::FONT_24,previous.cp));
+    }
+    reader_font::drawGlyphRuns(reader_font::FONT_24,glyph.cp,glyph.x,glyph.y,
+      [&](int x,int y,int count){
+        for(int column=x;column<x+count;++column)codePixels[y*540+column]=0;
+      });
+  }
+  assert(codeLines==4); // Removing artificial padding saves one code line.
+  for(size_t pixel=529*540;pixel<codePixels.size();++pixel)
+    assert(M5.Display.fb[pixel]==codePixels[pixel]);
+  assert(asciiRasterHash==0xe54177027cb05b10ULL);
+
+  // Render the production Markdown adapter with native glyphs and real math
+  // commands, including a second page after source-offset pagination.
+  loadBook(markdown_samples::mixed,true);
+  assert(bookMarkdown&&!bookMarkupFallback&&pageOffsets.size()>=2);
+  for(pageNumber=0;pageNumber<pageOffsets.size();++pageNumber){
+    showBook(pageNumber==0);
+    assert(countBlack(24,24,510,916)>500);
+    char output[80];snprintf(output,sizeof(output),"ui-simulation-markdown-%u.pgm",unsigned(pageNumber));
+    writePGM(output);
+  }
+  pageNumber=0;
+  puts("UI simulation: equal mode spacing, physical rotation, button-side R, single-QR transitions, intact network panels, partial clearing, reading hang-zone: PASS");
 }

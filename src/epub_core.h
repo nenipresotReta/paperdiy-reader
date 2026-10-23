@@ -10,6 +10,7 @@
 #include <tinyxml2.h>
 #include <lgfx/utility/lgfx_miniz.h>
 #include "xml_input.h"
+#include "epub_structure.h"
 
 namespace epub {
 inline uint16_t u16(const uint8_t* p){return p[0]|(uint16_t(p[1])<<8);}
@@ -34,7 +35,12 @@ struct Importer {
   char* output;size_t capacity,used=0;
   bool ok=true;
   bool hasBodyText=false;
-  bool fail(const char* s){error=s;ok=false;return false;}
+  // Opt-in sidecar only: null keeps the original flat importer and allocations.
+  // All offsets refer to output bytes, preserving book identity and bookmarks.
+  structure::Collector* structure = nullptr;
+  uint32_t structureResource = structure::NONE;
+  uint8_t structureLanguage = 0;
+  bool fail(const char* s){error=s;ok=false;if(structure)structure->discard();return false;}
   bool exact(uint32_t at,void* p,size_t n){return at<=fileSize&&n<=fileSize-at&&read(at,p,n)==n;}
   bool index(){
     if(resourceRead)return true;
@@ -110,7 +116,7 @@ struct Importer {
     auto source = extract(path, limit, &size);
     if (!source) return false;
     xml_input::Budget budget;
-    if (!xml_input::prepare(source, size, alloc, budget, error)) { ok = false; return false; }
+    if (!xml_input::prepare(source, size, alloc, budget, error)) { ok = false; if (structure) structure->discard(); return false; }
     size_t required = size + 1 + budget.domBytes + 64 * 1024;
     if (xmlMemoryAvailable && !xmlMemoryAvailable(required, std::max(size + 1, size_t(4096))))
       return fail("Not enough memory for XML document");
@@ -125,6 +131,7 @@ struct Importer {
   }
   void newline(unsigned count = 2) {
     while (used && output[used - 1] == ' ') --used;
+    if (structure) structure->trimTail(used);
     if (!used) return;
     unsigned existing = 0;
     while (existing < used && output[used - existing - 1] == '\n') ++existing;
@@ -144,26 +151,87 @@ struct Importer {
       }
     }
   }
-  void walk(tinyxml2::XMLNode* node, unsigned depth = 0, bool preserve = false) {
+  uint8_t nodeLanguage(tinyxml2::XMLElement* element, uint8_t inherited) {
+    if (!structure || !element) return inherited;
+    const char* tag = element->Attribute("xml:lang");
+    if (!tag) tag = element->Attribute("lang");
+    return tag ? structure->internLanguage(tag) : inherited;
+  }
+  static structure::Kind blockKind(const char* name) {
+    using structure::Kind;
+    if (!strcmp(name,"p")) return Kind::Paragraph;
+    if (name[0] == 'h' && name[1] >= '1' && name[1] <= '6' && !name[2]) return Kind::Heading;
+    if (!strcmp(name,"blockquote")) return Kind::Quote;
+    if (!strcmp(name,"li")) return Kind::ListItem;
+    if (!strcmp(name,"pre")) return Kind::Preformatted;
+    if (!strcmp(name,"ol")) return Kind::OrderedList;
+    if (!strcmp(name,"ul")) return Kind::UnorderedList;
+    if (!strcmp(name,"dt")) return Kind::DefinitionTerm;
+    if (!strcmp(name,"dd")) return Kind::DefinitionDetail;
+    if (!strcmp(name,"tr")) return Kind::TableRow;
+    if (!strcmp(name,"div") || !strcmp(name,"section") || !strcmp(name,"article") ||
+        !strcmp(name,"body")) return Kind::Container;
+    return Kind::Text; // no semantic block; descendants retain their parent
+  }
+  void walk(tinyxml2::XMLNode* node, unsigned depth = 0, bool preserve = false,
+            uint32_t parent = structure::NONE, uint16_t flags = 0, uint8_t language = 0) {
     if (!node || !ok) return;
     if (depth > xml_input::MAX_DEPTH) { fail("XML depth exceeds 32 levels"); return; }
-    if (auto textNode = node->ToText()) { text(textNode->Value(), preserve); return; }
+    if (auto textNode = node->ToText()) {
+      const size_t begin = used;
+      text(textNode->Value(), preserve);
+      if (structure) structure->text(begin, used, parent, structureResource, flags, uint8_t(depth), language);
+      return;
+    }
     auto element = node->ToElement();
     const char* name = element ? local(element->Name()) : "";
     if (!strcmp(name,"head") || !strcmp(name,"script") || !strcmp(name,"style") ||
         !strcmp(name,"svg") || !strcmp(name,"img")) return;
-    if (!strcmp(name, "br")) { if (used) append('\n'); return; }
+    language = nodeLanguage(element, language);
+    if (!strcmp(name, "br")) {
+      const size_t begin = used;
+      if (used) append('\n');
+      if (structure) structure->text(begin, used, parent, structureResource, flags,
+                                     uint8_t(depth), language, structure::Kind::Break);
+      return;
+    }
     preserve = preserve || !strcmp(name, "pre") || !strcmp(attr(element, "xml:space"), "preserve");
+    if (structure) {
+      if (preserve) flags |= structure::Preserve;
+      if (!strcmp(name,"strong") || !strcmp(name,"b")) flags |= structure::Strong;
+      if (!strcmp(name,"em") || !strcmp(name,"i")) flags |= structure::Emphasis;
+      if (!strcmp(name,"code") || !strcmp(name,"kbd") || !strcmp(name,"samp")) flags |= structure::Code;
+      if (!strcmp(name,"sup")) flags |= structure::Superscript;
+      if (!strcmp(name,"sub")) flags |= structure::Subscript;
+    }
     bool block = !strcmp(name,"p") || !strcmp(name,"div") || !strcmp(name,"li") ||
       !strcmp(name,"section") || !strcmp(name,"article") || !strcmp(name,"tr") ||
       !strcmp(name,"blockquote") || !strcmp(name,"pre") || !strcmp(name,"dt") ||
       !strcmp(name,"dd") || (name[0] == 'h' && name[1] >= '1' && name[1] <= '6' && !name[2]);
     if (block) newline();
-    for (auto next = node->FirstChild(); next && ok; next = next->NextSibling()) walk(next, depth + 1, preserve);
+    uint32_t record = structure::NONE;
+    if (structure) {
+      const structure::Kind kind = blockKind(name);
+      if (kind != structure::Kind::Text) {
+        record = structure->open(kind, used, parent, structureResource, flags, uint8_t(depth),
+                                 language, kind == structure::Kind::Heading ? name[1] - '0' : 0);
+        parent = record;
+      }
+    }
+    for (auto next = node->FirstChild(); next && ok; next = next->NextSibling())
+      walk(next, depth + 1, preserve, parent, flags, language);
+    // Match newline()'s trimming without modifying output. Parent ranges are
+    // clipped together at finish(), including empty nested blocks and spans.
+    if (structure) {
+      size_t end = used;
+      if (block) while (end && output[end - 1] == ' ') --end;
+      structure->close(record, end);
+    }
     if (block) newline();
   }
   bool englishHyphenation = false;
   bool run() {
+    if (structure) structure->begin();
     if (!index()) return false;
     if (resourceRead ? resourceSize("META-INF/encryption.xml") != SIZE_MAX : find("META-INF/encryption.xml") != nullptr) {
       tinyxml2::XMLDocument doc;
@@ -188,7 +256,7 @@ struct Importer {
       root = attr(child(child(child(&doc,"container"),"rootfiles"),"rootfile"), "full-path");
       if (root.empty()) return fail("Missing EPUB rootfile");
     }
-    struct Chapter { std::string path; bool auxiliary; };
+    struct Chapter { std::string path; bool auxiliary; uint16_t spineIndex; };
     std::vector<Chapter> chapters;
     size_t pathBytes = 0;
     {
@@ -201,9 +269,20 @@ struct Importer {
         std::string tag = language->GetText();
         for (char& c : tag) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
         englishHyphenation = tag == "en" || tag.compare(0,3,"en-") == 0;
+        if (structure) structureLanguage = structure->internLanguage(language->GetText());
       }
       auto title = child(child(pkg,"metadata"),"title");
-      if (title) { text(title->GetText()); newline(); }
+      if (title) {
+        const size_t begin = used;
+        text(title->GetText());
+        if (structure) {
+          const uint32_t id = structure->open(structure::Kind::Title, begin, structure::NONE,
+            structure::NONE, 0, 0, nodeLanguage(title, structureLanguage));
+          size_t end = used; while (end && output[end - 1] == ' ') --end;
+          structure->close(id, end);
+        }
+        newline();
+      }
       for (auto ref = spine->FirstChildElement(); ref; ref = ref->NextSiblingElement()) {
         if (strcmp(local(ref->Name()), "itemref")) continue;
         std::string href;
@@ -214,7 +293,7 @@ struct Importer {
         auto path = resolve(root, href); if (!ok) return false;
         pathBytes += path.size();
         if (chapters.size() >= 2048 || pathBytes > 128 * 1024) return fail("EPUB spine resource budget exceeded");
-        chapters.push_back({std::move(path), !strcmp(attr(ref,"linear"),"no")});
+        chapters.push_back({std::move(path), !strcmp(attr(ref,"linear"),"no"), uint16_t(chapters.size())});
       }
     }
     hasBodyText = false;
@@ -228,7 +307,10 @@ struct Importer {
         auto html = child(&doc, "html");
         auto body = child(html, "body");
         if (!body) return fail("Chapter has no XHTML body");
-        walk(body); newline();
+        if (structure) structureResource = structure->openResource(chapter.path.c_str(), chapter.spineIndex,
+                                                                   chapter.auxiliary, used);
+        walk(body, 0, false, structure::NONE, 0, nodeLanguage(html, structureLanguage)); newline();
+        if (structure) structure->closeResource(structureResource, used);
         if (!ok) return false;
         if (tick) tick();
       }
@@ -236,6 +318,7 @@ struct Importer {
     if (!ok) return false;
     if (chapters.empty() || !hasBodyText) return fail("No readable EPUB text");
     output[used] = 0;
+    if (structure) structure->finish(output, used);
     return true;
   }
 };

@@ -15,6 +15,6 @@ struct IdlePowerStats {
 // periodic housekeeping must not reset the inactivity clock.
 void powerActivity();
 uint8_t rawPowerKeys();
-void idlePower(bool stableScene, bool inputIdle, int stableCardLevel);
+void idlePower(bool stableScene, bool inputIdle, int stableCardLevel, bool radioActive=false);
 const IdlePowerStats& idlePowerStats();
 void logIdlePowerStatus();

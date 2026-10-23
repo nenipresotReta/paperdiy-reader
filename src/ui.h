@@ -1,10 +1,30 @@
 #pragma once
 #include <Arduino.h>
-extern bool settingsSelected,settingsNetwork,settingsRotated;
+#include "settings_registry.h"
+
+enum class NetworkMode : uint8_t {Off,Sta,Ap,Usb};
+
+inline NetworkMode nextNetworkMode(NetworkMode mode){
+  switch(mode){
+    case NetworkMode::Off:return NetworkMode::Sta;
+    case NetworkMode::Sta:return NetworkMode::Ap;
+    case NetworkMode::Ap:return NetworkMode::Usb;
+    default:return NetworkMode::Off;
+  }
+}
+
+extern bool settingsSelected,settingsRotated;
+extern SettingsId settingsId;
+extern NetworkMode networkMode;
+extern String settingsApSsid,settingsApPassword,settingsApUrl;
+extern bool settingsApClientConnected;
+extern String settingsStaSsid,settingsStaIp,settingsStaError;
+extern bool settingsStaConfigured,settingsStaConnected;
 void showLibrary(bool sceneChange=true);
-void updateLibrarySelection(size_t oldSelection,bool oldSettings=false);
+void updateLibrarySelection(size_t oldSelection,bool oldSettings=false,SettingsId oldId=SettingsId::Network);
 void showBook(bool sceneChange=false);
 void showSettings(bool sceneChange=true);
+void updateSettingsMode();
 void updateSettingsNetwork();
 void showLoading();
 void showError(const String& message);

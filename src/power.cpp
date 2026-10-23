@@ -75,7 +75,7 @@ void logIdlePowerStatus() {
       stats.sourceKnown, stats.powerSource, stats.usbHost);
 }
 
-void idlePower(bool stableScene, bool inputIdle, int stableCardLevel) {
+void idlePower(bool stableScene, bool inputIdle, int stableCardLevel, bool radioActive) {
   checkPowerSource();
   // Conservatively keep native USB awake on all external power, including a
   // suspended host or a charging-only cable. Failed PMIC reads also block sleep.
@@ -83,7 +83,7 @@ void idlePower(bool stableScene, bool inputIdle, int stableCardLevel) {
       (stats.powerSource & 3) || !(stats.powerSource & 4);
   bool cardStable = digitalRead(48) == stableCardLevel;
   auto plan = idlePolicy.plan(millis(),
-      {stableScene && cardStable, inputIdle, rawPowerKeys() != 0, sleepBlocked});
+      {stableScene && cardStable, inputIdle, rawPowerKeys() != 0, sleepBlocked, radioActive});
   if (!plan.idle) {
     cpuFrequency(240);
     delay(10);

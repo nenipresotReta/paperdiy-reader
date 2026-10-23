@@ -67,6 +67,9 @@ NativeFont body(reader_font::FONT_28), small(reader_font::FONT_24);
 } // namespace
 
 const lgfx::IFont* bodyFont() { return &body; }
+const reader_font::Glyph* bodyGlyph(uint32_t codepoint) {
+  return reader_font::findGlyph(reader_font::FONT_28, codepoint);
+}
 int bodyGlyphAdvance(uint32_t codepoint) {
   return reader_font::glyphAdvance(reader_font::FONT_28, codepoint);
 }
