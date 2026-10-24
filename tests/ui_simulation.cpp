@@ -196,7 +196,10 @@ void expectPartialModeChange(NetworkMode next, bool rotated) {
         if (before[index] == 0 && M5.Display.panel[index] == 255) ++erased;
       }
     }
-  assert(changed > 0 && erased > 0);
+  assert(changed > 0);
+  // Off restores the last inactive prefix, adding ink without erasing any.
+  // Selecting N/A must erase that mode's prefix; full bitmap checks follow.
+  assert(next == NetworkMode::Off ? erased == 0 : erased > 0);
   expectControls(next, rotated); // including actual clearing of the active prefix
 }
 void expectSingleQr(const char* payload, bool rotated) {
