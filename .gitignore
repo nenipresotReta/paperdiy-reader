@@ -35,3 +35,6 @@ docs/typography.md
 *.pdf
 *shutdown-mask*.h
 /.paperdiy-cache/
+handoff/
+deepseek/
+private-assets/

@@ -11,7 +11,8 @@ import re
 import subprocess
 
 ROOT_FILES = {'.gitattributes', '.gitignore', 'CMakeLists.txt', 'LICENSE',
-              'README.md', 'THIRD_PARTY_NOTICES.md', 'partitions.csv',
+              'README.md', 'README.zh-CN.md', 'THIRD_PARTY_NOTICES.md',
+              'THIRD_PARTY_NOTICES.zh-CN.md', 'partitions.csv',
               'platformio.ini', 'requirements-dev.txt'}
 ROOT_DIRS = {'src', 'tests', 'tools', 'lib', 'licenses', 'docs', '.github'}
 EXTENSIONS = {'.h', '.hpp', '.c', '.cpp', '.py', '.js', '.md', '.txt', '.json',
@@ -25,7 +26,7 @@ RULES = [
     (re.compile(rb'\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,})\b'), 'possible token'),
 ]
 PRIVATE_BUILD = re.compile(
-    rb'-D\s*[\x27\x22]?PAPERDIY_(?:SHUTDOWN_HEADER|DIAGNOSTICS|DEVICE_TESTS|NETWORK_TESTS)\b')
+    rb'-D\s*[\x27\x22]?PAPERDIY_(?:SHUTDOWN_HEADER|ACCEPTANCE_FIXTURE_HEADER|DIAGNOSTICS|DEVICE_TESTS|NETWORK_TESTS|EPUB_TESTS|USB_RAM_DISK)\b')
 
 
 def check_file(name, data, mode='100644'):
