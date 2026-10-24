@@ -88,13 +88,13 @@ void bodyText(const char* text,int x,int y){
 int activeModeIndex(){
   if(networkMode==NetworkMode::Sta)return 0;
   if(networkMode==NetworkMode::Ap)return 1;
-  if(networkMode==NetworkMode::Usb)return 2;
+  if(PAPERDIY_EXPERIMENTAL_USB_MSC&&networkMode==NetworkMode::Usb)return 2;
   return -1;
 }
 void modeRow(int dx,int y){
   static const char* labels[3]={"N","A","U"};
   const int active=activeModeIndex();
-  for(int i=0;i<3;++i){
+  for(int i=0;i<(PAPERDIY_EXPERIMENTAL_USB_MSC?3:2);++i){
     if(i!=active)drawInterfaceGlyph("\xc2\xac",2,MODE_PREFIX_X[i]+dx,y,TFT_BLACK);
     drawInterfaceGlyph(labels[i],1,MODE_LETTER_X[i]+dx,y,TFT_BLACK);
   }
@@ -300,7 +300,7 @@ void showSettings(bool sceneChange){
   M5.Display.fillScreen(TFT_WHITE);
   if(networkMode==NetworkMode::Ap)apPanel();
   else if(networkMode==NetworkMode::Sta)staPanel();
-  else if(networkMode==NetworkMode::Usb)usbPanel();
+  else if(PAPERDIY_EXPERIMENTAL_USB_MSC&&networkMode==NetworkMode::Usb)usbPanel();
   int dx=settingsDx();
   modeRow(dx,settingsModeY());
   if(!settingsRotated)drawInterfaceGlyph("\xc2\xac",2,SETTINGS_LEFT+dx,settingsRotationY(),TFT_BLACK);
@@ -325,7 +325,7 @@ void updateSettingsNetwork(){
   M5.Display.fillRect(0,y,540,SETTINGS_CONTENT_H,TFT_WHITE);
   if(networkMode==NetworkMode::Ap)apPanel();
   else if(networkMode==NetworkMode::Sta)staPanel();
-  else if(networkMode==NetworkMode::Usb)usbPanel();
+  else if(PAPERDIY_EXPERIMENTAL_USB_MSC&&networkMode==NetworkMode::Usb)usbPanel();
   endRefresh("settings-network",0,y,540,SETTINGS_CONTENT_H);
 }
 void updateSettingsDelivery(){

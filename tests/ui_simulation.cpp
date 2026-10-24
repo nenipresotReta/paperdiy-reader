@@ -144,17 +144,16 @@ void expectedGlyph(std::vector<uint8_t>& pixels, uint32_t cp, int x, int y) {
 
 void expectControls(NetworkMode mode, bool rotated) {
   // Check the full native glyph bitmaps, not merely whether each region has ink.
-  // N/A/U pen positions are exactly 108 px apart in either orientation.
+  // N/A retain their original 108 px spacing; U is hidden by default.
   const int letters[3] = {rotated ? 264 : 48, rotated ? 372 : 156,
                           rotated ? 480 : 264};
   assert(letters[1] - letters[0] == 108 && letters[2] - letters[1] == 108);
   const int modeY = rotated ? 280 : 641, rY = rotated ? 168 : 753;
   const int rX = rotated ? 480 : 48;
-  const char labels[] = "NAU";
-  const int active = mode == NetworkMode::Sta ? 0 : mode == NetworkMode::Ap ? 1 :
-                     mode == NetworkMode::Usb ? 2 : -1;
+  const char labels[] = "NA";
+  const int active = mode == NetworkMode::Sta ? 0 : mode == NetworkMode::Ap ? 1 : -1;
   std::vector<uint8_t> expected(540 * 960, 255);
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 2; ++i) {
     if (i != active) expectedGlyph(expected, 0xac, letters[i] - 16, modeY);
     expectedGlyph(expected, labels[i], letters[i], modeY);
   }
@@ -363,7 +362,7 @@ int main() {
   settingsRotated = false;
   assert(nextNetworkMode(NetworkMode::Off) == NetworkMode::Sta);
   assert(nextNetworkMode(NetworkMode::Sta) == NetworkMode::Ap);
-  assert(nextNetworkMode(NetworkMode::Ap) == NetworkMode::Usb);
+  assert(nextNetworkMode(NetworkMode::Ap) == NetworkMode::Off);
   assert(nextNetworkMode(NetworkMode::Usb) == NetworkMode::Off);
   assert(bodyFontHasGlyph('&'));
 
@@ -434,8 +433,7 @@ int main() {
   settingsStaConnected = true;
   settingsStaIp = "192.168.1.23";
   settingsStaError = "";
-  for (NetworkMode mode : {NetworkMode::Off, NetworkMode::Sta,
-                           NetworkMode::Ap, NetworkMode::Usb}) {
+  for (NetworkMode mode : {NetworkMode::Off, NetworkMode::Sta, NetworkMode::Ap}) {
     rotateSettings(false);
     networkMode = mode;
     showSettings(true);
@@ -501,7 +499,7 @@ int main() {
     rotateSettings(rotated);
     networkMode = NetworkMode::Off;
     showSettings(true);
-    for (NetworkMode next : {NetworkMode::Sta, NetworkMode::Ap, NetworkMode::Usb})
+    for (NetworkMode next : {NetworkMode::Sta, NetworkMode::Ap, NetworkMode::Off})
       expectPartialModeChange(next, rotated);
   }
 

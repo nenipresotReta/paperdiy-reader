@@ -20,11 +20,11 @@ Extensions are case-insensitive. Each book retains its reading position. For EPU
 | --- | --- | --- | --- |
 | Library | Previous book; double-click previous screen; hold to repeat | Next book; double-click next screen; hold to repeat | Open selection |
 | Reading | Previous page; hold to repeat | Next page; hold to repeat | Return to library |
-| Network settings | Cycle N → A → U → Off | Toggle R (180°) | Return to library |
+| Network settings | Cycle N → A → Off | Toggle R (180°) | Return to library |
 
 The library detects a double-click when releases of the same button are at most 200 ms apart by default; otherwise they are two single clicks. A single click waits up to the configured double-click interval (default 200 ms). Holding starts repeat after about 600 ms. Navigation during loading or refresh is discarded; release the buttons before a new action. The bottom icon indicates busy work.
 
-R saves display rotation. Rotated library/reading navigation swaps A/B; settings retain physical button mappings. N/A/U stay on one row, with R nearest the buttons. A+B and the power key are unchanged.
+R saves display rotation. Rotated library/reading navigation swaps A/B; settings retain physical button mappings. N/A stay on one row, with R nearest the buttons. A+B and the power key are unchanged.
 
 ## Chinese typography
 
@@ -47,13 +47,15 @@ Enter the home SSID/password under Home Wi-Fi and save, then select N. Failed sa
 
 A closes after five idle minutes. Background library polling does not extend the session; progressing transfers keep it active, while 45 seconds without progress cancels reception. The AP serves local HTTP without TLS; QR session credentials apply only to that AP session.
 
-## N / A / U
+## N / A / Off
 
 - **N** connects to saved home Wi-Fi and enables paired LAN delivery. Below the SSID, status and IP, the screen shows a pairing QR or transfer type/name/progress. A dropped connection gets a fresh 20-second connection window; timeout turns the radio off until N is selected again.
 - **A** provides a temporary AP, web uploads and home Wi-Fi setup.
-- **U** exposes the SD card to a computer through native USB. Entry saves progress and closes local file handles. Reading and network card writes are unavailable while the host owns storage. Safely eject on the computer before returning to the library. Unplugging, closing serial, resetting USB or waiting does not establish safe eject.
+- **Off** closes networking.
 
-Inactive entries carry `¬`. Leaving settings closes networking; U requires safe eject before releasing the card. After reboot, restored settings start with N/A/U inactive. USB attachment does not enable networking. Reading settings and shutdown-image management are available only through A.
+USB book transfer is paused and disabled by default because actual-SD USB failures remain unresolved. U is hidden; ordinary builds do not expose the card. CDC serial/programming remains available. Transfer books through A or a safely removed SD card. The retained MSC implementation requires an explicit experimental build; it is not normal user operation.
+
+Inactive entries carry `¬`. Leaving settings closes networking. After reboot, restored settings start with N/A inactive. USB attachment enables neither book transfer nor networking. Reading settings and shutdown-image management are available only through A.
 
 N uses the [LAN client](lan-protocol.md); an AI agent can use the [delivery skill](skills/paperdiy-delivery/SKILL.md). Initial pairing requires the five-minute, single-use on-screen payload; subsequent connections pin that device certificate. Ordinary files enter SD `Books` without overwriting names. Push is one fixed library entry containing at most 16 KiB UTF-8 Markdown with supported formulas. New content replaces it; bounded history stays on the sender instead of accumulating books on the reader. With N off, the device receives nothing. A bounded sender queue can sync after N is enabled again. Delivery never automatically opens a book or changes the current reading position.
 

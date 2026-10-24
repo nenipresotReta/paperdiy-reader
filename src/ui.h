@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include "settings_registry.h"
+#include "usb_features.h"
 
 enum class NetworkMode : uint8_t {Off,Sta,Ap,Usb};
 
@@ -8,7 +9,7 @@ inline NetworkMode nextNetworkMode(NetworkMode mode){
   switch(mode){
     case NetworkMode::Off:return NetworkMode::Sta;
     case NetworkMode::Sta:return NetworkMode::Ap;
-    case NetworkMode::Ap:return NetworkMode::Usb;
+    case NetworkMode::Ap:return PAPERDIY_EXPERIMENTAL_USB_MSC?NetworkMode::Usb:NetworkMode::Off;
     default:return NetworkMode::Off;
   }
 }

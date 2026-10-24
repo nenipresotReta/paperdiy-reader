@@ -8,7 +8,7 @@ This report describes the working source reviewed on 2026-10-24. It covers owner
 
 PaperDIY Reader reads EPUB, UTF-8 TXT and Markdown from a FAT32 microSD card on the ESP32-S3 M5Stack PaperDIY. It uses a 540 × 960 monochrome framebuffer and preserves one source position per book.
 
-`main.cpp` calls `appSetup()` and `appLoop()`. The application task owns navigation, the current document, local FAT operations, settings and network polling. Opening, pagination and cache publication use cooperative state machines. They share the application task; they are not background RTOS tasks. TinyUSB invokes MSC callbacks on a separate SDK task, so USB storage has a separate ownership boundary and mutex.
+`main.cpp` calls `appSetup()` and `appLoop()`. The application task owns navigation, the current document, local FAT operations, settings and network polling. Opening, pagination and cache publication use cooperative state machines. They share the application task; they are not background RTOS tasks. When experimental MSC is explicitly enabled, TinyUSB invokes its callbacks on a separate SDK task, with a separate storage ownership boundary and mutex.
 
 ```mermaid
 flowchart TD
@@ -24,7 +24,7 @@ flowchart TD
     Open --> Cache[complete cache / extraction and page checkpoints]
     App --> Network[AP WebUI / paired LAN service]
     Network --> Delivery[transaction store]
-    App --> USB[exclusive raw USB storage]
+    App --> USB[experimental raw USB storage]
     App --> Power[clock / sleep / wake policy]
 ```
 
@@ -42,14 +42,14 @@ Rendering reads state but does not persist progress. Navigation and lifecycle op
 | Canonical page starts | At most 65,536 32-bit offsets: 256 KiB payload |
 | Visible provisional window | At most 32 measured page starts |
 | Incremental storage transfer | At most 8 KiB per step; filesystem calls remain synchronous |
-| USB MSC callback | At most 4 KiB, 512-byte sectors |
+| Experimental USB MSC callback | At most 4 KiB, 512-byte sectors |
 | TLS buffers on the pinned SDK | 33,434 bytes of internal heap, plus contexts and crypto state |
 | SD bus | SPI GPIO 39/40/38, CS 47; detect GPIO 48 active low |
 | Navigation | GPIO 4 and 3, active low |
 
 These limits do not guarantee that every maximum fits simultaneously. The importer checks available PSRAM and its largest free block before DOM allocation. Radio, TLS and DMA allocations can require internal RAM even when PSRAM is free.
 
-[platformio.ini](../platformio.ini) pins the Espressif platform and M5 dependencies. The target uses GNU++11, native USB CDC+MSC (`ARDUINO_USB_MODE=0`), CDC enabled at boot and MSC advertised only when the application grants storage ownership. [partitions.csv](../partitions.csv) is the partition authority. OTA slots exist, but an OTA firmware endpoint is not implemented.
+[platformio.ini](../platformio.ini) pins the Espressif platform and M5 dependencies. The target uses GNU++11 and native USB (`ARDUINO_USB_MODE=0`) with CDC enabled at boot. MSC book transfer is disabled by default; only an explicit private experimental `PAPERDIY_EXPERIMENTAL_USB_MSC=1` build can expose it. Ordinary builds hide U and reject `USB_ENTER`. [partitions.csv](../partitions.csv) is the partition authority. OTA slots exist, but an OTA firmware endpoint is not implemented.
 
 ## 3. Source map and ownership
 
@@ -87,7 +87,7 @@ Boot validates the board and display, opens preferences, allocates the text buff
 
 The library has 22 rows per screen. A/B moves through books or pages; a short A+B chord opens or returns; holding both for two seconds requests shutdown. Library double-click recognition defaults to a 200 ms release-to-release window. Reading clicks do not wait for that window. Single-key repeat starts after 600 ms and repeats every 350 ms where enabled.
 
-Rotation reverses library/reading navigation direction. Settings retain the physical N/A/U and R grouping. New device settings belong in additional settings entries styled as books; detailed controls remain in the WebUI.
+Rotation reverses library/reading navigation direction. Settings retain the physical N/A and R grouping; the default mode cycle is N → A → Off. New device settings belong in additional settings entries styled as books; detailed controls remain in the WebUI.
 
 During `Loading`, ordinary navigation is consumed and discarded. The footer icon shows work without a central loading message. A power request is latched; the open job closes its handles and, when the optional journal is available, verifies a completed-chapter checkpoint before shutdown proceeds. Completion applies a separate 200 ms released-input guard, so clicks made during loading cannot become page turns afterward.
 
@@ -258,7 +258,7 @@ The CPU uses 240 MHz for active work and 80 MHz in ordinary idle. USB storage ow
 
 ### AP WebUI
 
-Network state is explicit: Off, AP, STA/LAN or USB. The AP supplies English settings, provisioning, uploads and optional preparation. Requests have bounded headers/bodies, authentication and upload state. New files are published without overwriting ordinary books. Incomplete transfers stay owned temporaries and are checked before publication.
+Normal network state is explicit: Off, AP or STA/LAN. USB storage remains an experimental state behind the compile gate. The AP supplies English settings, provisioning, uploads and optional preparation. Requests have bounded headers/bodies, authentication and upload state. New files are published without overwriting ordinary books. Incomplete transfers stay owned temporaries and are checked before publication.
 
 Shutdown artwork conversion occurs in the browser: decode a local image, fit the display, generate bounded monochrome `PDI1` and preview it. The device validates dimensions/header/CRC, writes the inactive artwork slot, verifies it and then persists selection. Removal persists “none”; it does not modify a compiled private fallback.
 
@@ -271,6 +271,8 @@ The separate `paperlan` namespace stores identity and at most four client verifi
 The store permits one transaction, chunks up to 4 KiB, verification up to 8 KiB per poll and sixteen client-scoped receipts. Ordinary delivery creates a new book. Push is at most 16 KiB Markdown in two owned slots; revisions overwrite rather than accumulate. Only two fixed digest-bound progress records exist, and Push bypasses ordinary per-revision caches. The sender retains history. Ambiguous publication is reported as Uncertain and recovered by checking bytes. Protocol and skill integration are in [LAN protocol](lan-protocol.md).
 
 ### USB storage
+
+USB book transfer is paused because actual-SD failures remain unresolved. Default builds retain CDC but disable MSC, hide U and reject `USB_ENTER`. The implementation below is retained only for explicitly enabled experimental builds; RAM-disk acceptance does not establish raw SD reliability.
 
 The host owns the entire raw card in HostOwned, ExitRequested and Fault. The application saves progress, closes local handles, invalidates leases and unmounts FAT before exposing sectors. Synchronization, removal prevention and valid host eject govern release. Disconnect, suspend, bus reset or idle time alone cannot return FAT ownership to the reader.
 

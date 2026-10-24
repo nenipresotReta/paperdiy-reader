@@ -42,8 +42,11 @@ existing pinned copy. On Homebrew macOS, CMake may need
 miniz byte-read path; they do not silently modify the pinned dependency.
 Use a separate `-DSANITIZE=OFF` build for timing.
 
-The public default is native USB MODE0, CDC enabled at boot and MSC disabled
-at boot. The application exposes MSC only through U. Public builds exclude
+The public default is native USB MODE0 with CDC enabled at boot. `src/usb_features.h` defaults `PAPERDIY_EXPERIMENTAL_USB_MSC` to 0, disabling
+MSC book transfer; ordinary builds hide U, cycle N → A → Off and reject
+`USB_ENTER`. Explicit value 1 is for private experimental builds only and is
+excluded from the shipped public configuration. `ARDUINO_USB_MSC_ON_BOOT=0`
+alone is not this compile gate. Public builds exclude
 `PAPERDIY_DIAGNOSTICS`, `PAPERDIY_EPUB_TESTS`, `PAPERDIY_DEVICE_TESTS`,
 `PAPERDIY_NETWORK_TESTS` and external private artwork. Private configurations
 must remain outside public source; never rename a private image into a public
@@ -230,7 +233,7 @@ P/S changes use native ink and preserve explicit spaces. Code/pre/math/rule
 boundaries stop contextual prose adjustments. Code is native 24 px proportional
 text, not synthesized monospace; it preserves indentation and disables normal
 justification/hyphenation. Panel completion precedes clock lowering or shutdown.
-Power evidence and U's 240 MHz ownership gate are in [power](power.md).
+Power evidence and experimental MSC's 240 MHz ownership gate are in [power](power.md).
 
 Sleep artwork is optional `PDI1`: 16-byte header, LE dimensions, reserved zero
 bytes, payload CRC32 and row-aligned MSB-first pixels, at most 540×960. The
@@ -319,8 +322,11 @@ acceptance and does not identify the cause of a particular disconnect.
 
 ## USB ownership and firmware recovery
 
-The default MODE0 build provides CDC and app-controlled MSC. U first saves
-progress, stops storage/network jobs, closes handles, revokes leases and
+USB book transfer is paused while actual-SD failures remain unresolved. The
+default MODE0 build retains CDC and disables MSC. Only an explicit
+private `PAPERDIY_EXPERIMENTAL_USB_MSC=1` build enables the retained experimental
+U path.
+When enabled, U first saves progress, stops storage/network jobs, closes handles, revokes leases and
 unmounts FAT. HostOwned, ExitRequested and Fault keep exclusive host ownership;
 only accepted host eject and successful raw-driver release permit local FAT.
 PREVENT/ALLOW, synchronization and START STOP UNIT govern that transition.

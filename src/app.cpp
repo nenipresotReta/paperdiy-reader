@@ -273,6 +273,7 @@ void diagnosticCommand(const String& line){
   }
   if(line=="LAN_STATUS"||line=="LAN_PAIRING"){lan_service::printStatus(line=="LAN_PAIRING");return;}
   if(line=="USB_ENTER"){
+    if(!usb_storage::available()){Console.println("USB_DISABLED experimental=0");return;}
     if(!leaveReading())return;
     networkStop();settingsSelected=true;settingsId=SettingsId::Network;screen=Screen::Settings;
     networkMode=NetworkMode::Usb;usbWaiting=usb_storage::available();

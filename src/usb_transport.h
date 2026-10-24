@@ -1,4 +1,5 @@
 #pragma once
+#include "usb_features.h"
 
 namespace usb_transport {
 struct Connection {

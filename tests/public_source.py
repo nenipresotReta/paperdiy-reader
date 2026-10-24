@@ -34,7 +34,8 @@ class PublicSourceTests(unittest.TestCase):
 
     def test_private_build_flags_rejected(self):
         for flag in ('SHUTDOWN_HEADER', 'DIAGNOSTICS', 'DEVICE_TESTS', 'NETWORK_TESTS',
-                     'EPUB_TESTS', 'USB_RAM_DISK', 'ACCEPTANCE_FIXTURE_HEADER'):
+                     'EPUB_TESTS', 'USB_RAM_DISK', 'ACCEPTANCE_FIXTURE_HEADER',
+                     'EXPERIMENTAL_USB_MSC'):
             self.assertTrue(check_file('platformio.ini',
                 ('build_flags =\n -DPAPERDIY_' + flag + '=1\n').encode()))
         self.assertEqual(check_file('platformio.ini', b'build_flags = -DBOARD_HAS_PSRAM\n'), [])

@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #endif
 
-#if defined(ARDUINO) && !ARDUINO_USB_MODE && CONFIG_TINYUSB_MSC_ENABLED
+#if PAPERDIY_EXPERIMENTAL_USB_MSC && defined(ARDUINO) && !ARDUINO_USB_MODE && CONFIG_TINYUSB_MSC_ENABLED
 #include <USB.h>
 #include <esp32-hal-tinyusb.h>
 #include <freertos/task.h>
@@ -100,6 +100,16 @@ int32_t tud_msc_scsi_cb(uint8_t lun,const uint8_t command[16],void*,uint16_t){
   }
   if(!ok){failureSense(lun);return -1;}return 0;
 }
+}
+#elif defined(ARDUINO) && !ARDUINO_USB_MODE
+#include <USB.h>
+#include <esp32-hal-tinyusb.h>
+namespace usb_transport {
+Connection connection(){return {tud_mounted(),tud_suspended()};}
+bool hostConnected(){return connection().configured;}
+bool blocksSleep(){const auto c=connection();return c.configured||c.suspended;}
+bool storageSupported(){return false;}
+void setStorageOwned(bool){}
 }
 #elif defined(ARDUINO) && ARDUINO_USB_MODE
 #include <HWCDC.h>

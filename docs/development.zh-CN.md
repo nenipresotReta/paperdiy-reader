@@ -24,7 +24,7 @@ ctest --test-dir build --output-on-failure
 
 主机测试需要 CMake、OpenSSL 开发头文件和 Node.js 18+。先由 PlatformIO 安装 M5GFX/miniz；已有锁定版本可通过 `-DM5GFX_DIR=/path/to/M5GFX` 指定。Homebrew macOS 可能还需要 `-DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"`。仅用于主机的测试使用可移植 miniz 字节读取路径，不会暗中修改锁定依赖。计时应另建 `-DSANITIZE=OFF` 目录。
 
-公开默认配置使用原生 USB MODE0，启动启用 CDC、不启用 MSC；应用仅通过 U 开放 MSC。公开构建不包含 `PAPERDIY_DIAGNOSTICS`、`PAPERDIY_EPUB_TESTS`、`PAPERDIY_DEVICE_TESTS`、`PAPERDIY_NETWORK_TESTS` 或外部私人图片。私人配置必须留在公开源码之外，不能将私人镜像改名冒充公开固件。当前大小、哈希和硬件状态以架构证据表为准，不应固化在容易过期的构建命令中。
+公开默认配置使用原生 USB MODE0，启动启用 CDC。`src/usb_features.h` 将 `PAPERDIY_EXPERIMENTAL_USB_MSC` 默认为 0，关闭 MSC 导书；普通构建隐藏 U，循环 N → A → 关闭，并拒绝 `USB_ENTER`。显式值 1 仅供私人实验构建，不包含在交付的公开配置中。仅有 `ARDUINO_USB_MSC_ON_BOOT=0` 不等于该编译门禁。公开构建不包含 `PAPERDIY_DIAGNOSTICS`、`PAPERDIY_EPUB_TESTS`、`PAPERDIY_DEVICE_TESTS`、`PAPERDIY_NETWORK_TESTS` 或外部私人图片。私人配置必须留在公开源码之外，不能将私人镜像改名冒充公开固件。当前大小、哈希和硬件状态以架构证据表为准，不应固化在容易过期的构建命令中。
 
 ## 所有权与源码坐标
 
@@ -96,7 +96,7 @@ EPUB 首先测量精确保存锚点附近的页面。本地窗口最多 32 个�
 
 标点压缩和汉字/ASCII 间距默认开启，只通过 AP WebUI 配置。忽略但保留旧 `cnStyle`。当前样式读取经验证的 `readerCfgV1`，它是带边界、保留位和 CRC 的 20 字节版本化记录。保存/回读成功后才应用。几何设置影响缓存身份；点击时序、刷新频率和图片不影响。
 
-P/S 调整使用原生 ink，保留显式空格。code/pre/math/rule 边界阻断正文上下文调整。代码为原生 24 px 比例字体，不合成等宽；保留缩进，关闭普通两端对齐/断词。降低时钟或关机前等待面板完成。电源证据和 U 的 240 MHz 所有权门禁见[电源说明](power.zh-CN.md)。
+P/S 调整使用原生 ink，保留显式空格。code/pre/math/rule 边界阻断正文上下文调整。代码为原生 24 px 比例字体，不合成等宽；保留缩进，关闭普通两端对齐/断词。降低时钟或关机前等待面板完成。电源证据和实验 MSC 的 240 MHz 所有权门禁见[电源说明](power.zh-CN.md)。
 
 关机图片为可选 `PDI1`：16 字节头、小端尺寸、保留字节为零、payload CRC32、逐行对齐且高位优先的像素，最多 540×960。浏览器本地适配/转换并预览，不放大。设备写入并验证非活动 SD 槽后才修改选择。删除前先持久化“none”；“firmware default”恢复编译内置回退。自定义图片缺失/无效时使用回退，不影响书籍/进度。
 
@@ -126,7 +126,7 @@ POST hook `pio_usb_dcd.py` 核对源/archive/对象身份，编译构建目录�
 
 ## USB 所有权与固件恢复
 
-默认 MODE0 构建提供 CDC 和应用控制的 MSC。U 先保存进度、停止存储/网络任务、关闭句柄、撤销 lease 并卸载 FAT。HostOwned、ExitRequested、Fault 都保持主机独占；只有接受主机弹出且原始驱动成功释放后才允许本地 FAT。PREVENT/ALLOW、同步和 START STOP UNIT 控制转换。断开、挂起、USB reset 和空闲均不等于安全弹出。
+实际 SD 故障仍未解决，因此 USB 导书暂停。默认 MODE0 构建保留 CDC、关闭 MSC；仅显式私人 `PAPERDIY_EXPERIMENTAL_USB_MSC=1` 构建启用保留的实验 U 路径。启用后，U 先保存进度、停止存储/网络任务、关闭句柄、撤销 lease 并卸载 FAT。HostOwned、ExitRequested、Fault 都保持主机独占；只有接受主机弹出且原始驱动成功释放后才允许本地 FAT。PREVENT/ALLOW、同步和 START STOP UNIT 控制转换。断开、挂起、USB reset 和空闲均不等于安全弹出。
 
 回调每次最多传输 4 KiB。最新源码在整个所有权期间保持 240 MHz，保留首次介质/驱动错误及 backend/卡检测细节。Fault 不能当成 owned=0。主机持有介质时，对关机/reset/1200 touch 均有门禁。一次性 RAM 盘测试不访问 SD。RAM 盘 MSC 写入/回读、正常弹出及重挂载通过。
 实际 SD USB、新渐进分页夹具及 RGB565 修正后的最终叠图恢复仍未验收。范围见架构证据表，RAM 盘通过不能证明 raw SD USB 已修复。

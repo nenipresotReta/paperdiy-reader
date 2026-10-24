@@ -187,9 +187,9 @@ same directory, for example:
 ```
 
 Safely eject the card before returning it to the device. Do not modify a card
-while the firmware owns its mounted filesystem. In the current native USB
-MODE=0 build, selecting **U** instead transfers exclusive card ownership to the
-computer. Safely eject there before returning to local reading; see
+while the firmware owns its mounted filesystem. USB book transfer is paused
+and disabled by default; use AP upload or a safely removed card. CDC remains
+available, while MSC requires an explicit experimental build. See
 [USB ownership and recovery](development.md#usb-ownership-and-firmware-recovery)
 for the ownership contract and current hardware acceptance limits.
 

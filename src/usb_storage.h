@@ -1,4 +1,5 @@
 #pragma once
+#include "usb_features.h"
 #include "usb_storage_core.h"
 #include "usb_diagnostics.h"
 

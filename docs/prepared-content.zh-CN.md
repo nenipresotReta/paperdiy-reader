@@ -107,7 +107,7 @@ AP session有idle timeout，上传完成前保持页面打开。丢响应由stat
 /Books/example.epub.pdt
 ```
 
-安全弹出后再放回设备。固件持有已挂载文件系统时不要修改卡。当前native USB MODE0源码中，选 **U** 可转交独占card ownership给电脑；返回本地阅读前仍须正常安全弹出。所有权契约和当前硬件验收限制见[USB与恢复](development.zh-CN.md#usb-所有权与固件恢复)。
+安全弹出后再放回设备。固件持有已挂载文件系统时不要修改卡。USB 导书暂停并默认关闭，请用 AP 上传或安全取出的卡；CDC 保留，MSC 须显式实验编译才可启用。所有权契约和当前硬件验收限制见[USB与恢复](development.zh-CN.md#usb-所有权与固件恢复)。
 
 ## 上限、校验与回退
 

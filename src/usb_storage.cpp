@@ -6,7 +6,7 @@
 #include <Arduino.h>
 #endif
 
-#if defined(ARDUINO) && !ARDUINO_USB_MODE && CONFIG_TINYUSB_MSC_ENABLED
+#if PAPERDIY_EXPERIMENTAL_USB_MSC && defined(ARDUINO) && !ARDUINO_USB_MODE && CONFIG_TINYUSB_MSC_ENABLED
 #include <SD.h>
 #include <SPI.h>
 #include <sd_diskio.h>
@@ -208,5 +208,15 @@ bool requestExit(){return true;}
 Status status(){return {};}
 bool hostOwnsCard(){return false;}
 bool finish(){return true;}
+namespace transport_detail {
+bool ready(){return false;}
+uint32_t sectors(){return 0;}
+int32_t read(uint32_t,uint32_t,void*,uint32_t){return -1;}
+int32_t write(uint32_t,uint32_t,const void*,uint32_t){return -1;}
+bool startStop(uint8_t,bool,bool){return false;}
+bool synchronize(uint32_t,uint16_t){return false;}
+bool preventRemoval(uint8_t){return false;}
+Error lastError(){return Error::NotReady;}
+}
 }
 #endif

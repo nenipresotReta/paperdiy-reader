@@ -8,7 +8,7 @@
 
 PaperDIY Reader 在 ESP32-S3 M5Stack PaperDIY 上读取 FAT32 microSD 中的 EPUB、UTF-8 TXT 和 Markdown，使用 540 × 960 单色 framebuffer，为每本书保留一个源位置。
 
-`main.cpp` 调用 `appSetup()`、`appLoop()`。应用任务管理导航、当前文档、本地 FAT、设置和网络轮询。打开、分页、缓存发布使用协作式状态机，共用应用任务，并非后台 RTOS 任务。TinyUSB 在独立 SDK 任务调用 MSC 回调，因此 USB 存储有独立所有权边界和互斥锁。
+`main.cpp` 调用 `appSetup()`、`appLoop()`。应用任务管理导航、当前文档、本地 FAT、设置和网络轮询。打开、分页、缓存发布使用协作式状态机，共用应用任务，并非后台 RTOS 任务。仅显式启用实验 MSC 时，TinyUSB 才在独立 SDK 任务调用其回调，使用独立存储所有权边界和互斥锁。
 
 ```mermaid
 flowchart TD
@@ -24,7 +24,7 @@ flowchart TD
     Open --> Cache[完整缓存 / 提取与页面检查点]
     App --> Network[AP WebUI / 配对 LAN 服务]
     Network --> Delivery[事务 store]
-    App --> USB[独占 raw USB 存储]
+    App --> USB[实验 raw USB 存储]
     App --> Power[时钟 / 休眠 / 唤醒策略]
 ```
 
@@ -42,14 +42,14 @@ flowchart TD
 | 规范页起点 | 最多 65,536 个 32 位偏移，payload 256 KiB |
 | 可见临时窗口 | 最多 32 个测量页起点 |
 | 增量存储传输 | 每步最多 8 KiB；文件系统调用仍同步 |
-| USB MSC 回调 | 最多 4 KiB，扇区 512 字节 |
+| 实验 USB MSC 回调 | 最多 4 KiB，扇区 512 字节 |
 | 锁定 SDK 的 TLS 缓冲 | 内部堆 33,434 字节，另加上下文/密码状态 |
 | SD 总线 | SPI GPIO 39/40/38，CS 47；卡检测 GPIO 48 低有效 |
 | 导航 | GPIO 4、3，低有效 |
 
 这些上限不保证全部最大值同时可用。导入器在 DOM 分配前检查可用 PSRAM 和最大空闲块。即使 PSRAM 有空闲，无线、TLS、DMA 也可能需要内部 RAM。
 
-[platformio.ini](../platformio.ini)锁定 Espressif 平台和 M5 依赖。目标使用 GNU++11、原生 USB CDC+MSC（`ARDUINO_USB_MODE=0`），启动启用 CDC，仅应用授予存储所有权时公布 MSC。[partitions.csv](../partitions.csv)是分区权威。存在 OTA 槽，但未实现 OTA 固件端点。
+[platformio.ini](../platformio.ini)锁定 Espressif 平台和 M5 依赖。目标使用 GNU++11、原生 USB（`ARDUINO_USB_MODE=0`），启动启用 CDC。MSC 导书默认关闭，仅显式私人实验 `PAPERDIY_EXPERIMENTAL_USB_MSC=1` 构建可开放；普通构建隐藏 U 并拒绝 `USB_ENTER`。[partitions.csv](../partitions.csv)是分区权威。存在 OTA 槽，但未实现 OTA 固件端点。
 
 ## 3. 模块索引与所有权
 
@@ -87,7 +87,7 @@ flowchart TD
 
 书库每屏 22 行。A/B 移动书或页；短 A+B 打开/返回；同时按住两秒请求关机。书库双击默认是 release-to-release 200 ms；阅读点击不等该窗口。启用单键重复时，600 ms 后开始、每 350 ms 重复。
 
-旋转反转书库/阅读导航方向；设置保留物理 N/A/U 与 R 分组。新设备设置应加入书籍样式设置项，详细控制留 WebUI。
+旋转反转书库/阅读导航方向；设置保留物理 N/A 与 R 分组，默认模式循环为 N → A → 关闭。新设备设置应加入书籍样式设置项，详细控制留 WebUI。
 
 `Loading` 消费并丢弃普通导航。页脚图标表示工作，不显示中央 loading 文案。电源请求被锁存；打开任务关闭句柄并在日志可用时完成有效检查点后才继续关机。完成另有 200 ms 输入释放门禁，加载期间点击不能变成随后翻页。
 
@@ -258,7 +258,7 @@ CPU 活动工作 240 MHz、普通空闲 80 MHz；USB 所有权到 raw 驱动释�
 
 ### AP WebUI
 
-网络显式为 Off、AP、STA/LAN、USB。AP 提供英文设置、配网、上传、可选预处理；请求具有有界头/体、认证及上传状态。新文件不覆盖普通书，未完成传输留在自有临时文件，发布前校验。
+普通网络状态显式为 Off、AP、STA/LAN；USB 存储保留为编译门禁后的实验状态。AP 提供英文设置、配网、上传、可选预处理；请求具有有界头/体、认证及上传状态。新文件不覆盖普通书，未完成传输留在自有临时文件，发布前校验。
 
 关机图片在浏览器解码、适配显示、生成有界单色 `PDI1` 并预览。设备验证尺寸/头/CRC，写非活动槽、回读，再保存选择。移除先保存 none，不修改编译私人回退。
 
@@ -271,6 +271,8 @@ STA 仅显式选择时开服务。设备 P-256 证书、TLS 1.2 ECDHE-ECDSA/AES-
 store 同时一个事务、块最多 4 KiB、验证每 poll 最多 8 KiB、十六个客户端隔离回执。普通传输新建书；Push 最多 16 KiB Markdown，用两个自有槽覆盖版本而不累计。只有两个固定摘要进度记录，绕过普通逐版本缓存；历史由发送端保留。模糊发布报告 Uncertain，以字节核验恢复。协议/skill 见 [LAN 协议](lan-protocol.zh-CN.md)。
 
 ### USB 存储
+
+实际 SD 故障仍未解决，因此 USB 导书暂停。默认构建保留 CDC，但关闭 MSC、隐藏 U、拒绝 `USB_ENTER`。下述实现仅供显式启用的实验构建；RAM 盘验收不能证明 raw SD 可靠性。
 
 HostOwned、ExitRequested、Fault 时主机拥有整张 raw 卡。暴露扇区前应用保存进度、关本地句柄、撤销 lease、卸载 FAT。同步、禁止移除、合法主机弹出控制释放。断线、挂起、bus reset、空闲不能自行把 FAT 交回设备。
 
