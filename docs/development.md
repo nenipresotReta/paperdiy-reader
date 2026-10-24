@@ -2,7 +2,7 @@
 
 [简体中文](development.zh-CN.md)
 
-This guide records development contracts and commands. The [architecture report](architecture-and-implementation.md) owns the source map and current evidence table; build success, host correctness, device acceptance and publication are separate outcomes.
+This guide records development contracts and commands. The [architecture report](architecture-and-implementation.md) describes the source map and implementation limits.
 
 ## Test-host isolation
 
@@ -50,8 +50,7 @@ alone is not this compile gate. Public builds exclude
 `PAPERDIY_DIAGNOSTICS`, `PAPERDIY_EPUB_TESTS`, `PAPERDIY_DEVICE_TESTS`,
 `PAPERDIY_NETWORK_TESTS` and external private artwork. Private configurations
 must remain outside public source; never rename a private image into a public
-release binary. Exact current sizes, hashes and hardware status belong in the
-architecture evidence record, not in a stale build command.
+release binary. Build sizes and hashes must be recorded for the specific artifact.
 
 ## Ownership and source coordinates
 
@@ -336,11 +335,8 @@ Callbacks transfer at most 4 KiB. The latest source holds 240 MHz throughout
 ownership and retains first media/driver error plus backend/card-detect details.
 A Fault cannot be treated as owned=0. Shutdown/reset/1200 touch are guarded while
 the host owns the medium. A disposable RAM-disk test never accesses the SD card.
-The RAM-disk MSC trial passed write/readback, ordinary eject and remount.
-Actual-SD USB, the new progressive-pagination
-fixture and final overlay restoration after the RGB565 correction remain
-unverified. See the architecture evidence table; the RAM result does not
-establish that raw SD USB is repaired.
+Actual-SD disconnects remain unresolved; the default build keeps MSC disabled.
+
 
 Only after safe ownership release, native CDC recovery may use 1200 baud with DTR and RTS both asserted, followed by a newly enumerated ROM port.
 Confirm the exact reader,
@@ -371,8 +367,7 @@ Keep device logs, framebuffers, backups, credentials, originals and custom art
 outside public source. Native tests cannot establish electrical current,
 battery lifetime, card endurance, physical wake behavior, QR readability or
 wireless throughput. Report preparation, delivery, device acceptance and display
-separately. Hardware data belongs in the architecture evidence table with its
-actual build scope.
+separately. Keep personal device records in local development notes.
 
 Use `python tools/check_public_source.py --index .` for the entire staged blobs,
 and `--tree DIR` for an unpacked source artifact. The allowlist and private

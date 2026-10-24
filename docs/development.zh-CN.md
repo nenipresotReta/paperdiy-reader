@@ -2,7 +2,7 @@
 
 [English](development.md)
 
-本指南记录开发约定和命令。[架构报告](architecture-and-implementation.zh-CN.md)集中维护模块索引和当前证据表；编译成功、主机正确性、设备验收和发布是不同的结果。
+本指南记录开发约定和命令。[架构报告](architecture-and-implementation.zh-CN.md)说明模块索引与实现限制。
 
 ## 测试主机隔离
 
@@ -24,7 +24,7 @@ ctest --test-dir build --output-on-failure
 
 主机测试需要 CMake、OpenSSL 开发头文件和 Node.js 18+。先由 PlatformIO 安装 M5GFX/miniz；已有锁定版本可通过 `-DM5GFX_DIR=/path/to/M5GFX` 指定。Homebrew macOS 可能还需要 `-DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"`。仅用于主机的测试使用可移植 miniz 字节读取路径，不会暗中修改锁定依赖。计时应另建 `-DSANITIZE=OFF` 目录。
 
-公开默认配置使用原生 USB MODE0，启动启用 CDC。`src/usb_features.h` 将 `PAPERDIY_EXPERIMENTAL_USB_MSC` 默认为 0，关闭 MSC 导书；普通构建隐藏 U，循环 N → A → 关闭，并拒绝 `USB_ENTER`。显式值 1 仅供私人实验构建，不包含在交付的公开配置中。仅有 `ARDUINO_USB_MSC_ON_BOOT=0` 不等于该编译门禁。公开构建不包含 `PAPERDIY_DIAGNOSTICS`、`PAPERDIY_EPUB_TESTS`、`PAPERDIY_DEVICE_TESTS`、`PAPERDIY_NETWORK_TESTS` 或外部私人图片。私人配置必须留在公开源码之外，不能将私人镜像改名冒充公开固件。当前大小、哈希和硬件状态以架构证据表为准，不应固化在容易过期的构建命令中。
+公开默认配置使用原生 USB MODE0，启动启用 CDC。`src/usb_features.h` 将 `PAPERDIY_EXPERIMENTAL_USB_MSC` 默认为 0，关闭 MSC 导书；普通构建隐藏 U，循环 N → A → 关闭，并拒绝 `USB_ENTER`。显式值 1 仅供私人实验构建，不包含在交付的公开配置中。仅有 `ARDUINO_USB_MSC_ON_BOOT=0` 不等于该编译门禁。公开构建不包含 `PAPERDIY_DIAGNOSTICS`、`PAPERDIY_EPUB_TESTS`、`PAPERDIY_DEVICE_TESTS`、`PAPERDIY_NETWORK_TESTS` 或外部私人图片。私人配置必须留在公开源码之外，不能将私人镜像改名冒充公开固件。构建大小与哈希应对应具体产物记录。
 
 ## 所有权与源码坐标
 
@@ -128,8 +128,7 @@ POST hook `pio_usb_dcd.py` 核对源/archive/对象身份，编译构建目录�
 
 实际 SD 故障仍未解决，因此 USB 导书暂停。默认 MODE0 构建保留 CDC、关闭 MSC；仅显式私人 `PAPERDIY_EXPERIMENTAL_USB_MSC=1` 构建启用保留的实验 U 路径。启用后，U 先保存进度、停止存储/网络任务、关闭句柄、撤销 lease 并卸载 FAT。HostOwned、ExitRequested、Fault 都保持主机独占；只有接受主机弹出且原始驱动成功释放后才允许本地 FAT。PREVENT/ALLOW、同步和 START STOP UNIT 控制转换。断开、挂起、USB reset 和空闲均不等于安全弹出。
 
-回调每次最多传输 4 KiB。最新源码在整个所有权期间保持 240 MHz，保留首次介质/驱动错误及 backend/卡检测细节。Fault 不能当成 owned=0。主机持有介质时，对关机/reset/1200 touch 均有门禁。一次性 RAM 盘测试不访问 SD。RAM 盘 MSC 写入/回读、正常弹出及重挂载通过。
-实际 SD USB、新渐进分页夹具及 RGB565 修正后的最终叠图恢复仍未验收。范围见架构证据表，RAM 盘通过不能证明 raw SD USB 已修复。
+回调每次最多传输 4 KiB。最新源码在整个所有权期间保持 240 MHz，保留首次介质/驱动错误及 backend/卡检测细节。Fault 不能当成 owned=0。主机持有介质时，对关机/reset/1200 touch 均有门禁。一次性 RAM 盘测试不访问 SD。实际 SD 断连问题仍未解决，默认构建关闭 MSC。
 
 只有安全释放所有权后，才可使用原生 CDC 恢复路径：1200 baud，同时拉起 DTR 和 RTS，然后使用新枚举的 ROM 端口。
 仅写 app0 前，核实具体设备、分区布局和应用镜像。保留进度时，不擦 NVS、不写 bootloader/分区表、不改书籍路径。主机持有介质时禁止 reset 或刷写。
@@ -140,6 +139,6 @@ POST hook `pio_usb_dcd.py` 核对源/archive/对象身份，编译构建目录�
 
 `PAPERDIY_DIAGNOSTICS` 提供有界本地命令，包括 STATUS、SCREEN、PAGE_TEXT、OPEN、导航和 CACHEINFO。偏移与精确锚点是独立字段。OPEN/NEXT/PREV 是写状态操作，不是只读探测。可选 EPUB/DEVICE/NETWORK 标志仅暴露合成验收助手，公开构建均不含。`SD_IO`、`SD_CACHE_IO` 用 8 KiB 块对最多 256 KiB 读取两遍，仅内部比较 SHA，不打印名称/内容/摘要；目录先于文件打开分类。前缀一致不等于全文件验证，`read_us` 也不是打开书籍耗时。截止时间为协作式，不能取消阻塞文件系统调用；探测不会修改挂载时钟。
 
-设备日志、framebuffer、备份、凭据、原书和自定义图片留在公开源码之外。主机测试不能证明电流、电池寿命、卡耐久性、物理唤醒、二维码可读性或无线吞吐。预处理、传输、设备验收和显示应分别报告。硬件数据集中写入架构证据表，并注明实际构建范围。
+设备日志、framebuffer、备份、凭据、原书和自定义图片留在公开源码之外。主机测试不能证明电流、电池寿命、卡耐久性、物理唤醒、二维码可读性或无线吞吐。预处理、传输、设备验收和显示应分别报告。个人设备记录保留在本地开发笔记中。
 
 使用 `python tools/check_public_source.py --index .` 检查全部暂存 blob，使用 `--tree DIR` 检查解包源码产物。白名单和私人标记不能替代人工 diff/待推历史审查或固件审计。运行 `python tests/public_source.py`。源码发布必须来自已审查提交；固件包只含公开应用镜像、校验和、升级说明及匹配许可证。不能打包工作树、交接文件、NVS/SD/flash dump、书籍、私人日志/源字体缓存或私人图片。测试/CI 成功不授权 commit、push、tag 或发布。
