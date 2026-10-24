@@ -6,11 +6,15 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <algorithm>
 #include <memory>
 #include <tinyxml2.h>
 #include <lgfx/utility/lgfx_miniz.h>
 #include "xml_input.h"
 #include "epub_structure.h"
+#include "text_language.h"
+#include "epub_vertical_style.h"
+#include "epub_mathml.h"
 
 namespace epub {
 inline uint16_t u16(const uint8_t* p){return p[0]|(uint16_t(p[1])<<8);}
@@ -32,7 +36,7 @@ struct Importer {
   std::vector<Entry> entries;
   std::vector<std::string> unusedObfuscatedFonts;
   std::string error;
-  char* output;size_t capacity,used=0;
+  char* output=nullptr;size_t capacity=0,used=0;
   bool ok=true;
   bool hasBodyText=false;
   // Opt-in sidecar only: null keeps the original flat importer and allocations.
@@ -40,8 +44,16 @@ struct Importer {
   structure::Collector* structure = nullptr;
   uint32_t structureResource = structure::NONE;
   uint8_t structureLanguage = 0;
+  vertical_style::Sheet verticalStyles;
+  std::unique_ptr<char[]> mathScratch;
   bool fail(const char* s){error=s;ok=false;if(structure)structure->discard();return false;}
-  bool exact(uint32_t at,void* p,size_t n){return at<=fileSize&&n<=fileSize-at&&read(at,p,n)==n;}
+  bool exact(uint32_t at,void* p,size_t n){
+    if(at>fileSize||n>fileSize-at)return false;
+    for(size_t done=0;done<n;){const size_t count=std::min(size_t(8192),n-done);
+      if(read(at+done,(uint8_t*)p+done,count)!=count)return false;
+      done+=count;if(tick)tick();
+    }return true;
+  }
   bool index(){
     if(resourceRead)return true;
     if(fileSize<22)return fail("Invalid ZIP");
@@ -93,7 +105,33 @@ struct Importer {
     else {
       std::unique_ptr<uint8_t,decltype(&free)> compressed((uint8_t*)alloc(e->compressed),free);
       if(!compressed){fail("Not enough PSRAM");out.reset();return out;}
-      if(!exact(start,compressed.get(),e->compressed)||lgfx_tinfl_decompress_mem_to_mem(out.get(),e->size,compressed.get(),e->compressed,0)!=e->size){fail("EPUB decompression failed");out.reset();return out;}
+      if(!exact(start,compressed.get(),e->compressed)){fail("EPUB decompression failed");out.reset();return out;}
+      // The convenience mem_to_mem helper puts its ~11 KiB Huffman state on
+      // the task stack. Keep it in the same checked allocator as chapter data
+      // (PSRAM on the device), and release it before constructing the XML DOM.
+      std::unique_ptr<lgfx_tinfl_decompressor,decltype(&free)> state(
+        (lgfx_tinfl_decompressor*)alloc(sizeof(lgfx_tinfl_decompressor)),free);
+      if(!state){fail("Not enough PSRAM for EPUB decompressor");out.reset();return out;}
+      memset(state.get(),0,sizeof(*state));lgfx_tinfl_init(state.get());
+      size_t consumed=0,produced=0;
+      lgfx_tinfl_status status=TINFL_STATUS_HAS_MORE_OUTPUT;
+      // Keep the full, non-wrapping output dictionary, but return to the input
+      // observer every 8 KiB. This does not expose a partial chapter or retain
+      // decompressor state beyond this call. HAS_MORE_INPUT rejects truncation.
+      do {
+        size_t inputBytes=e->compressed-consumed;
+        size_t outputBytes=std::min(size_t(8192),size_t(e->size)-produced);
+        status=lgfx_tinfl_decompress(state.get(),compressed.get()+consumed,&inputBytes,
+          (lgfx_mz_uint8*)out.get(),(lgfx_mz_uint8*)out.get()+produced,&outputBytes,
+          TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF|TINFL_FLAG_HAS_MORE_INPUT);
+        consumed+=inputBytes;produced+=outputBytes;
+        if(tick)tick();
+        if(status!=TINFL_STATUS_HAS_MORE_OUTPUT)break;
+        if(!outputBytes)break;
+      } while(true);
+      if(status!=TINFL_STATUS_DONE||consumed!=e->compressed||produced!=e->size){
+        fail("EPUB decompression failed");out.reset();return out;
+      }
     }
     if(lgfx_mz_crc32(0,(const unsigned char*)out.get(),e->size)!=e->crc){fail("EPUB CRC mismatch");out.reset();return out;}
     out.get()[e->size]=0;if(actualSize)*actualSize=e->size;if(tick)tick();return out;
@@ -120,6 +158,7 @@ struct Importer {
     size_t required = size + 1 + budget.domBytes + 64 * 1024;
     if (xmlMemoryAvailable && !xmlMemoryAvailable(required, std::max(size + 1, size_t(4096))))
       return fail("Not enough memory for XML document");
+    document.SetProgressCallback([](void* context){auto* importer=static_cast<Importer*>(context);if(importer->tick)importer->tick();},this);
     if (document.Parse(source.get(), size) != tinyxml2::XML_SUCCESS) return fail(invalid);
     if (tick) tick();
     return true;
@@ -139,7 +178,9 @@ struct Importer {
   }
   void text(const char* value, bool preserve = false) {
     if (!value) return;
+    size_t observed=0;
     while (*value && ok) {
+      if(++observed==8192){observed=0;if(tick)tick();}
       char c = *value++;
       if (xml_input::space(c)) {
         if (preserve) {
@@ -152,13 +193,25 @@ struct Importer {
     }
   }
   uint8_t nodeLanguage(tinyxml2::XMLElement* element, uint8_t inherited) {
-    if (!structure || !element) return inherited;
+    if (!element) return inherited;
     const char* tag = element->Attribute("xml:lang");
     if (!tag) tag = element->Attribute("lang");
+    if(tag){
+      const auto localLanguage=text_language::fromTag(tag);
+      if(localLanguage==text_language::Language::None||
+         (language!=text_language::Language::None&&localLanguage!=language))unsafeFlatLanguage=true;
+    }
+    if(!structure)return inherited;
     return tag ? structure->internLanguage(tag) : inherited;
   }
   static structure::Kind blockKind(const char* name) {
     using structure::Kind;
+    if (!strcmp(name,"math")) return Kind::Math;
+    if (!strcmp(name,"table")) return Kind::Table;
+    if (!strcmp(name,"td")||!strcmp(name,"th")) return Kind::TableCell;
+    if (!strcmp(name,"ruby")) return Kind::Ruby;
+    if (!strcmp(name,"rt")) return Kind::RubyText;
+    if (!strcmp(name,"rp")) return Kind::RubyFallback;
     if (!strcmp(name,"p")) return Kind::Paragraph;
     if (name[0] == 'h' && name[1] >= '1' && name[1] <= '6' && !name[2]) return Kind::Heading;
     if (!strcmp(name,"blockquote")) return Kind::Quote;
@@ -176,6 +229,7 @@ struct Importer {
   void walk(tinyxml2::XMLNode* node, unsigned depth = 0, bool preserve = false,
             uint32_t parent = structure::NONE, uint16_t flags = 0, uint8_t language = 0) {
     if (!node || !ok) return;
+    if(tick)tick();
     if (depth > xml_input::MAX_DEPTH) { fail("XML depth exceeds 32 levels"); return; }
     if (auto textNode = node->ToText()) {
       const size_t begin = used;
@@ -188,6 +242,10 @@ struct Importer {
     if (!strcmp(name,"head") || !strcmp(name,"script") || !strcmp(name,"style") ||
         !strcmp(name,"svg") || !strcmp(name,"img")) return;
     language = nodeLanguage(element, language);
+    if(structure){const auto style=verticalStyles.resolve(element);
+      if(style.mode>=0){flags&=~structure::VerticalRL;if(style.mode)flags|=structure::VerticalRL;}
+      if(style.combine>=0){flags&=~structure::Combine;if(style.combine)flags|=structure::Combine;}
+    }
     if (!strcmp(name, "br")) {
       const size_t begin = used;
       if (used) append('\n');
@@ -198,6 +256,9 @@ struct Importer {
     preserve = preserve || !strcmp(name, "pre") || !strcmp(attr(element, "xml:space"), "preserve");
     if (structure) {
       if (preserve) flags |= structure::Preserve;
+      if(!strcmp(name,"th"))flags|=structure::TableHeader;
+      if((!strcmp(name,"td")||!strcmp(name,"th"))&&
+         ((*attr(element,"rowspan")&&strcmp(attr(element,"rowspan"),"1"))||(*attr(element,"colspan")&&strcmp(attr(element,"colspan"),"1"))))flags|=structure::UnsupportedLayout;
       if (!strcmp(name,"strong") || !strcmp(name,"b")) flags |= structure::Strong;
       if (!strcmp(name,"em") || !strcmp(name,"i")) flags |= structure::Emphasis;
       if (!strcmp(name,"code") || !strcmp(name,"kbd") || !strcmp(name,"samp")) flags |= structure::Code;
@@ -218,6 +279,7 @@ struct Importer {
         parent = record;
       }
     }
+    const size_t objectBegin=used;
     for (auto next = node->FirstChild(); next && ok; next = next->NextSibling())
       walk(next, depth + 1, preserve, parent, flags, language);
     // Match newline()'s trimming without modifying output. Parent ranges are
@@ -227,10 +289,119 @@ struct Importer {
       if (block) while (end && output[end - 1] == ' ') --end;
       structure->close(record, end);
     }
+    if(structure&&!strcmp(name,"math")&&used>objectBegin){
+      if(!mathScratch)mathScratch.reset(new(std::nothrow) char[4096]);
+      if(!mathScratch)structure->discard(structure::Status::Allocation);
+      else {epub_mathml::Converter converter(mathScratch.get(),4096);if(converter.convert(element)){size_t objectEnd=used;while(objectEnd>objectBegin&&output[objectEnd-1]==' ')--objectEnd;structure->addMath(objectBegin,objectEnd,mathScratch.get(),converter.size(),!strcmp(attr(element,"display"),"block"));}}
+    }
     if (block) newline();
   }
+  void chapterStyles(tinyxml2::XMLElement* html,const std::string& path){
+    verticalStyles.clear();if(!structure)return;
+    auto head=child(html,"head");size_t total=0;unsigned links=0;
+    for(auto e=head?head->FirstChildElement():nullptr;e;e=e->NextSiblingElement()){
+      if(!strcmp(local(e->Name()),"style")){const char* css=e->GetText();if(css){size_t n=strlen(css);if(n<=65536&&total+n<=131072){verticalStyles.add(css,n);total+=n;}}}
+      else if(!strcmp(local(e->Name()),"link")&&!strcmp(attr(e,"rel"),"stylesheet")&&links++<8){
+        const char* href=attr(e,"href");if(!*href||strchr(href,':')||href[0]=='/')continue;
+        const auto resolved=resolve(path,href);if(!ok)return;
+        size_t bytes=resourceRead?resourceSize(resolved):(find(resolved)?find(resolved)->size:SIZE_MAX);
+        if(bytes==SIZE_MAX||bytes>65536||total+bytes>131072)continue;
+        auto css=extract(resolved,65536);if(!css)return;verticalStyles.add(css.get(),bytes);total+=bytes;
+      }
+    }
+    if(verticalStyles.failed())structure->discard(structure::Status::Allocation);
+  }
   bool englishHyphenation = false;
+  text_language::Language language=text_language::Language::None;
+  // Inspect container/package metadata without expanding any spine resource.
+  // This upgrades older flat-text caches which did not retain the English
+  // regional variant; output may be null when inspectOnly is true.
+  bool inspectOnly=false;
+  bool flattenedForMemory=false;
+  bool unsafeFlatLanguage=false;
+  void constrainFlatLanguage(){
+    // A flat fallback cannot retain span-level language boundaries. Disable
+    // automatic rules for the whole book rather than applying the package's
+    // English pattern set to an explicitly foreign/unknown span.
+    if(unsafeFlatLanguage&&(!structure||!structure->ready())){
+      language=text_language::Language::None;englishHyphenation=false;
+    }
+  }
+  struct Chapter { std::string path; bool auxiliary; uint16_t spineIndex; };
+  enum class Progress : uint8_t { Pending, Complete, Failed };
+  std::vector<Chapter> chapters;
+  size_t chapterCursor=0;
+  Progress progress=Progress::Failed;
+  // Chapter boundaries are stable canonical prefixes. XML/deflate remain
+  // indivisible, and no DOM or allocation address is retained between steps.
+  bool begin() {
+    restoreCollector();entries.clear();unusedObfuscatedFonts.clear();
+    used=0;ok=true;hasBodyText=false;error.clear();englishHyphenation=false;
+    language=text_language::Language::None;structureResource=structure::NONE;structureLanguage=0;
+    unsafeFlatLanguage=false;flattenedForMemory=false;mathScratch.reset();verticalStyles=vertical_style::Sheet{};
+    chapters.clear();chapterCursor=0;
+    progress=prepare()? (inspectOnly?Progress::Complete:Progress::Pending):Progress::Failed;
+    if(progress==Progress::Failed)retryFlat();
+    return progress!=Progress::Failed;
+  }
+  Progress stepChapter() {
+    if(progress!=Progress::Pending)return progress;
+    if(chapterCursor<chapters.size()){
+      if(!importChapter(chapters[chapterCursor])){
+        progress=Progress::Failed;retryFlat();return progress;
+      }
+      mathScratch.reset();verticalStyles=vertical_style::Sheet{};
+      ++chapterCursor;
+    }
+    if(chapterCursor==chapters.size()){
+      if(chapters.empty()||!hasBodyText){fail("No readable EPUB text");progress=Progress::Failed;}
+      else{
+        output[used]=0;if(structure)structure->finish(output,used);
+        constrainFlatLanguage();progress=Progress::Complete;
+      }
+      restoreCollector();
+    }
+    return progress;
+  }
   bool run() {
+    if(!begin())return false;
+    while(stepChapter()==Progress::Pending){}
+    return progress==Progress::Complete;
+  }
+  // Restore only after a freshly prepared, source-validated matching plan and
+  // separately validated Collector/prefix. The persistence layer hashes every
+  // field and binds the plan, source graph and extractor revision.
+  bool restoreProgress(size_t cursor,size_t bytes,bool body,bool unsafe,
+                       uint8_t packageLanguage,uint8_t collectorLanguage,bool complete) {
+    if(progress!=Progress::Pending||flattenedForMemory||cursor>chapters.size()||
+       bytes>capacity||collectorLanguage!=structureLanguage||
+       (packageLanguage!=uint8_t(language)&&!(complete&&unsafe&&(!structure||!structure->ready())&&packageLanguage==uint8_t(text_language::Language::None)))||
+       (complete&&(cursor!=chapters.size()||!body))||(!complete&&cursor==chapters.size()))return false;
+    chapterCursor=cursor;used=bytes;hasBodyText=body;unsafeFlatLanguage=unsafe;
+    language=text_language::Language(packageLanguage);englishHyphenation=language!=text_language::Language::None;
+    structureLanguage=collectorLanguage;structureResource=structure::NONE;
+    output[used]=0;progress=complete?Progress::Complete:Progress::Pending;
+    if(complete)constrainFlatLanguage();return true;
+  }
+ private:
+  structure::Collector* retryCollector=nullptr;
+  void restoreCollector(){if(retryCollector){structure=retryCollector;retryCollector=nullptr;}}
+  bool retryFlat(){
+    if(!structure||flattenedForMemory||(error!="Not enough PSRAM"&&error!="Not enough PSRAM for EPUB decompressor"&&
+       error!="Not enough PSRAM for XML"&&error!="Not enough memory for XML document")){
+      restoreCollector();return false;
+    }
+    retryCollector=structure;structure->discard();structure=nullptr;
+    mathScratch.reset();verticalStyles=vertical_style::Sheet{};
+    std::vector<Entry>().swap(entries);std::vector<std::string>().swap(unusedObfuscatedFonts);
+    chapters.clear();chapterCursor=0;used=0;ok=true;hasBodyText=false;error.clear();englishHyphenation=false;
+    language=text_language::Language::None;structureResource=structure::NONE;structureLanguage=0;unsafeFlatLanguage=false;
+    flattenedForMemory=true;
+    progress=prepare()?(inspectOnly?Progress::Complete:Progress::Pending):Progress::Failed;
+    if(progress!=Progress::Pending)restoreCollector();
+    return progress!=Progress::Failed;
+  }
+  bool prepare() {
     if (structure) structure->begin();
     if (!index()) return false;
     if (resourceRead ? resourceSize("META-INF/encryption.xml") != SIZE_MAX : find("META-INF/encryption.xml") != nullptr) {
@@ -256,8 +427,6 @@ struct Importer {
       root = attr(child(child(child(&doc,"container"),"rootfiles"),"rootfile"), "full-path");
       if (root.empty()) return fail("Missing EPUB rootfile");
     }
-    struct Chapter { std::string path; bool auxiliary; uint16_t spineIndex; };
-    std::vector<Chapter> chapters;
     size_t pathBytes = 0;
     {
       tinyxml2::XMLDocument opf;
@@ -266,13 +435,12 @@ struct Importer {
       if (!manifest || !spine) return fail("Missing EPUB spine");
       auto language = child(child(pkg,"metadata"),"language");
       if (language && language->GetText()) {
-        std::string tag = language->GetText();
-        for (char& c : tag) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
-        englishHyphenation = tag == "en" || tag.compare(0,3,"en-") == 0;
+        this->language=text_language::fromTag(language->GetText());
+        englishHyphenation=this->language!=text_language::Language::None;
         if (structure) structureLanguage = structure->internLanguage(language->GetText());
       }
       auto title = child(child(pkg,"metadata"),"title");
-      if (title) {
+      if (title&&!inspectOnly) {
         const size_t begin = used;
         text(title->GetText());
         if (structure) {
@@ -296,29 +464,28 @@ struct Importer {
         chapters.push_back({std::move(path), !strcmp(attr(ref,"linear"),"no"), uint16_t(chapters.size())});
       }
     }
+    if(inspectOnly)return true;
     hasBodyText = false;
-    // Preserve the primary reading order. Auxiliary notes remain accessible at
-    // the end until the UI has hyperlink navigation.
-    for (bool auxiliary : {false, true}) {
-      for (const auto& chapter : chapters) {
-        if (chapter.auxiliary != auxiliary) continue;
-        tinyxml2::XMLDocument doc(true, tinyxml2::PEDANTIC_WHITESPACE);
-        if (!parseXML(chapter.path, xml_input::MAX_BYTES, doc, "Chapter is not valid XHTML")) return false;
-        auto html = child(&doc, "html");
-        auto body = child(html, "body");
-        if (!body) return fail("Chapter has no XHTML body");
-        if (structure) structureResource = structure->openResource(chapter.path.c_str(), chapter.spineIndex,
-                                                                   chapter.auxiliary, used);
-        walk(body, 0, false, structure::NONE, 0, nodeLanguage(html, structureLanguage)); newline();
-        if (structure) structure->closeResource(structureResource, used);
-        if (!ok) return false;
-        if (tick) tick();
-      }
-    }
+    // Stable partition preserves the prior two-pass primary/auxiliary order.
+    std::stable_partition(chapters.begin(),chapters.end(),[](const Chapter& c){return !c.auxiliary;});
+    return true;
+  }
+  bool importChapter(const Chapter& chapter) {
+    tinyxml2::XMLDocument doc(true, tinyxml2::PEDANTIC_WHITESPACE);
+    if (!parseXML(chapter.path, xml_input::MAX_BYTES, doc, "Chapter is not valid XHTML")) return false;
+    auto html = child(&doc, "html");
+    auto body = child(html, "body");
+    if (!body) return fail("Chapter has no XHTML body");
+    if (structure) structureResource = structure->openResource(chapter.path.c_str(), chapter.spineIndex,
+                                                               chapter.auxiliary, used);
+    chapterStyles(html,chapter.path);if(!ok)return false;
+    uint16_t initialFlags=0;const auto htmlStyle=verticalStyles.resolve(html);
+    if(htmlStyle.mode==1)initialFlags|=structure::VerticalRL;
+    if(htmlStyle.combine==1)initialFlags|=structure::Combine;
+    walk(body, 0, false, structure::NONE, initialFlags, nodeLanguage(html, structureLanguage)); newline();
+    if (structure) structure->closeResource(structureResource, used);
     if (!ok) return false;
-    if (chapters.empty() || !hasBodyText) return fail("No readable EPUB text");
-    output[used] = 0;
-    if (structure) structure->finish(output, used);
+    if (tick) tick();
     return true;
   }
 };

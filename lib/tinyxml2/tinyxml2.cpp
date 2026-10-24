@@ -1107,6 +1107,7 @@ char* XMLNode::ParseDeep( char* p, StrPair* parentEndTag, int* curLineNumPtr )
 
 	bool first = true;
 	while( p && *p ) {
+        _document->Progress();
         XMLNode* node = 0;
 
         p = _document->Identify( p, &node, first );
@@ -1975,6 +1976,7 @@ char* XMLElement::ParseAttributes( char* p, int* curLineNumPtr )
 
     // Read the attributes.
     while( p ) {
+        _document->Progress();
         p = XMLUtil::SkipWhiteSpace( p, curLineNumPtr );
         if ( !(*p) ) {
             _document->SetError( XML_ERROR_PARSING_ELEMENT, _parseLineNum, "XMLElement name=%s", Name() );
