@@ -19,8 +19,23 @@ class BoundedWebServer : public WebServer {
   static constexpr uint32_t REQUEST_TIMEOUT_MS = 5000;
   static constexpr size_t POLL_BYTES = 2048;
   static constexpr size_t MAX_RESPONSE = 32768;
+  static constexpr size_t MAX_FLASH_RESPONSE = 1024u * 1024u;
+  static constexpr uint32_t FLASH_RESPONSE_TIMEOUT_MS = 45000;
   explicit BoundedWebServer(int port = 80) : WebServer(port) {}
   ~BoundedWebServer() override { clearClient(); }
+
+  // The caller must provide immutable storage that outlives every request
+  // (a compiled PROGMEM asset). Only the small HTTP header is buffered in RAM.
+  void sendFlash(int code, const char* type, const uint8_t* bytes, size_t size) {
+    if (!bytes || !size || size > MAX_FLASH_RESPONSE) {
+      send(503, "application/json", "{\"error\":\"Asset unavailable\"}");
+      return;
+    }
+    setContentLength(size);
+    send(code, type, "");
+    flash_ = reinterpret_cast<const char*>(bytes);
+    flashBytes_ = size;
+  }
 
   void close() override {
     clearClient();
@@ -74,6 +89,9 @@ class BoundedWebServer : public WebServer {
   uint32_t started_ = 0;
   std::string response_;
   size_t sent_ = 0;
+  const char* flash_ = nullptr;
+  size_t flashBytes_ = 0;
+  uint32_t lastWrite_ = 0;
 
   void resetResponse() {
     _currentVersion = request_.http11 ? 1 : 0;
@@ -83,6 +101,8 @@ class BoundedWebServer : public WebServer {
     response_.clear();
     sent_ = 0;
     overflow_ = false;
+    flash_ = nullptr;
+    flashBytes_ = 0;
   }
   void clearRequest() {
     if (_currentArgs) { delete[] _currentArgs; _currentArgs = nullptr; }
@@ -102,6 +122,8 @@ class BoundedWebServer : public WebServer {
     std::string{}.swap(response_);
     sent_ = 0;
     sending_ = false;
+    flash_ = nullptr;
+    flashBytes_ = 0;
   }
   void queueResponse() {
     if (overflow_) {
@@ -111,20 +133,28 @@ class BoundedWebServer : public WebServer {
     clearRequest();
     sending_ = true;
     started_ = millis();
+    lastWrite_ = started_;
     flushResponse();
   }
   void flushResponse() {
-    if (uint32_t(millis() - started_) >= REQUEST_TIMEOUT_MS || !_currentClient.connected()) {
+    const uint32_t now = millis();
+    const uint32_t limit = flash_ ? FLASH_RESPONSE_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+    if (uint32_t(now - started_) >= limit ||
+        uint32_t(now - lastWrite_) >= REQUEST_TIMEOUT_MS || !_currentClient.connected()) {
       clearClient();
       return;
     }
-    const size_t remaining = response_.size() - sent_;
+    const size_t total = response_.size() + flashBytes_;
+    const bool inHeader = sent_ < response_.size();
+    const size_t remaining = inHeader ? response_.size() - sent_ : total - sent_;
     if (!remaining) { clearClient(); return; }
     const size_t budget = remaining < POLL_BYTES ? remaining : POLL_BYTES;
-    const int written = writeAvailable(response_.data() + sent_, budget);
-    if (written < 0) { clearClient(); return; }
+    const char* bytes = inHeader ? response_.data() + sent_ : flash_ + sent_ - response_.size();
+    const int written = writeAvailable(bytes, budget);
+    if (written < 0 || size_t(written) > budget) { clearClient(); return; }
+    if (written) lastWrite_ = now;
     sent_ += size_t(written);
-    if (sent_ == response_.size()) clearClient();
+    if (sent_ == total) clearClient();
   }
   void reject(int code) {
     resetResponse();

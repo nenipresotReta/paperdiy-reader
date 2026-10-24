@@ -1,17 +1,33 @@
+#include "console.h"
 #include <Arduino.h>
 #include <M5Unified.h>
-#include <HWCDC.h>
+#include "usb_transport.h"
+#include "usb_storage.h"
 #include <driver/gpio.h>
 #include <esp_sleep.h>
 #include <esp_timer.h>
 #include "power.h"
 #include "idle_policy.h"
+#include "card_sleep.h"
+#include "storage_validation.h"
 
 namespace {
 idle_power::Policy idlePolicy;
 IdlePowerStats stats;
 uint32_t lastSourceCheck = 0;
 bool sourceChecked = false;
+
+struct CardSleepBackend {
+  bool disableInterrupt(){return gpio_intr_disable(GPIO_NUM_48)==ESP_OK;}
+  bool armWake(int level){return gpio_wakeup_enable(GPIO_NUM_48,level==LOW?GPIO_INTR_HIGH_LEVEL:GPIO_INTR_LOW_LEVEL)==ESP_OK;}
+  bool disarmWake(){return gpio_wakeup_disable(GPIO_NUM_48)==ESP_OK;}
+  bool restoreEdge(){return gpio_set_intr_type(GPIO_NUM_48,GPIO_INTR_ANYEDGE)==ESP_OK;}
+  bool enableInterrupt(){return gpio_intr_enable(GPIO_NUM_48)==ESP_OK;}
+  int level(){return digitalRead(48);}
+  void revokeProofs(){storage_validation::sourceChanged();}
+  void revokeTrust(){storage_validation::invalidate();}
+  void signalChange(){storage_validation::signalCardEvent();}
+};
 
 void cpuFrequency(uint32_t mhz) {
   if (getCpuFrequencyMhz() == mhz) return;
@@ -20,7 +36,7 @@ void cpuFrequency(uint32_t mhz) {
 }
 
 void checkPowerSource() {
-  stats.usbHost = HWCDC::isPlugged();
+  stats.usbHost = usb_transport::blocksSleep();
   uint32_t now = millis();
   if (sourceChecked && uint32_t(now - lastSourceCheck) < 1000) return;
   sourceChecked = true;
@@ -36,20 +52,41 @@ void clearWakeSources() {
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
   gpio_wakeup_disable(GPIO_NUM_3);
   gpio_wakeup_disable(GPIO_NUM_4);
-  gpio_wakeup_disable(GPIO_NUM_48);
+  // The card guard disables its wake mode and restores the awake edge ISR.
 }
 
-esp_err_t prepareWakeSources(int cardLevel, uint32_t sleepMs) {
+esp_err_t prepareWakeSources(uint32_t sleepMs) {
   esp_err_t result = gpio_wakeup_enable(GPIO_NUM_4, GPIO_INTR_LOW_LEVEL);
   if (result == ESP_OK)
     result = gpio_wakeup_enable(GPIO_NUM_3, GPIO_INTR_LOW_LEVEL);
-  // An inserted card holds DET low: wake on removal, not on that steady level.
-  if (result == ESP_OK)
-    result = gpio_wakeup_enable(GPIO_NUM_48,
-        cardLevel == LOW ? GPIO_INTR_HIGH_LEVEL : GPIO_INTR_LOW_LEVEL);
   if (result == ESP_OK) result = esp_sleep_enable_gpio_wakeup();
   if (result == ESP_OK)
     result = esp_sleep_enable_timer_wakeup(uint64_t(sleepMs) * 1000);
+  return result;
+}
+
+struct SleepResult {
+  esp_err_t error=ESP_OK;
+  bool cancelled=false,slept=false;
+  uint64_t elapsedUs=0;
+  esp_sleep_wakeup_cause_t cause=ESP_SLEEP_WAKEUP_UNDEFINED;
+};
+SleepResult lightSleepWindow(int cardLevel,uint32_t sleepMs,bool allowUsb=false){
+  CardSleepBackend backend;card_sleep::Window<CardSleepBackend> card(backend,cardLevel);
+  SleepResult result;
+  result.error=card.begin()?prepareWakeSources(sleepMs):ESP_FAIL;
+  // Keep the first wake key as normal input; only abandon entering sleep.
+  result.cancelled=rawPowerKeys()||digitalRead(48)!=cardLevel||(!allowUsb&&usb_transport::blocksSleep());
+  if(result.error==ESP_OK&&!result.cancelled){
+    const uint64_t started=esp_timer_get_time();
+    result.error=esp_light_sleep_start();
+    if(result.error==ESP_OK){
+      result.slept=true;result.elapsedUs=uint64_t(esp_timer_get_time())-started;
+      result.cause=esp_sleep_get_wakeup_cause();
+    }
+  }
+  clearWakeSources();
+  if(!card.finish())result.error=ESP_FAIL;
   return result;
 }
 } // namespace
@@ -66,7 +103,7 @@ void powerActivity() {
 const IdlePowerStats& idlePowerStats() { return stats; }
 
 void logIdlePowerStatus() {
-  Serial.printf("IDLE_POWER cpu_mhz=%u switches=%u freq_failures=%u sleeps=%u "
+  Console.printf("IDLE_POWER cpu_mhz=%u switches=%u freq_failures=%u sleeps=%u "
                 "sleep_ms=%llu timer=%u gpio=%u failures=%u wake_keys=%u "
                 "source_known=%d source=%u usb=%d\n",
       getCpuFrequencyMhz(), stats.frequencyChanges, stats.frequencyFailures,
@@ -83,7 +120,7 @@ void idlePower(bool stableScene, bool inputIdle, int stableCardLevel, bool radio
       (stats.powerSource & 3) || !(stats.powerSource & 4);
   bool cardStable = digitalRead(48) == stableCardLevel;
   auto plan = idlePolicy.plan(millis(),
-      {stableScene && cardStable, inputIdle, rawPowerKeys() != 0, sleepBlocked, radioActive});
+      {stableScene && cardStable, inputIdle, rawPowerKeys() != 0, sleepBlocked, radioActive,usb_storage::hostOwnsCard()});
   if (!plan.idle) {
     cpuFrequency(240);
     delay(10);
@@ -99,32 +136,31 @@ void idlePower(bool stableScene, bool inputIdle, int stableCardLevel, bool radio
     return;
   }
 
-  esp_err_t result = prepareWakeSources(stableCardLevel, plan.sleepMs);
-  // Close races with a press, SD change or newly attached USB host. Do not
-  // reset the input state: the first wake press is an ordinary reading action.
-  if (rawPowerKeys() || digitalRead(48) != stableCardLevel || HWCDC::isPlugged()) {
-    clearWakeSources();
-    delay(1);
-    return;
-  }
-  uint64_t started = esp_timer_get_time();
-  if (result == ESP_OK) result = esp_light_sleep_start();
-  if (result == ESP_OK) {
-    stats.sleepUs += uint64_t(esp_timer_get_time()) - started;
+  const auto result=lightSleepWindow(stableCardLevel,plan.sleepMs);
+  if (result.slept) {
+    stats.sleepUs += result.elapsedUs;
     ++stats.sleeps;
-    auto cause = esp_sleep_get_wakeup_cause();
-    if (cause == ESP_SLEEP_WAKEUP_GPIO) ++stats.gpioWakes;
-    if (cause == ESP_SLEEP_WAKEUP_TIMER) ++stats.timerWakes;
+    if (result.cause == ESP_SLEEP_WAKEUP_GPIO) ++stats.gpioWakes;
+    if (result.cause == ESP_SLEEP_WAKEUP_TIMER) ++stats.timerWakes;
     stats.lastWakeKeys = rawPowerKeys();
-  } else {
+  }
+  if (result.error!=ESP_OK) {
     ++stats.sleepFailures;
     idlePolicy.noteSleepFailure(millis());
   }
-  clearWakeSources();
   // Keep PSRAM, SD and the EPD controller powered; no remount or display init.
   // Do not call Display.wakeup(): it would leave the panel boost enabled.
   delay(1);
 }
+
+#ifdef PAPERDIY_DIAGNOSTICS
+bool powerDiagnosticSleep(uint32_t durationMs){
+  if(!durationMs||durationMs>1000)return false;
+  M5.Display.waitDisplay();
+  const auto result=lightSleepWindow(digitalRead(48),durationMs,true);
+  return result.error==ESP_OK&&result.slept;
+}
+#endif
 
 static bool charging=false,ledKnown=false;
 static uint32_t lastCheck=0;
@@ -138,7 +174,7 @@ void updatePowerIndicator(bool force){
     // PaperDIY schematic: PY_LED -> R21 -> LED1 -> GND, active high.
     // Only the indicator default is changed; CHG_EN and charge configuration are untouched.
     bool ok=M5.Power.M5pm1.setLedEnLevel(next);ledKnown=ok;
-    Serial.printf("POWER charging=%d led=%d applied=%d\n",next,next,ok);
+    Console.printf("POWER charging=%d led=%d applied=%d\n",next,next,ok);
   }
   charging=next;
 }

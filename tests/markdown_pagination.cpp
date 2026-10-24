@@ -50,11 +50,12 @@ struct Renderer {
 };
 using Mark=std::tuple<uint32_t,int,int>;
 struct TypographyRenderer {
-  const markdown::Document& doc;std::vector<Mark> marks;
+  const markdown::Document& doc;std::vector<Mark> marks;bool native=false;
   markdown_page::Box glyph(const markdown::Run& run,const char* text,size_t bytes){
     const uint32_t cp=pagination::codepoint(text,bytes);markdown_page::Box box;
     const auto& font=(run.flags&markdown::Code)?reader_font::FONT_24:reader_font::FONT_28;
     box.width=reader_font::glyphAdvance(font,cp);box.ascent=31;box.descent=8;
+    if(native&&!(run.flags&(markdown::Code|markdown::Emphasis)))box.nativePixels=28;
     if(const auto* g=reader_font::findGlyph(font,cp)){
       box.ink=g->width&&g->height;box.inkLeft=g->left;box.inkRight=g->left+g->width;
       if(run.flags&(markdown::Strong|markdown::Heading))++box.inkRight;
@@ -159,9 +160,51 @@ void typographyRegression(){
  std::string many;for(unsigned i=0;i<100;++i)many+="她说：“《中文》很好。”中EPUB3文 `中A` $x_1$。\n\n";
  for(unsigned flags=0;flags<4;++flags){const auto first=render(many,flags);assert(render(many,flags)==first);}
 }
+void advancedTypographyRegression(){
+  markdown_page::Geometry geometry;geometry.advanced=true;geometry.bottom=230;
+  std::string source;
+  for(unsigned i=0;i<20;++i)source+="“AV and To” have native spacing; **AV** and *To* have independent styles. `AV To` $x_i^2$ 中文EPUB3文。\n\n";
+  markdown::Document doc;assert(doc.parse(source.data(),source.size(),nullptr,nullptr,accept));
+  TypographyRenderer renderer{doc};renderer.native=true;
+  size_t from=0;std::vector<uint32_t> actual;
+  while(from<source.size()){
+    const auto indexed=markdown_page::page(doc,from,false,geometry,renderer,[](){});
+    assert(renderer.marks.empty());
+    const auto painted=markdown_page::page(doc,from,true,geometry,renderer,[](){});
+    assert(indexed==painted&&painted>from&&painted<=source.size());
+    for(const auto& mark:renderer.marks){
+      const auto cp=std::get<0>(mark);
+      if(cp==0)continue;
+      if(!pagination::space(cp)&&!pagination::noBreakSpace(cp)&&!pagination::invisible(cp)&&cp!='\n'&&cp!='-')actual.push_back(cp);
+      assert(std::get<1>(mark)>=geometry.left-4&&std::get<1>(mark)<=540);
+    }
+    renderer.marks.clear();from=painted;
+  }
+  std::vector<uint32_t> expected;
+  for(size_t at=0;at<doc.size();){
+    const size_t bytes=pagination::utf8Bytes(doc.text()+at,doc.size()-at);
+    const auto cp=pagination::codepoint(doc.text()+at,bytes);
+    if(!pagination::space(cp)&&!pagination::noBreakSpace(cp)&&!pagination::invisible(cp)&&cp!='\n'&&cp!='-')expected.push_back(cp);
+    at+=bytes;
+  }
+  assert(actual==expected);
+  auto positions=[&](const std::string& text){
+    assert(doc.parse(text.data(),text.size()));TypographyRenderer r{doc};r.native=true;
+    markdown_page::page(doc,0,true,geometry,r,[](){});
+    return r.marks;
+  };
+  const auto kerned=positions("AV"),barrier=positions("A**V**");
+  assert(kerned.size()==2&&barrier.size()==2);
+  assert(std::get<1>(kerned[0])==std::get<1>(barrier[0]));
+  assert(std::get<1>(kerned[1])<std::get<1>(barrier[1]));
+  const auto code=positions("`AV To`" );
+  geometry.advanced=false;
+  assert(positions("`AV To`")==code); // Code retains its native metrics and spacing.
+}
 int main(){
   indentationRegression();
   typographyRegression();
+  advancedTypographyRegression();
   markdown::Document d;
   std::string source=markdown_samples::mixed;
   assert(d.parse(source.data(),source.size(),nullptr,nullptr,accept));

@@ -42,7 +42,7 @@ static void checkFont(const reader_font::Font& font) {
   // the same visible box, with the width pagination reserves for them.
   const auto placeholder = render(font, 0);
   assert(!placeholder.empty());
-  for (uint32_t codepoint : {0x9f98u, 0x20bb7u, 0x1f600u, 0xfffdu, 0x3031u}) {
+  for (uint32_t codepoint : {0x9f98u, 0x20000u, 0x1f600u, 0xfffdu, 0x3031u}) {
     assert(!reader_font::hasGlyph(font, codepoint));
     assert(render(font, codepoint) == placeholder);
     assert(reader_font::glyphAdvance(font, codepoint) == font.pixels);
@@ -89,6 +89,12 @@ int main() {
     assert(hasGlyph(FONT_24, codepoint));
   }
 
+  // Bounded Japanese name forms have native source glyphs at both sizes.
+  for(uint32_t cp:{0x9ad9u,0x20bb7u}){
+    assert(hasGlyph(FONT_24,cp)&&hasGlyph(FONT_28,cp));
+    assert(render(FONT_24,cp)!=render(FONT_24,0));
+    assert(render(FONT_28,cp)!=render(FONT_28,0));
+  }
   // j used to be shrunk from 28 to 26px (advance 8, height 27).
   const auto* j = findGlyph(FONT_28, 'j');
   assert(j->advance == 9 && j->height == 30);

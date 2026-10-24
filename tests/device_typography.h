@@ -1,4 +1,5 @@
 #pragma once
+#include "console.h"
 #include "pagination.h"
 #include "reader.h"
 #include "reading_font.h"
@@ -9,7 +10,7 @@ inline void deviceTypographyChecks() {
   auto check=[&](const char* name,bool ok){
     ok=ok&&uxTaskGetStackHighWaterMark(nullptr)>=4096;
     if(ok)++passed;
-    Serial.printf("DEVICE_TYPESET_TEST name=%s passed=%d stack_free=%u\n",name,ok,unsigned(uxTaskGetStackHighWaterMark(nullptr)));
+    Console.printf("DEVICE_TYPESET_TEST name=%s passed=%d stack_free=%u\n",name,ok,unsigned(uxTaskGetStackHighWaterMark(nullptr)));
   };
   pagination::Geometry g;g.left=0;g.top=0;g.bottom=0;
   const char* word="extraordinarily";int wordWidth=0;
@@ -34,5 +35,5 @@ inline void deviceTypographyChecks() {
     },[](){});
   size_t indexed=pagination::page(text,strlen(text),0,g,width,[](const char*,size_t,int,int){},[](){});
   check("draw_index_bounds",inside&&drawn>0&&end==indexed&&end>0);
-  Serial.printf("DEVICE_TYPESET_DONE passed=%u total=3 english=%d\n",passed,bookEnglishHyphens);
+  Console.printf("DEVICE_TYPESET_DONE passed=%u total=3 english=%d\n",passed,bookEnglishHyphens);
 }

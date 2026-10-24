@@ -77,6 +77,21 @@ void counterRollover() {
   failing.noteActivity(base - 1000);
   expect(failing.plan(base, ready), true, true);
 }
+void storageOwnershipPinsActiveClock(){
+  Policy policy;policy.noteActivity(0);
+  // No byte-delta activity arrives while a host is idle or while its first
+  // callback runs in another task. Ownership alone must prevent throttling.
+  for(uint32_t time:{1000u,60000u,600000u,UINT32_MAX}){
+    expect(policy.plan(time,{true,true,false,true,false,true}),false,false);
+    // A suspended/reset host or a Fault still retains the same ownership.
+    expect(policy.plan(time,{true,true,false,false,false,true}),false,false);
+  }
+  // Only MSC ownership changes the clock rule: ordinary CDC/AP/STA retain
+  // CPU throttling, and successful release restores the original policy.
+  expect(policy.plan(600000,{true,true,false,true,false,false}),true,false);
+  expect(policy.plan(600000,{true,true,false,false,true,false}),true,false);
+  expect(policy.plan(600000,ready),true,true);
+}
 
 void firstPressAfterSleep() {
   for (uint8_t key : {uint8_t(1), uint8_t(2)}) {
@@ -182,6 +197,7 @@ void loadingReleaseGuard() {
 int main() {
   policyBoundaries();
   counterRollover();
+  storageOwnershipPinsActiveClock();
   firstPressAfterSleep();
   holdAndChordAfterSleep();
   loadingReleaseGuard();

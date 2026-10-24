@@ -1,6 +1,7 @@
 """Synthetic EPUB regression and resource-boundary tests; no external books."""
 import json
 import random
+import struct
 import subprocess
 import sys
 import tempfile
@@ -143,6 +144,28 @@ with tempfile.TemporaryDirectory() as temp:
     raw[at + info.compress_size // 2] ^= 128
     data.write_bytes(raw)
     run(data, error='EPUB')
+    # Exercise the low-level inflater's bounded input/output and the separate
+    # CRC check with otherwise intact ZIP directory and local-header records.
+    for label, field, delta, error in [
+        ('short-output', 24, -1, 'EPUB decompression failed'),
+        ('long-output', 24, 1, 'EPUB decompression failed'),
+        ('short-deflate', 20, -1, 'EPUB decompression failed'),
+        ('wrong-crc', 16, 1, 'EPUB CRC mismatch'),
+    ]:
+        path = archive(label + '.epub', base)
+        raw = bytearray(path.read_bytes())
+        at = raw.index(b'PK\x01\x02')
+        while True:
+            name_size, extra_size, comment_size = struct.unpack_from('<HHH', raw, at + 28)
+            if raw[at + 46:at + 46 + name_size] == b'OPS/chapter.xhtml':
+                local = struct.unpack_from('<I', raw, at + 42)[0]
+                value = struct.unpack_from('<I', raw, at + field)[0] + delta
+                struct.pack_into('<I', raw, at + field, value)
+                struct.pack_into('<I', raw, local + field - 2, value)
+                break
+            at += 46 + name_size + extra_size + comment_size
+        path.write_bytes(raw)
+        run(path, error=error)
     data = root / 'truncated.epub'
     data.write_bytes(b'PK\x03\x04')
     run(data, error='Invalid ZIP')
@@ -177,10 +200,19 @@ with tempfile.TemporaryDirectory() as temp:
         run(book(name, content), error='No readable EPUB text')
 
     # Language metadata controls English patterns without altering extracted text.
-    for tag, expected_language in [('en', 1), ('EN-gb', 1), ('ja', 0), ('fr', 0)]:
+    for tag, expected_language in [('en', 1), ('EN-gb', 2), ('en-US', 1), ('en-Latn-GB', 2), ('ja', 0), ('fr', 0), ('en-', 0)]:
         opf = package.replace('<package>', '<package><metadata><dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">' + tag + '</dc:language></metadata>')
         result = run(archive('lang-' + tag + '.epub', {**base, 'OPS/book.opf': opf}), mode='--language')
-        assert result.stderr.decode().strip() == f'HYPHEN_LANGUAGE english={expected_language}'
+        assert result.stderr.decode().strip() == f'HYPHEN_LANGUAGE english={int(bool(expected_language))} region={expected_language}'
+        # Language upgrades of a cached book read only package metadata, even
+        # when the spine entry cannot be parsed. No title/body output is emitted.
+        inspected = run(archive('inspect-' + tag + '.epub', {**base, 'OPS/book.opf': opf, 'OPS/chapter.xhtml': 'deliberately invalid XHTML'}), mode='--inspect-language', expected='')
+        assert inspected.stderr == result.stderr
+    english_package = package.replace('<package>', '<package><metadata><language>en-GB</language></metadata>')
+    for tag in ('fr', 'ja', '', 'en-US'):
+        chapter = '<html><body><p>English <span lang="' + tag + '">foreign</span> text.</p></body></html>'
+        fallback = run(archive('flat-language-' + (tag or 'empty') + '.epub', {**base, 'OPS/book.opf': english_package, 'OPS/chapter.xhtml': chapter}), mode='--language', expected='English foreign text.\n\n')
+        assert fallback.stderr.decode().strip() == 'HYPHEN_LANGUAGE english=0 region=0'
 
     # Semantic records preserve actual flattened UTF-8 byte ranges. Formatting
     # and CSS never modify text, generate list labels or select a new font.
@@ -265,6 +297,8 @@ with tempfile.TemporaryDirectory() as temp:
     random_flat = subprocess.run([exe, str(random_path)], capture_output=True, check=True, timeout=15)
     random_result = run(random_path, expected=random_flat.stdout.decode(), mode='--structure')
     assert metadata(random_result)['ready']
+    memory_retry = run(random_path, expected=random_flat.stdout.decode(), mode='--structure-memory-retry')
+    assert not metadata(memory_retry)['ready'] and metadata(memory_retry)['status'] == 5
 
     # Exhausted record/language budgets abandon all metadata, but the whole
     # original text, including the final sentinel, remains available.
@@ -294,5 +328,12 @@ with tempfile.TemporaryDirectory() as temp:
     run(valid, error='Not enough memory for XML document', mode='--deny-xml-memory')
     for allocation in range(1, 7):
         run(valid, error='PSRAM' if allocation > 1 else 'ZIP directory', mode=f'--fail-alloc={allocation}')
+    # Container, OPF and chapter each allocate decompressor state through the
+    # importer allocator. Failing any one must be a normal bounded failure.
+    for resource in range(1, 4):
+        run(valid, error='PSRAM for EPUB decompressor', mode=f'--fail-inflate={resource}')
+    retried = run(valid, mode='--structure-inflate-memory-retry')
+    assert not metadata(retried)['ready'] and metadata(retried)['status'] == 5
+    run(valid, error='PSRAM for EPUB decompressor', mode='--structure-inflate-oom')
 
 print(f'EPUB syntax, Unicode, text fidelity, ZIP integrity, bounded semantics: {cases} cases + {sidecars} byte-identical sidecars PASS')

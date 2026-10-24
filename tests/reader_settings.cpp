@@ -31,6 +31,32 @@ int main(){
   current().doubleMs=333;current().ink=12;current().refresh=0;assert(reader_cache::matchesLayout(id,false,flags));
   current().preset=(p+1)%3;assert(!reader_cache::matchesLayout(id,false,flags));
  }
+ // A finalized line-breaking/font revision must not reuse intermediate page
+ // tables. Explicitly compatible text survives, with language and semantic
+ // mode independently represented in the new identity.
+ current()=Config{};std::set<uint32_t> modes;
+ for(bool markdown:{false,true})for(bool semantic:{false,true})for(unsigned language=0;language<3;++language){
+  if((markdown&&semantic)||(markdown&&language!=1))continue;
+  const auto id=reader_cache::layoutFor(language!=0,markdown,3,language==2,semantic);
+  assert(modes.insert(id).second&&reader_cache::currentLayout(id));
+  assert(reader_cache::matchesLayout(id,markdown,3));
+  assert(reader_cache::compatibleText(id,markdown)&&!reader_cache::compatibleText(id,!markdown));
+  const uint32_t intermediate=0x20264000u|(id&2047u);
+  assert(!reader_cache::currentLayout(intermediate));
+  assert(!reader_cache::matchesLayout(intermediate,markdown,3));
+  assert(reader_cache::compatibleText(intermediate,markdown));
+  const uint32_t rubyIntermediate=0x20268000u|(id&2047u);
+  assert(reader_cache::knownV3Layout(rubyIntermediate)&&reader_cache::anchorOnlyLayout(rubyIntermediate));
+  assert(!reader_cache::currentLayout(rubyIntermediate)&&!reader_cache::compatibleText(rubyIntermediate,markdown));
+ }
+ assert(modes.size()==7);
+ for(uint32_t old:{0x20262023u,0x20262027u,0x2026202bu}){
+  assert(!reader_cache::currentLayout(old)&&reader_cache::textRevision(old)==reader_cache::TEXT_REVISION);
+ }
+ for(uint32_t unknown:{0x20261040u,0x20263023u,0x20265023u})
+  assert(!reader_cache::currentLayout(unknown)&&reader_cache::textRevision(unknown)==0);
+ assert(!reader_cache::currentLayout(reader_cache::layoutFor(false,false,3,true,false)));
+ assert(!reader_cache::currentLayout(reader_cache::layoutFor(true,true,3,false,true)));
  current()=Config{};unsigned ink=0;
  for(int y=0;y<4;++y)for(int x=0;x<4;++x){assert(keepInk(x,y)==bool((x+y)%2));ink+=keepInk(x,y);}assert(ink==8);
  current().ink=0;assert(!keepInk(1,0));current().ink=100;assert(keepInk(0,0));

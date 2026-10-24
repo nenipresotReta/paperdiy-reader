@@ -25,6 +25,7 @@ void* operator new[](std::size_t bytes,const std::nothrow_t&) noexcept {
   if(failAfter>0)--failAfter;
   return ::operator new[](bytes);
 }
+const reader_font::Font& bodyNativeFont(){return reader_settings::geometry().pixels==24?reader_font::FONT_24:reader_font::FONT_28;}
 const lgfx::IFont* bodyFont(){static lgfx::IFont font;return &font;}
 const lgfx::IFont* readerFont(){return bodyFont();}
 bool negativeCodeAdvance=false;
@@ -35,10 +36,10 @@ bool bodyFontHasGlyph(uint32_t){return true;}
 bool readerFontHasGlyph(uint32_t){return true;}
 uint32_t readerCodepoint(const char* text,size_t bytes){return reader_font::decodeCodepoint(text,bytes);}
 // Leave body text blank so framebuffer ink comes only from real math glyphs.
-void drawBodyGlyph(const char*,size_t,int,int,uint32_t){}
+void drawBodyGlyph(const char*,size_t,int,int,uint16_t){}
 using CodeMark=std::tuple<uint32_t,int,int>;
 static std::vector<CodeMark> codeMarks;
-void drawReaderGlyph(const char* text,size_t bytes,int x,int y,uint32_t){codeMarks.emplace_back(readerCodepoint(text,bytes),x,y);}
+void drawReaderGlyph(const char* text,size_t bytes,int x,int y,uint16_t){codeMarks.emplace_back(readerCodepoint(text,bytes),x,y);}
 
 struct Page {size_t source,next,black;uint64_t hash;};
 static std::vector<Page> render(const std::string& source) {

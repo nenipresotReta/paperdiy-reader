@@ -1,4 +1,5 @@
 #pragma once
+#include "console.h"
 // Opt-in hardware fixture; include only behind PAPERDIY_DEVICE_TESTS.
 // Uses fixed in-flash text and the normal adapter. Never opens SD/NVS, replaces
 // the user's book buffer, changes pageNumber/pageOffsets, or saves progress.
@@ -16,7 +17,7 @@
 
 namespace markdown_device_test {
 inline void memory(const char* stage) {
-  Serial.printf("DEVICE_MD_MEMORY stage=%s heap=%u psram=%u psram_largest=%u stack_free=%u arena=%u\n",
+  Console.printf("DEVICE_MD_MEMORY stage=%s heap=%u psram=%u psram_largest=%u stack_free=%u arena=%u\n",
     stage,ESP.getFreeHeap(),ESP.getFreePsram(),
     unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
     unsigned(uxTaskGetStackHighWaterMark(nullptr)),unsigned(math_layout::MAX_SCRATCH_BYTES));
@@ -24,7 +25,7 @@ inline void memory(const char* stage) {
 inline bool restoreAdapter() {
   clearMarkdown();
   const bool ok=!bookMarkdown || (book && bookLength && prepareMarkdown(book,bookLength));
-  Serial.printf("DEVICE_MD_RESTORE adapter_ok=%d\n",ok);
+  Console.printf("DEVICE_MD_RESTORE adapter_ok=%d\n",ok);
   return ok;
 }
 inline void paintBegin() {
@@ -48,7 +49,7 @@ inline void checks(void (*restoreScreen)()) {
     paintBegin();const size_t drawn=layoutMarkdown(offset,true);paintEnd(false);
     ok=measured==drawn && drawn>offset && drawn<=bytes &&
        (drawn==bytes || (uint8_t(markdown_samples::mixed[drawn])&0xc0)!=0x80);
-    Serial.printf("DEVICE_MD_PAGE page=%u source=%u next=%u same=%d stack_free=%u\n",
+    Console.printf("DEVICE_MD_PAGE page=%u source=%u next=%u same=%d stack_free=%u\n",
       pages,unsigned(offset),unsigned(drawn),measured==drawn,unsigned(uxTaskGetStackHighWaterMark(nullptr)));
     if(!ok)break;
     offset=drawn;++pages;
@@ -58,7 +59,7 @@ inline void checks(void (*restoreScreen)()) {
   const bool restored=restoreAdapter();ok=ok&&restored;
   if(restoreScreen)restoreScreen();else showSettings(true);
   memory("restored");
-  Serial.printf("DEVICE_MD_DONE ok=%d pages=%u source_bytes=%u restored=%d\n",ok,pages,unsigned(bytes),restored);
+  Console.printf("DEVICE_MD_DONE ok=%d pages=%u source_bytes=%u restored=%d\n",ok,pages,unsigned(bytes),restored);
 }
 // Synthetic prose only: no SD, NVS, book selection or progress mutation.
 inline void benchmark() {
@@ -66,7 +67,7 @@ inline void benchmark() {
   static const char paragraph[]="A careful reader preserves each word and the original source position. "
     "Representation and extraordinary navigation use bounded spaces. Final short line.\n\n";
   std::unique_ptr<char,decltype(&free)> sample(static_cast<char*>(ps_malloc(capacity+1)),free);
-  if(!sample){Serial.println("DEVICE_MD_BENCH_DONE ok=0 allocation=1");return;}
+  if(!sample){Console.println("DEVICE_MD_BENCH_DONE ok=0 allocation=1");return;}
   const size_t repeats=capacity/(sizeof(paragraph)-1),bytes=repeats*(sizeof(paragraph)-1);
   for(size_t i=0;i<repeats;++i)memcpy(sample.get()+i*(sizeof(paragraph)-1),paragraph,sizeof(paragraph)-1);
   sample.get()[bytes]=0;
@@ -85,13 +86,13 @@ inline void benchmark() {
     ok=ok&&offset==bytes;
     if(pass)ok=ok&&hash==previousHash&&pages==previousPages;
     previousHash=hash;previousPages=pages;
-    Serial.printf("DEVICE_MD_BENCH pass=%u bytes=%u pages=%u index_us=%llu prepare_us=%llu complete=%d stack_free=%u\n",
+    Console.printf("DEVICE_MD_BENCH pass=%u bytes=%u pages=%u index_us=%llu prepare_us=%llu complete=%d stack_free=%u\n",
       pass,unsigned(bytes),pages,(unsigned long long)(esp_timer_get_time()-begin),
       (unsigned long long)(prepared-started),offset==bytes,unsigned(uxTaskGetStackHighWaterMark(nullptr)));
   }
   clearMarkdown();sample.reset(); // Restore with the original PSRAM budget.
   ok=restoreAdapter()&&ok;
-  Serial.printf("DEVICE_MD_BENCH_DONE ok=%d cpu_mhz=%u\n",ok,getCpuFrequencyMhz());
+  Console.printf("DEVICE_MD_BENCH_DONE ok=%d cpu_mhz=%u\n",ok,getCpuFrequencyMhz());
 }
 inline void preview(unsigned page) {
   const size_t bytes=sizeof(markdown_samples::mixed)-1;
@@ -104,7 +105,7 @@ inline void preview(unsigned page) {
   if(ok){paintBegin();next=layoutMarkdown(offset,true);paintEnd(true);ok=next>offset&&next<=bytes;}
   memory("preview");
   const bool restored=restoreAdapter();
-  Serial.printf("DEVICE_MD_PREVIEW page=%u source=%u next=%u ok=%d restored=%d\n",
+  Console.printf("DEVICE_MD_PREVIEW page=%u source=%u next=%u ok=%d restored=%d\n",
     page,unsigned(offset),unsigned(next),ok&&restored,restored);
 }
 }  // namespace markdown_device_test
@@ -116,7 +117,7 @@ inline bool deviceMarkdownCommand(const String& command,void (*restoreScreen)()=
   if(command=="MD_PREVIEW 1"){markdown_device_test::preview(1);return true;}
   if(command=="MD_RESTORE"){
     if(restoreScreen)restoreScreen();else showSettings(true);
-    Serial.println("DEVICE_MD_SCREEN_RESTORED");return true;
+    Console.println("DEVICE_MD_SCREEN_RESTORED");return true;
   }
   return false;
 }

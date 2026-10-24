@@ -1,132 +1,210 @@
 # EPUB typesetting
 
-Status: optional import metadata and host-only spacing experiments. The device
-still uses the existing plain-text EPUB renderer. No new EPUB layout, cache
-format or bookmark migration is enabled by this work.
+[简体中文](epub-typesetting.zh-CN.md)
 
-## Structure before style
+The production EPUB path preserves canonical extracted UTF-8 and keeps styles,
+writing mode, ruby, MathML and simple table ranges in a separate bounded
+`epub_document::Document`. Bookmarks remain offsets in those unchanged bytes.
+The current implementation is a text-reader subset, not a browser or a complete
+EPUB/CSS renderer. Device acceptance is recorded separately in the
+[architecture report](architecture-and-implementation.md).
 
-The deployed importer normalizes XHTML into UTF-8 text. Paragraph separators
-survive, but headings, lists, quotations and local language do not reach the
-renderer. Some losses change meaning: superscripts become ordinary text,
-MathML fractions become consecutive operands, ruby annotations join the base
-text, table cells run together, and image alternatives disappear. A successful
-text import is not evidence that these structures are faithfully displayed.
+## Semantic data and compatibility
 
-`epub::structure::Collector` is an optional sidecar over that exact extracted
-text. Set `Importer::structure` before `run()` and use records only when
-`ready()` is true. Normal import leaves the pointer null. The collector records:
+`epub::structure::Collector` records block/style/language/resource ranges and
+supported object relationships while the existing importer emits canonical
+text. It has one checked allocation, with 8,192 records, 2,048 resources,
+128 KiB paths, 32 language slots and a 512 KiB aggregate budget. Optional MathML
+translations use at most 256 descriptors and 32 KiB of display-only TeX in that
+budget. A source/import failure invalidates the whole import; a semantic
+allocation failure discards the sidecar and permits readable flat extraction.
+A transient memory fallback cannot replace a richer cache or become a permanent
+resident-document hit.
 
-- title, paragraph, heading level, quotation, list/container, preformatted,
-  definition and table-row boundaries, including empty blocks;
-- parent and resource references, original spine order and auxiliary resources;
-- strong/emphasis/code/preserve/superscript/subscript flags on text runs;
-- inherited metadata, XHTML and inline `xml:lang` / `lang` tags.
+Chapter-resume state uses a separate internal `ECS1` collector snapshot, not a
+flattened PDS document. It preserves the record tree, resources/path pool,
+language interns, MathML TeX, counters and discarded-semantic status. A snapshot
+is valid only after a closed chapter or completed extraction. Restart tests
+compare canonical text and final PDS1/2/3 bytes at every boundary. This does not
+persist an active XML stack or deflate stream. End-to-end extraction-journal
+host fault/restart tests have passed; device acceptance is recorded separately.
 
-Offsets are UTF-8 **extracted-text** byte offsets, not XHTML or ZIP offsets.
-Records are in XML preorder. Nested block intervals overlap; Text/Break runs
-are disjoint. Separating newlines need not belong to a text run. Normalization
-may remove trailing spaces, so final ranges are clipped to their parents and
-resources and checked at UTF-8 boundaries.
+The document codec reads three versions:
 
-The collector uses one checked allocation: at most 8192 records, 2048 resources,
-128 KiB of paths, 32 language slots, and a 512 KiB total allocation budget.
-A collector allocation/capacity failure discards the complete sidecar while
-flat import continues. A source/XML/import failure also discards the sidecar,
-but still fails the whole import. A successfully allocated collector can reduce
-XML headroom; production integration must budget both together and, for a
-recoverable memory failure, retry with a fresh importer without the collector.
-There is no automatic whole-import retry yet. Callers can inject a paired
-allocator/free function for PSRAM. `ready()` means the metadata transaction completed; it does
-not claim support for CSS, ruby, MathML, images, table cells or list numbering.
-Nothing is serialized to SD yet.
+| Codec | Meaning |
+| --- | --- |
+| `PDS1` | Contiguous heading, quote, emphasis/strong, code/preformatted and language runs; 16-byte header and 16-byte runs |
+| `PDS2` | Adds per-run writing/combine flags and canonical ruby group spans; 24-byte header and 20-byte ruby descriptors |
+| `PDS3` | Adds bounded MathML translations and table/row/cell spans; 40-byte header, 16-byte math/table/row descriptors and 8-byte cells |
 
-## Two independent experiments
+Horizontal books without new objects still encode `PDS1`; declared vertical or
+ruby books use `PDS2`, and math/table books use `PDS3`. Up to 16,384 runs,
+2,048 ruby groups, 256 formulae, 32 tables, 256 rows, 1,024 cells and 32 KiB TeX
+fit the shared maximum of **352,808 serialized bytes**. In-memory runs and
+geometry indices require additional checked storage. Decode validates numeric
+ordering, coverage, flags, source lengths and UTF-8 boundaries before publishing
+an ordinary document. Numeric-only admission is limited to a previously
+verified cache manifest; its text spans must be pinned and validated before
+layout reads them.
 
-`experimental_typography.h` is used only by `tests/typography_experiment.cpp`.
-It shares the production line breaker, font metrics and source offsets, with a
-separate page adapter for contextual advances. It is not a reader setting. Future production controls must follow the
-[settings extension contract](development.md#settings-extension-contract): a
-new virtual settings book beneath existing ones, with one mutually exclusive
-state group per physical button and logical-symbol status.
-The two options are off by default and tested separately:
+The cache layout family is `0x2026a000`, with EPUB `semanticRevision=2` and
+unchanged canonical `TEXT_REVISION=1`. Older semantic revisions are recovery
+anchors, not current page/cache hits: source import must recover the missing
+annotations. Optional preprocessing still uses the **`PDT1` 160-byte envelope,
+extractor ID 2**; there is no `PDT2` magic. Extractor-1 prepared payloads are
+rejected and fall back to the original EPUB. Intermediate layout `0x20268000`
+is an anchor-migration input, never current pages or direct cached-text reflow. See
+[prepared content](prepared-content.md) for delivery and trust boundaries.
 
-| Candidate | Rule | Deliberate limits |
-|---|---|---|
-| Adjacent punctuation | Remove up to 14 px of blank between selected opening/closing/stop pairs, using actual glyph bearings; retain at least 2 px of ink gap and positive advance | No glyph scaling; no trimming of ellipsis or em dash; no blanket half-width conversion |
-| Han/Latin spacing | Add 4 px between Han and ASCII letters/digits | Explicit spaces, punctuation, combining marks and variation selectors are barriers; no inferred grapheme shaping |
+## Horizontal prose
 
-Both reset at each line start. Measurement and painting use the same delta.
-The baseline stays at native 28 px, 40 px line height, left 24/right 510 and
-30 px maximum hanging allowance. No new indent, paragraph spacing,
-justification or font selection is bundled into the comparison.
+TXT, EPUB and Markdown prose share punctuation compression and Han/ASCII
+spacing, enabled by default and configured in the AP WebUI. There is no extra
+typography settings book. The old NVS `cnStyle` key remains ignored and intact.
 
-Run `typography_experiment` from the build directory to generate three 540×960
-PGM previews (`typography-current`, `typography-punctuation`,
-`typography-autospace`). They use original synthetic prose and the public native
-font, with no personal books or system fonts. The disabled experiment must
-match the deployed page offsets and every glyph position. Tests also cover
-UTF-8 boundaries, source coverage, explicit-space barriers, invalid geometry,
-automatic-hyphenation literals and bounded work on long punctuation runs.
-These are host previews, not measurements of actual e-paper ghosting.
+| Feature | Rule | Limit |
+| --- | --- | --- |
+| Punctuation compression | Use native ink bearings; remove at most 14 px while retaining 2 px of ink separation and positive advance | No bitmap scaling or blanket half-width conversion |
+| Han/ASCII spacing | Add 0, 2 or 4 px between Han and ASCII letters/digits | Explicit spaces, code/math/rules and unsupported boundaries stop contextual adjustments |
+| CJK boundaries | Separate prohibited starts/ends, bounded hanging and paired dashes/ellipses | A bounded policy, not complete Unicode line breaking or JLREQ |
+| Latin positioning | Native font-derived fractional advances and kerning, accumulated in 1/64 px | Rounding happens at draw boundaries; bounded lookahead does not optimize an entire paragraph |
 
-## Next integration steps
+Presets select native 24/28 px body fonts and independent margins/line advances.
+Horizontal Japanese text currently uses the existing SC-derived body font;
+Japanese regional outlines described below belong to the vertical path.
+Measurement and drawing share decisions. Reflow keeps the precise saved anchor;
+only an actual page turn adopts a new page start.
 
-1. Add explicit semantic support/unsupported markers for structures that can
-   change meaning. Table cell boundaries, ruby base/annotation relationships,
-   bounded MathML objects and image alternatives need their own representation.
-   Zero-text objects also need stable anchors. Do not call a flat-text fallback
-   faithful rendering of a fraction or table.
-2. Connect a bounded block composer: keep a heading with up to two following
-   body lines where feasible, use local language for hyphenation, and preserve
-   list `start`/`reversed`/`value` before generating display-only numbering.
-   Add quotation/preformatted layout and superscript/subscript. A too-large
-   block must have a deterministic fallback that still advances the page.
-3. Separate line-start prohibition, line-end prohibition, hanging and
-   compression classes. Current code can start a Japanese line with `ー` and
-   split a double em dash. Do not fix these by adding kana to `closing()`, which
-   also controls hanging. Locale-specific boundaries need bounded backtracking.
-4. Evaluate punctuation spacing, mixed-script spacing, indentation, paragraph
-   gaps and CJK justification independently. A two-line widow/orphan policy is
-   a candidate for a later block composer, not a universal reading preference.
-5. Integrate versioned structure/page caches and bookmark migration before
-   enabling any production style. EPUB should share layout primitives with
-   Markdown, not be converted into Markdown with a second lossy parser.
+## Source-declared Japanese vertical layout
 
-## Cache and progress contract
+Only an explicit supported `writing-mode: vertical-rl` declaration enables
+vertical columns. Han characters, `lang=ja`, RTL page progression and the
+reader's 180-degree display rotation do not enable vertical layout by themselves.
+Columns run top to bottom and advance right to left. A writing-mode transition
+starts a new page. The footer remains outside the body box.
 
-A layout change must not redefine content identity. Preserve the exact saved
-text offset; repagination finds its containing page. Merely opening/reindexing
-must not overwrite that precise anchor with the new page start, which could
-cause gradual backward drift when styles alternate. Layout IDs must include
-semantic version, mode and all parameters that affect pagination.
+The conservative CSS subset reads chapter `<style>`, inline `style`, and local
+`<link rel="stylesheet">` resources: at most eight linked sheets, 64 KiB per
+sheet, 128 KiB total and 128 stored rules. It recognizes simple type, `.class`,
+`#id`, universal and comma-list selectors, specificity/source order, inheritance
+and inline overrides. Supported properties include `writing-mode` and
+`text-combine-upright`, with documented legacy EPUB/WebKit aliases in the parser.
+Descendant/compound selectors, `@import`, media rules, `!important`, embedded
+font choice and general CSS layout are not implemented. No remote resource is
+fetched.
 
-Existing cache hits bypass the EPUB importer. A future semantic mode must load
-a validated sidecar or rebuild it; it cannot reconstruct headings from plain
-text. New CSS/resource dependencies must enter the content fingerprint. Only
-cache files may be replaced; book files remain unchanged.
+Native **PaperDIY JP** glyphs are baked from the pinned open Noto source using
+Japanese `JAN` `locl`, `vrt2`, `vmtx` and `VORG`. The 24/28 px tables cover the
+Japanese differences in the fixed JIS X 0208 repertoire plus native `髙`/`𠮷`
+name forms; every required Han override in that repertoire is retained. Unchanged Han outlines reuse the
+identical existing bitmap. Unicode 17.0.0 `Vertical_Orientation` distinguishes
+upright, sideways and transformed characters; a transformed alternate is used
+only when available at the selected native size. Latin/digit runs otherwise
+retain native sideways advances. Sideways body ink may use up to three extra
+pixels, reserved in the source advance, column spacing and left boundary;
+`j`, `W` and `|` keep their complete native ink. No whole-page 90-degree
+transform or runtime bitmap resampling is used.
 
-If later semantic fixes change extracted text, recover a context anchor from
-the validated old cache, map it deterministically to the new text, verify and
-persist progress, and only then atomically replace the cache. On failure retain
-the old state; never reset to zero or guess a position by percentage.
+This is not universal Japanese or Korean font coverage. Outside the fixed
+repertoire, an existing SC regional glyph or a visible missing-glyph box can
+appear. All non-space printable ASCII glyphs fit the bounded native profile.
+The fixed JIS set still exceeds the upright cell for fullwidth `ｊ` at both
+body sizes and fullwidth `＄` at 28 px; those show a visible box. Two-em
+vertical repeat marks, uncommon combining/complex shaping, complete orientation
+overrides and the full JLREQ policy remain unsupported.
 
-## Research basis
+### Audited font coverage
 
-[CLREQ](https://www.w3.org/TR/clreq/) describes punctuation blank adjustment,
-line breaking and paragraph layout; it does not prescribe a universal 42 px
-line-height minimum or forbid every left-aligned implementation.
-[JLREQ](https://www.w3.org/TR/jlreq/) describes Japanese character classes and
-multiple constraint choices; its policies should follow language, not be
-unconditionally applied to Chinese books.
+The offline audit compares the fixed generator repertoires, pinned cmap/JAN
+GSUB mappings and committed bitmap records. It counts codepoint records and
+source-outline identity, not language-wide shaping or physical visual quality.
+The Noto source SHA-256 is
+`2a2eae2628df83556c54018c41e20fa532c1b862c5256ae8b3f23feb918d12ca`;
+see [font provenance](../licenses/PaperDIY-JP-source.txt).
 
-[CSS Text 4](https://www.w3.org/TR/css-text-4/) describes `text-spacing-trim`
-and a 1/8 ic autospace convention. Four pixels at our 28 px size is a rounded
-candidate, not a conformance claim. [KOReader/crengine's formatter](https://github.com/koreader/crengine/blob/master/crengine/src/lvtextfm.cpp)
-provides a useful implementation comparison, including a different mixed-script
-spacing convention and a distinction between glyph width and shrinkable space.
+| Audited set | Result |
+| --- | --- |
+| SC body records at each native 24/28 px size | 11,428 codepoints, including 10,407 in Han ranges |
+| Fixed two-byte `euc_jp` enumeration | 6,879 codepoints; 6,878 have body glyphs; `≒` U+2252 is absent from the source cmap |
+| Han-range codepoints in that enumeration | All 6,356 present; this Unicode-range count is not the standard's category count of kanji |
+| JAN changes within those Han codepoints | All 3,778 required overrides present at both sizes; 2,578 reuse the identical source outline |
+| Total JP body override records | 4,016 at 24 px; 4,018 at 28 px, including the bounded `髙`/`𠮷` supplement where a source difference exists |
+| Native ruby records | 439 at both 12/14 px; all 189 mapped kana, ten ASCII digits and supported Latin descenders |
+| Already included Han beyond the fixed JP repertoire | 1,168 have different JAN source outlines but retain SC forms; readable fallback is not a Japanese regional guarantee |
 
-[CSS Fragmentation](https://www.w3.org/TR/css-break-3/) provides keep/break and
-widow/orphan concepts. Their policies still need adaptation to a small fixed
-screen and a bounded renderer. A video's percentages or old design suggestions
-are not substitutes for the actual font's ink bounds or an A/B comparison.
+Other characters remain absent, such as U+20000. Two-em repeat marks
+U+3031–U+3035 are deliberately excluded. The upright fullwidth `ｊ`/`＄` size
+limits above remain visible-box fallbacks. Horizontal Japanese still uses SC;
+none of these counts claims universal Japanese or Korean typography.
+
+Ruby is an atomic canonical group with one terminal `<rt>`: at most eight base
+characters and sixteen kana/Latin-1 annotation characters. Optional `<rb>` and
+`<rp>` wrappers preserve their original source spans. Native 12/14 px readings
+occupy a reserved gutter on the right of the base column; native descenders
+can use up to two extra vertical pixels. Each native advance contributes to
+the group extent. All 439 mapped annotation candidates, including `g/j/p/q/y`,
+are retained at both sizes. The composer checks actual glyph availability at
+the selected size; unavailable readings retain the complete canonical group as
+ordinary text. Nested/interleaved ruby, trailing base text,
+unsupported annotation repertoires and over-budget groups retain complete
+canonical prose. This does not implement all CSS Ruby distribution/overhang
+rules. Explicit supported combine spans admit one or two ASCII digits as one
+native tate-chu-yoko cell; longer digit runs remain ordinary sideways text.
+
+## Bounded MathML and tables
+
+Supported presentation MathML structures are `math`, `mrow`, `mi`, `mn`, `mo`,
+`mtext`, `mfrac`, `msqrt`, `mroot`, `msub`, `msup`, `msubsup`, `mfenced` and the
+first presentation child of `semantics`. A bounded converter produces TeX only
+in semantic metadata, never in canonical book text. It admits at most 256 nodes,
+16 nesting levels and 4,096 TeX bytes per formula; a canonical math span is also
+at most 4,096 bytes. The existing `math_layout` and native STIX math fonts render
+admitted formulae, reusing the 128 KiB workspace and eight 1,024-command slots.
+Recomputation and drawing after admission do not allocate. Each admitted
+formula consumes its complete canonical span once; display formulas each use a
+separate row even when they were adjacent within one source paragraph.
+
+Unsupported syntax/glyphs, geometry limits or a temporary workspace shortage
+show the entire canonical span as readable text. Since historical extraction
+already flattened MathML, that fallback can display consecutive operands; it
+must not be described as faithful mathematical notation. MathML CSS, the full
+attribute model, arbitrary macros and vertical mathematical composition are
+outside this subset. MathML inside a table prevents admission of that table's
+grid, allowing the ordinary prose/math path to retain the content.
+
+Tables admit ordinary rectangular two-to-four-column rows, without nested
+tables, row/column spans or captions outside cells. Columns have equal bounded
+widths, native text wrapping and grid lines; header rows are emphasized. Rows
+are atomic across pages. A table starts in the remaining horizontal page
+space when a whole row fits; prose and grid layout exchange the exact canonical
+cursor and occupied bottom edge. Following prose may share the final table
+page. A row is at most 8 KiB of canonical source. A row that fits a full body
+but not the remaining space continues on the next page; an individually
+unrenderable or overheight row falls back to its complete canonical prose. There is no repeated-header, automatic column-width or
+full CSS table algorithm. Unsupported structures keep the complete canonical
+text, whose original extraction may have joined adjacent cell text.
+
+## Verification and remaining work
+
+Native sanitizer tests cover unchanged flat/semantic extraction, all three
+codecs, malformed/torn metadata, UTF-8 offsets, canonical ruby/math/table
+boundaries, one native draw-command sequence per formula, separate display
+rows, table first-page fit and whole-row continuation, real formula/grid ink,
+draw/measure equality, allocation failure,
+allocation-free pagination, footer bounds and 180-degree pixel symmetry.
+Poisoned lazy-window tests compare actual vertical/mixed-mode reader output
+with the full-RAM baseline. The font tests regenerate pinned native glyphs and
+verify cell bounds and regional/vertical substitutions.
+
+Those checks do not establish physical e-paper quality, complete EPUB/CSS
+conformance, SD power-loss durability or wireless delivery. Remaining semantic
+work includes generated list numbering, general superscript/subscript geometry,
+image alternatives, broader ruby, nonrectangular tables, complex shaping and
+vertical mathematics. New features must retain canonical offsets, cache
+versioning, bounded resource use and deterministic complete-text fallback.
+
+Primary design references are [CSS Writing Modes](https://www.w3.org/TR/css-writing-modes-3/),
+[CSS Ruby](https://www.w3.org/TR/css-ruby-1/), [Unicode UAX #50](https://www.unicode.org/reports/tr50/),
+[JLREQ](https://www.w3.org/TR/jlreq/), [MathML Core](https://www.w3.org/TR/mathml-core/)
+and the [HTML table model](https://html.spec.whatwg.org/multipage/tables.html#table-model).
+They describe substantially broader systems than the subset implemented here.

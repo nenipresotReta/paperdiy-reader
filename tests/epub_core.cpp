@@ -24,6 +24,8 @@ static const char* kind(epub::structure::Kind value) {
     case K::OrderedList: return "ol"; case K::UnorderedList: return "ul";
     case K::DefinitionTerm: return "dt"; case K::DefinitionDetail: return "dd";
     case K::TableRow: return "tr"; case K::Break: return "break";
+    case K::Ruby: return "ruby";case K::RubyText: return "rt";case K::RubyFallback: return "rp";
+    case K::Math: return "math";case K::Table: return "table";case K::TableCell: return "cell";
   }
   return "invalid";
 }
@@ -103,9 +105,17 @@ int main(int argc,char** argv){
  collectorContracts();
  std::string mode=argc==3?argv[2]:"";
  size_t allocation=0,failAllocation=mode.rfind("--fail-alloc=",0)==0?std::stoul(mode.substr(13)):0;
+ size_t inflateAllocation=0,failInflate=mode.rfind("--fail-inflate=",0)==0?std::stoul(mode.substr(15)):0;
  std::ifstream file;if(!std::filesystem::is_directory(argv[1]))file.open(argv[1],std::ios::binary);std::vector<char> bytes((std::istreambuf_iterator<char>(file)),{}),out(4*1024*1024+1);
- epub::Importer e;e.fileSize=bytes.size();e.output=out.data();e.capacity=out.size()-1;e.alloc=[&](size_t n)->void*{return ++allocation==failAllocation?nullptr:malloc(n);};
- e.xmlMemoryAvailable=[&](size_t required,size_t largest){return mode!="--deny-xml-memory"&&required>=largest&&largest>=4096;};
+ epub::Importer e;e.fileSize=bytes.size();e.output=out.data();e.capacity=out.size()-1;e.alloc=[&](size_t n)->void*{
+  if(n==sizeof(lgfx_tinfl_decompressor)){
+   ++inflateAllocation;
+   if(inflateAllocation==failInflate||(mode=="--structure-inflate-memory-retry"&&e.structure)||mode=="--structure-inflate-oom")return nullptr;
+  }
+  return ++allocation==failAllocation?nullptr:malloc(n);
+ };
+ e.inspectOnly=mode=="--inspect-language";
+ e.xmlMemoryAvailable=[&](size_t required,size_t largest){return mode!="--deny-xml-memory"&&!(mode=="--structure-memory-retry"&&e.structure)&&required>=largest&&largest>=4096;};
  e.read=[&](uint32_t at,void* p,size_t n)->size_t{if(at>bytes.size()||n>bytes.size()-at)return 0;memcpy(p,bytes.data()+at,n);return n;};
  if(std::filesystem::is_directory(argv[1])){
   std::filesystem::path root(argv[1]);
@@ -125,9 +135,12 @@ int main(int argc,char** argv){
  if(mode.rfind("--structure",0)==0)e.structure=&sidecar;
  if(!e.run()){
   if(e.structure)assert(!sidecar.ready() && sidecar.recordCount()==0 && sidecar.resourceCount()==0);
+  if(mode=="--structure-inflate-oom")assert(e.flattenedForMemory&&inflateAllocation==2);
   std::cerr<<e.error<<'\n';return 1;
  }
  if(e.structure)dump(sidecar);
- if(mode=="--language")std::cerr<<"HYPHEN_LANGUAGE english="<<e.englishHyphenation<<"\n";
+ if(mode=="--language"||mode=="--inspect-language")std::cerr<<"HYPHEN_LANGUAGE english="<<e.englishHyphenation<<" region="<<unsigned(e.language)<<"\n";
+ if(mode=="--structure-memory-retry")assert(!e.englishHyphenation||!e.unsafeFlatLanguage);
+ if(mode=="--structure-inflate-memory-retry")assert(e.flattenedForMemory&&!sidecar.ready()&&inflateAllocation==4);
  std::cout.write(out.data(),e.used);return 0;
 }

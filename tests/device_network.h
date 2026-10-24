@@ -1,4 +1,5 @@
 #pragma once
+#include "console.h"
 // Opt-in hardware fixtures only; excluded from ordinary and diagnostic builds.
 // Cleanup is restricted to exact fixture paths AND SHA-256 contents. Credentials
 // are removed only when they equal the fixed test record and no legacy config exists.
@@ -70,10 +71,10 @@ inline bool command(const String& line){
         hash=fixtureDigest(fixture);
       }
       bool match=present&&hash==fixture.digest;if(match)++matched;else if(present)ok=false;
-      Serial.printf("NET_FIXTURE path=%s present=%d bytes=%llu sha256=%s match=%d\n",
+      Console.printf("NET_FIXTURE path=%s present=%d bytes=%llu sha256=%s match=%d\n",
         fixture.path,present,(unsigned long long)bytes,hash.length()?hash.c_str():"-",match);++listed;
     }
-    Serial.printf("NET_FIXTURES_DONE listed=%u present=%u matched=%u ok=%d\n",listed,presentCount,matched,ok);return true;
+    Console.printf("NET_FIXTURES_DONE listed=%u present=%u matched=%u ok=%d\n",listed,presentCount,matched,ok);return true;
   }
   if(line=="NET_TEST_FILES_CLEAN"){
     bool ok=sdOK;unsigned removed=0,rejected=0;
@@ -83,7 +84,7 @@ inline bool command(const String& line){
     }
     // Host may issue RESCAN separately. Avoid an implicit all-library walk and
     // any Preferences calls in this file-only operation.
-    Serial.printf("NET_FILES_CLEAN_DONE removed=%u rejected=%u ok=%d rescan_required=%d\n",
+    Console.printf("NET_FILES_CLEAN_DONE removed=%u rejected=%u ok=%d rescan_required=%d\n",
       removed,rejected,ok,removed!=0);return true;
   }
   if(line=="NET_TEST_HASHES"){
@@ -91,9 +92,9 @@ inline bool command(const String& line){
     for(const auto& path:sdBooks){
       uint8_t identity[32];mbedtls_sha256_ret((const uint8_t*)path.c_str(),path.length(),identity,0);
       String hash=digestBook(path);if(hash.length()!=64)ok=false;
-      Serial.printf("NET_HASH %s %s\n",hexDigest(identity,32).c_str(),hash.c_str());++count;
+      Console.printf("NET_HASH %s %s\n",hexDigest(identity,32).c_str(),hash.c_str());++count;
     }
-    Serial.printf("NET_HASHES_DONE count=%u ok=%d\n",count,ok);return true;
+    Console.printf("NET_HASHES_DONE count=%u ok=%d\n",count,ok);return true;
   }
   if(line=="NET_TEST_CLEAN"){
     bool ok=sdOK;unsigned removed=0;
@@ -110,7 +111,7 @@ inline bool command(const String& line){
         {wifiRemoved=prefs.remove("wifiCfgV1");if(!wifiRemoved)ok=false;}
       else ok=false;
     }
-    ok=scanSD()&&ok;Serial.printf("NET_CLEAN_DONE removed=%u wifi_removed=%d ok=%d\n",removed,wifiRemoved,ok);return true;
+    ok=scanSD()&&ok;Console.printf("NET_CLEAN_DONE removed=%u wifi_removed=%d ok=%d\n",removed,wifiRemoved,ok);return true;
   }
   return false;
 }

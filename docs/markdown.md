@@ -1,19 +1,21 @@
-# Markdown 与公式
+# Markdown and formulas
 
-把 UTF-8 `.md` 或 `.markdown` 文件放入 SD 卡，或通过 AP 网页上传。扩展名不区分大小写，单文件上限为 1 MiB。打开与翻页方式和其他书籍一致，不需要联网或预先把公式转成图片。
+[English](markdown.md) | [简体中文](markdown.zh-CN.md)
 
-## 正文
+Place UTF-8 `.md` or `.markdown` files on SD or upload through A. Extensions are case-insensitive; the source limit is 1 MiB. Open and turn pages like other books, without networking or formula images.
 
-支持标题、段落、有序与无序列表、任务列表、引用、强调、粗体、删除线、分隔线、行内代码和代码块。链接显示文字与下划线，不打开浏览器；图片只保留替代文字，不加载图像。标题使用加重字形与段落间隔；目前不为每级标题设置不同字号。
+## Prose
 
-英文强调优先使用斜体；其他字形以可用样式表示。代码按原生 24 px 字形的实际字宽排列，不再把每个字符额外撑到至少 24 px；当前不是等宽字库。保留源文空格、缩进和换行，不做英文断字或两端对齐。表格保留完整 Markdown 原文作为预格式文本显示，不绘制表格网格。HTML 不执行、不加载外部资源。
+Supported constructs include headings, paragraphs, ordered/unordered/task lists, quotes, emphasis, bold, strikethrough, rules, inline code and fenced code. Links show text and an underline without opening a browser. Images retain alt text without loading pixels. Headings use weight and paragraph spacing, without a separate size per level.
 
-## 公式写法
+English emphasis uses italic where available; other glyphs use available styles. Code uses actual native 24 px glyph advances, without stretching every character to at least 24 px; the font is not monospaced. Source spaces, indentation and newlines remain, with no hyphenation or justification. Markdown tables remain complete preformatted source rather than grid rendering. HTML is not executed and external resources are not loaded.
 
-行内公式使用 `$...$` 或 `\(...\)`；独立公式使用 `$$...$$` 或 `\[...\]`。独立公式建议将定界符分别写在单独一行。代码块内的公式定界符按普通文字处理。
+## Formula syntax
+
+Use `$...$` or `\(...\)` inline, and `$$...$$` or `\[...\]` for display math. Put display delimiters on separate lines where possible. Delimiters inside code fences remain literal text.
 
 ```markdown
-勾股定理：$a^2+b^2=c^2$。
+Pythagoras: $a^2+b^2=c^2$.
 
 $$
 x=\frac{-b\pm\sqrt{b^2-4ac}}{2a}
@@ -27,32 +29,32 @@ c & d
 $$
 ```
 
-公式在设备上按宽度、基线、上伸与下伸高度排版。支持范围是受资源限制的 TeX 子集，不能替代完整 TeX 引擎。
+The device lays out formula width, baseline, ascent and descent. This is a bounded TeX subset, not a complete TeX engine.
 
-| 类别 | 支持示例 |
-|---|---|
-| 上下标与导数 | `x_i^2`、`f'`、`f''` |
-| 分式与二项式 | `\frac`、`\dfrac`、`\tfrac`、`\binom`、`\dbinom`、`\tbinom` |
-| 根式与括号 | `\sqrt{x}`、`\sqrt[3]{x}`、`\left(...\right)`；括号高度受内置变体范围限制 |
-| 算子与函数 | `\sum`、`\prod`、`\int`、`\oint`、`\sin`、`\cos`、`\log`、`\exp`、`\lim`、`\det`；算子支持 `\limits` / `\nolimits` |
-| 字母与符号 | 希腊字母；常用关系、集合、箭头与逻辑符号，如 `\alpha`、`\leq`、`\in`、`\to`、`\forall` |
-| 字体与标记 | `\mathrm`、`\mathit`、`\mathbf`、`\mathbb`、`\mathcal`、`\bar`、`\overline`、`\underline`、`\hat`、`\vec`；具体字形以子集覆盖为限 |
-| 简短文字 | `\text{...}`、`\operatorname{...}`；只接受数学字库覆盖的文字，不支持嵌套格式或任意中文段落 |
-| 矩阵与对齐 | `matrix`、`pmatrix`、`bmatrix`、`Bmatrix`、`vmatrix`、`Vmatrix`、`cases`、`aligned` 环境；用 `&` 分列、`\\` 分行 |
-| 间距 | `\,`、`\:`、`\;`、`\!`、`\quad`、`\qquad`、反斜杠加空格 |
+| Category | Examples |
+| --- | --- |
+| Scripts and derivatives | `x_i^2`, `f'`, `f''` |
+| Fractions and binomials | `\frac`, `\dfrac`, `\tfrac`, `\binom`, `\dbinom`, `\tbinom` |
+| Roots and delimiters | `\sqrt{x}`, `\sqrt[3]{x}`, `\left(...\right)`; delimiter height is limited by built-in variants |
+| Operators and functions | `\sum`, `\prod`, `\int`, `\oint`, `\sin`, `\cos`, `\log`, `\exp`, `\lim`, `\det`; `\limits` / `\nolimits` |
+| Letters and symbols | Greek, common relations, sets, arrows and logic, including `\alpha`, `\leq`, `\in`, `\to`, `\forall` |
+| Fonts and accents | `\mathrm`, `\mathit`, `\mathbf`, `\mathbb`, `\mathcal`, `\bar`, `\overline`, `\underline`, `\hat`, `\vec`; subject to subset glyph coverage |
+| Short text | `\text{...}`, `\operatorname{...}`; math-font coverage only, without nested formatting or arbitrary Chinese paragraphs |
+| Matrices and alignment | `matrix`, `pmatrix`, `bmatrix`, `Bmatrix`, `vmatrix`, `Vmatrix`, `cases`, `aligned`; `&` separates columns, `\\` separates rows |
+| Spacing | `\,`, `\:`, `\;`, `\!`, `\quad`, `\qquad`, backslash-space |
 
-未列出的命令不保证支持。自定义宏、宏包、完整文档、自动公式编号和一般性的 TeX 环境未实现。`cases` 要求两列；普通矩阵各行列数必须一致；`aligned` 可以使用不等列数。多行内容仍是一个公式对象，不跨页拆开。
+Unlisted commands are not guaranteed. Custom macros, packages, full documents, automatic equation numbering and general TeX environments are not implemented. `cases` requires two columns; ordinary matrices require equal column counts; `aligned` allows unequal counts. Multiline math remains one object and is not split across pages.
 
-## 回退与上限
+## Fallback and bounds
 
-公式语法不支持、字形缺失、尺寸或预算超限时，保留整段原始公式，包括定界符与换行，以文字显示，不截取“看起来可用”的一部分。整个 Markdown 解析失败时退回原文阅读；空文件和无效 UTF-8 会报错。
+Unsupported syntax, missing glyphs or exceeded size/budget retain the entire original formula, including delimiters and newlines, as text. No partial formula is silently accepted. A failed whole-document parse falls back to source reading; empty files and invalid UTF-8 are rejected.
 
-每个公式最多 4096 字节、256 个解析节点、1024 条绘制命令、16 层解析深度、8×8 矩阵。公式还必须放入当前可用页面；这些是上限，不保证任意组合均可排下。长公式可手动拆为多个独立公式。
+Each formula allows at most 4096 bytes, 256 parse nodes, 1024 drawing commands, 16 parsing levels and an 8×8 matrix. It must also fit the available page. These are ceilings, not a promise that every combination fits; split long expressions into separate display formulas.
 
-数学字库来自 STIX Two Math 的 OFL 子集，按 28 / 20 / 14 px 原生光栅化。上下标和嵌套结构切换原生字号，运行时不缩放位图。字库、变体与 MATH 常量的生成方式见 [开发文档](development.md)。
+The math font is an OFL subset of STIX Two Math, rasterized at native 28/20/14 px. Scripts and nesting switch native sizes rather than scaling bitmaps at runtime. See [development](development.md) for font, variant and MATH-constant generation.
 
-## 原文与进度
+## Source and progress
 
-SD 上的源文件不被改写。阅读位置保存原始 UTF-8 字节偏移，包含文件开头的 BOM；生成的列表标记、解码后的实体和公式对象都有返回原文位置的映射。缓存存原文及页起点，并按正文模式（TXT / EPUB 或 Markdown）及 P/S 设置区分版式。本轮采用新版式族 `0x20262000`；版式变更后，旧缓存只在完整校验后用于只读迁移原文锚点，再重新分页，不能继续命中旧页起点。
+SD source files are not rewritten. Progress uses original UTF-8 byte offsets, including a leading BOM. Generated list markers, decoded entities and formula objects map back to original positions. Caches store source and page starts, separating TXT/EPUB versus Markdown and P/S settings. The current layout family is `0x2026a000`. After a layout change, old caches may supply read-only source-anchor migration only after full validation; old page starts cannot remain a current hit.
 
-重新排版后页数或页码可能改变；进度仍按对应原文位置恢复。完整文档回退产生的临时分页不会替换有效 Markdown 缓存。编辑原文或修改路径会改变书籍身份，不能保证自动迁移任意改写后的进度。
+Reflow can change page count/numbers while restoring the corresponding source position. Temporary whole-document fallback pagination does not replace a valid Markdown cache. Editing content or changing paths changes book identity; arbitrary edits do not guarantee automatic progress migration.

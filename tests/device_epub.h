@@ -1,4 +1,5 @@
 #pragma once
+#include "console.h"
 // Opt-in hardware regression: in-memory synthetic books, no SD or NVS writes.
 #include "epub_core.h"
 #include <esp_heap_caps.h>
@@ -21,7 +22,7 @@ inline void deviceEpubChecks(){
     bool ok=importer.run();bool success=expectedError?(!ok&&importer.error==expectedError):(ok&&std::string(output,importer.used)=="x\n\n");
     if(uxTaskGetStackHighWaterMark(nullptr)<4096)success=false;
     if(success)++passed;
-    Serial.printf("DEVICE_XML_TEST name=%s passed=%d stack_free=%u error=%s\n",name,success,unsigned(uxTaskGetStackHighWaterMark(nullptr)),importer.error.c_str());
+    Console.printf("DEVICE_XML_TEST name=%s passed=%d stack_free=%u error=%s\n",name,success,unsigned(uxTaskGetStackHighWaterMark(nullptr)),importer.error.c_str());
   };
   for(unsigned nested:{30u,31u}){
     std::string chapter="<html><body>";
@@ -34,5 +35,5 @@ inline void deviceEpubChecks(){
   for(unsigned i=0;i<20000;++i)dense+="<span>x</span>";
   dense+="</p></body></html>";
   check("node_budget",dense,"XML DOM resource budget exceeded");
-  Serial.printf("DEVICE_XML_DONE passed=%u total=3\n",passed);
+  Console.printf("DEVICE_XML_DONE passed=%u total=3\n",passed);
 }

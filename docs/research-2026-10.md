@@ -1,5 +1,11 @@
 # Reader research — 2026-10-23
 
+[English](research-2026-10.md) | [简体中文](research-2026-10.zh-CN.md)
+
+Historical source/research snapshot. Its prototype status and build figures
+describe the baseline below. Current implemented scope and acceptance are in
+the [architecture report](architecture-and-implementation.md).
+
 Baseline: the pre-change source. This round prioritizes less waiting, fewer unnecessary
 refreshes and stable reading positions. No new settings page, background
 network service, default typography or hardware power policy is introduced.

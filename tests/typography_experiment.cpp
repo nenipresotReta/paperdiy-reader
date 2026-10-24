@@ -108,6 +108,78 @@ int main(){
       assert(painted==visible(text));
     }
   }
+  // Index-only work must choose exactly the rendered boundaries, never call
+  // the pixel callback, and avoid the second per-glyph measurement pass.
+  size_t indexedMeasurements=0,paintedMeasurements=0;
+  for(auto options:{off,compact,gap,both})for(const auto& base:samples){
+    std::string text;for(unsigned i=0;i<16;++i)text+=base;
+    auto g=geometry();size_t from=0;
+    while(from<text.size()){
+      auto indexed=[&](uint32_t cp){++indexedMeasurements;return metrics(cp);};
+      auto painted=[&](uint32_t cp){++paintedMeasurements;return metrics(cp);};
+      const size_t a=typography_experiment::page(text.data(),text.size(),from,g,options,indexed,
+        [](const char*,size_t,int,int){assert(false);},[](){},false);
+      const size_t b=typography_experiment::page(text.data(),text.size(),from,g,options,painted,
+        [](const char*,size_t,int,int){},[](){});
+      assert(a==b&&a>from);from=a;
+    }
+  }
+  assert(indexedMeasurements*100<paintedMeasurements*70);
+  printf("Index-only measurement work: %zu / %zu (%.1f%%)\n",indexedMeasurements,
+    paintedMeasurements,100.0*indexedMeasurements/paintedMeasurements);
+  // Production-quality metrics and bounded line choice share exact source
+  // decisions in the cached and painted paths, for both native font sizes.
+  for(unsigned pixels:{24u,28u}){
+    auto advanced=both;advanced.latinPixels=pixels;advanced.balanceLines=true;
+    advanced.strictBreaks=true;advanced.opticalMargin=4;
+    const auto& font=pixels==24?reader_font::FONT_24:reader_font::FONT_28;
+    auto measuredFont=[&](uint32_t cp){
+      Metrics m;m.advance=reader_font::glyphAdvance(font,cp);
+      if(const auto* glyph=reader_font::findGlyph(font,cp)){
+        m.ink=glyph->width&&glyph->height;m.inkLeft=glyph->left;m.inkRight=glyph->left+glyph->width;
+      }
+      return m;
+    };
+    std::string text;
+    for(unsigned i=0;i<80;++i)text+=samples[i%samples.size()];
+    auto g=geometry();size_t from=0;std::string painted;
+    while(from<text.size()){
+      auto drawer=[&](const char* ch,size_t n,int x,int y){
+        const auto address=reinterpret_cast<uintptr_t>(ch),begin=reinterpret_cast<uintptr_t>(text.data());
+        assert(x>=g.left-4&&x<=540&&y<=g.bottom);
+        if(address>=begin&&address<begin+text.size()){
+          auto cp=pagination::codepoint(ch,n);
+          if(!pagination::space(cp)&&!pagination::noBreakSpace(cp))painted.append(ch,n);
+        }
+      };
+      const auto indexed=typography_experiment::page(text.data(),text.size(),from,g,advanced,
+        measuredFont,[](const char*,size_t,int,int){assert(false);},[](){},false);
+      const auto rendered=typography_experiment::page(text.data(),text.size(),from,g,advanced,
+        measuredFont,drawer,[](){});
+      assert(indexed==rendered&&indexed>from);from=indexed;
+    }
+    assert(painted==visible(text));
+  }
+  // Bound the aggregate cost on an ordinary book-sized paragraph stream.
+  // This checks measured work, not machine-dependent wall-clock timing.
+  {
+    std::string text;
+    for(unsigned i=0;i<100;++i)text+="Careful typography makes a long passage easier to read. Each line should preserve the shape of its words while the spaces remain calm and consistent. A representation of extraordinary circumstances may need a discretionary hyphen, but a short final line should rest naturally at the left margin.\n\n";
+    size_t work[2]={};
+    for(unsigned mode=0;mode<2;++mode){
+      auto options=both;options.latinPixels=28;options.strictBreaks=true;options.opticalMargin=4;
+      options.balanceLines=mode!=0;
+      size_t from=0;
+      auto counted=[&](uint32_t cp){++work[mode];return metrics(cp);};
+      while(from<text.size()){
+        const auto next=typography_experiment::page(text.data(),text.size(),from,geometry(),options,
+          counted,[](const char*,size_t,int,int){assert(false);},[](){},false);
+        assert(next>from);from=next;
+      }
+    }
+    assert(work[1]*100<=work[0]*150);
+    printf("Bounded line-quality measurement work: %zu / %zu (%.1f%%)\n",work[1],work[0],100.0*work[1]/work[0]);
+  }
   // Invalid geometry behaves like the production path and never draws.
   for(unsigned kind=0;kind<3;++kind){
     auto g=geometry();
@@ -139,5 +211,10 @@ int main(){
   writeImage("typography-current.pgm",render(prose,0,g,off,true));
   writeImage("typography-punctuation.pgm",render(prose,0,g,compact));
   writeImage("typography-autospace.pgm",render(prose,0,g,gap));
+  auto advanced=both;advanced.latinPixels=28;advanced.balanceLines=true;advanced.strictBreaks=true;advanced.opticalMargin=4;
+  const std::string english="“A careful representation of extraordinary circumstances” is a phrase that asks a narrow page to balance its words. Typography should keep the spaces calm, with AV, To and Wa pairs naturally positioned.\n\n"
+    "Each paragraph has a rhythm. When a long word reaches the edge, a bounded comparison with the following line may avoid an unnecessary hyphen. The original text and reading position remain unchanged.\n\n"
+    "A short final paragraph gives the page room to breathe.";
+  writeImage("typography-english-balanced.pgm",render(english,0,g,advanced));
   puts("Typography experiments: disabled baseline identical, bounded blank-only trim, explicit-space barriers, deterministic source pagination, native-font previews: PASS");
 }

@@ -6,7 +6,8 @@ namespace lgfx {
 struct IFont {};
 }
 
-constexpr uint32_t TFT_BLACK = 0x000000u;
-constexpr uint32_t TFT_WHITE = 0xFFFFFFu;
+// Match the pinned M5GFX constants: signed RGB565, not unsigned RGB888.
+constexpr int TFT_BLACK = 0x0000;
+constexpr int TFT_WHITE = 0xFFFF;
 
 enum class epd_mode_t { epd_quality, epd_fast };

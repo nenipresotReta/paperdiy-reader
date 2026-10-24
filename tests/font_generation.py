@@ -47,6 +47,15 @@ class FontGenerationTests(unittest.TestCase):
                                 )
                     self.assertEqual(actual.tobytes(), expected.tobytes())
 
+    def test_bounded_japanese_name_forms_use_pinned_native_source(self):
+        for cp in (0x9ad9,0x20bb7):
+            self.assertIn(cp,builder.repertoire())
+            self.assertIn(cp,builder.cmap(builder.load_font_data(),0))
+            for spec in builder.FONT_SPECS:
+                font=ImageFont.truetype(str(builder.FONT_PATH),spec.pixels,layout_engine=ImageFont.Layout.BASIC)
+                glyph=builder.rasterize(font,cp);builder.validate_glyph(glyph,spec)
+                self.assertTrue(glyph.bitmap)
+
     def test_vertical_two_em_symbols_are_explicitly_unsupported(self):
         self.assertTrue(set(range(0x3031, 0x3036)).isdisjoint(builder.repertoire()))
 

@@ -1,63 +1,75 @@
-# 操作说明
+# Operation
 
-## 书库与文件
+[English](usage.md) | [简体中文](usage.zh-CN.md)
 
-使用 FAT32 microSD 卡。把文件复制到卡上并安全弹出，再插入阅读器；AP 网页也可以传书。书库统一列出文件，每屏 22 行，首屏包含一行设置入口及 21 本书，最多 256 本。当前没有文件夹导航或网页文件夹管理。
+## Library and files
 
-| 格式 | 单文件上限 | 说明 |
-|---|---|---|
-| EPUB | 64 MiB | 提取后的正文 ≤4 MiB；也支持解包的 `.epub` 目录 |
+Use a FAT32 microSD card. Copy files onto it, safely eject it, then insert it into the reader; the AP page also accepts uploads. The flat library has 22 rows per screen, with a settings entry and 21 books on the first screen, and at most 256 books. Folder navigation and web folder management are not implemented.
+
+| Format | Source-file limit | Notes |
+| --- | --- | --- |
+| EPUB | 64 MiB | Extracted text ≤4 MiB; unpacked `.epub` directories also work |
 | TXT | 4 MiB | UTF-8 |
-| `.md` / `.markdown` | 1 MiB | UTF-8；格式与公式范围见 [Markdown](markdown.md) |
+| `.md` / `.markdown` | 1 MiB | UTF-8; see [Markdown](markdown.md) for formatting and formulas |
 
-扩展名不区分大小写。书籍各自记住阅读位置；首次打开或版式变更时需要分页，后续使用经过校验的缓存。换文件或改路径可能影响旧进度匹配。请保留 SD 卡文件与 NVS，不要为升级格式化卡或擦除整片 Flash。
+Extensions are case-insensitive. Each book retains its reading position. For EPUB, on first open or after a layout change, the reader shows a page near the saved position and continues pagination; the total remains unknown until completion. Valid caches can load text near that position directly, and progressive checkpoints retain partial indexing work. Source validation and initial extraction still take time. Replacing a file or changing its path can affect progress matching. Preserve SD files and NVS; upgrading does not require formatting the card or erasing all flash.
 
-## 按键
+## Buttons
 
-| 场景 | A | B | 短按 A+B |
-|---|---|---|---|
-| 书库 | 上一本；双击上一屏；长按连续移动 | 下一本；双击下一屏；长按连续移动 | 打开选中项 |
-| 阅读 | 上一页；长按连续翻页 | 下一页；长按连续翻页 | 返回书库 |
-| 网络设置 | 循环 N → A → U → 关闭 | 切换 R（180°） | 返回书库 |
+| Scene | A | B | Short A+B |
+| --- | --- | --- | --- |
+| Library | Previous book; double-click previous screen; hold to repeat | Next book; double-click next screen; hold to repeat | Open selection |
+| Reading | Previous page; hold to repeat | Next page; hold to repeat | Return to library |
+| Network settings | Cycle N → A → Off | Toggle R (180°) | Return to library |
 
-书库同键两次松开的间隔默认不超过 200 ms 时判为双击翻整屏，超过则按两个单击处理；单击最多等待配置的双击窗口（默认 200 ms） 以区分双击。长按约 600 ms 后开始连续移动。加载或刷新期间的导航操作会丢弃，松开按键后再接受新的操作；底边图标表示忙碌状态。
+The library detects a double-click when releases of the same button are at most 200 ms apart by default; otherwise they are two single clicks. A single click waits up to the configured double-click interval (default 200 ms). Holding starts repeat after about 600 ms. Navigation during loading or refresh is discarded; release the buttons before a new action. The bottom icon indicates busy work.
 
-R 会保存显示方向。翻转后书库与阅读页的 A/B 导航交换，设置页仍保持原物理按键对应；N/A/U 保持同一排，R 位于按键侧。A+B 与电源键不变。
+R saves display rotation. Rotated library/reading navigation swaps A/B; settings retain physical button mappings. N/A stay on one row, with R nearest the buttons. A+B and the power key are unchanged.
 
-## 中文排版
+## Chinese typography
 
-连续标点压缩和中西文间距默认开启，可在热点网页的 Advanced typography 中调整；设备端没有单独设置页。根据字形实际空白压缩支持的相邻标点，并在相邻汉字与英文字母/数字之间留出少量间距。显式空格不叠加间距；Markdown 代码和公式不参与这两项调整。
+Adjacent-punctuation compression and Chinese–Latin spacing are enabled by default and adjustable under Advanced typography in the AP page; there is no separate device page. Supported punctuation pairs use their actual glyph whitespace, and adjacent Han/Latin letters or digits receive a small gap. Explicit spaces do not receive an extra gap. Markdown code and formulas do not use these adjustments.
 
-## 热点传书与配网
+## AP transfer and Wi-Fi setup
 
-1. 在书库选中首行设置入口，短按 A+B 进入，再用 A 切到热点模式 A。
-2. 手机扫描屏幕上的 Wi-Fi 二维码。每次进入 A 都生成新的 SSID 和密码，最多连接一个客户端。
-3. 连接成功后，屏幕上的同一个二维码自动变为网页地址。再次扫码打开页面，选择一本书并上传。
-4. 页面显示成功后，返回书库打开文件。上传保留中文文件名；同名文件另存，不覆盖已有书。
+1. Select the first library settings row, press A+B, then use A to select AP mode A.
+2. Scan the Wi-Fi QR. Each A session gets a fresh SSID/password and admits one client.
+3. Once connected, the same QR changes to the web address. Scan again to open the page and upload a book.
+4. After success, return to the library and open it. Chinese filenames are retained; duplicate names receive a new filename rather than replacing a book.
 
-屏幕始终保留热点 SSID 和密码；手机断开后，二维码回到连接热点的状态。手机可能提示热点没有互联网，请保持连接。
+Supported browsers preprocess EPUB locally before uploading the original and companion content. This reduces initial extraction work on the device; validation and pagination remain on the reader. If preparation fails, upload only the original. See [EPUB preparation](prepared-content.md).
 
-传输分块进行，只有完整提交后才加入书库。同一会话中的丢响应会自动有限重试。若仍提示失败，请先查看网页书目再重试；不要假定关闭网页、断开热点或设备重启后仍能续传。未完成的传输会清理，已有书籍不受影响。
+The screen retains the SSID/password. After disconnection, the QR returns to Wi-Fi setup. Stay connected if the phone warns that the AP has no internet.
 
-在网页的 Home Wi-Fi 输入家庭网络名称与密码并保存，再切到 N 模式连接。保存失败不会改写旧配置；密码不会回显或写入日志。热点凭据只保留在当前会话，家庭 Wi-Fi 凭据保存在 NVS（明文）。
+Transfers are chunked and enter the library only after complete commit. Lost responses receive bounded retries within the same session. If failure remains, inspect the web library before retrying; closing the page, disconnecting or rebooting does not promise resume. Unfinished transfers are cleaned up without changing existing books.
 
-AP 在 5 分钟无操作后关闭。后台书目轮询不续期；传输只要持续取得进展就保持活动，45 秒无进展会取消。网页仅在本地 AP 内网提供 HTTP，没有 TLS；二维码内的会话凭据仅在当前热点有效。
+Enter the home SSID/password under Home Wi-Fi and save, then select N. Failed saves retain the old configuration; passwords are never echoed or logged. AP credentials last only for the session. Home credentials remain in unencrypted NVS.
 
-## N / A / U
+A closes after five idle minutes. Background library polling does not extend the session; progressing transfers keep it active, while 45 seconds without progress cancels reception. The AP serves local HTTP without TLS; QR session credentials apply only to that AP session.
 
-- **N**：连接已保存的家庭 Wi-Fi，显示 SSID、连接状态和 IP；不提供网页、消息推送或出站订阅。连接中断后重新给予 20 秒连接窗口。
-- **A**：临时热点、网页传书与家庭 Wi-Fi 配置。
-- **U**：预留入口，尚未实现 USB 大容量存储，不会向电脑挂载 SD 卡。
+## N / A / Off
 
-未激活项带 `¬`。离开设置页即关闭网络；重启回到设置时 N/A/U 均未激活。接着 USB 不会自动开启网络，也不会让 N 模式变成网络服务。阅读设置、关机图片管理同样仅在 A 热点网页提供。未来内网交互仅有[设计稿](lan-design.md)。
+- **N** connects to saved home Wi-Fi and enables paired LAN delivery. Below the SSID, status and IP, the screen shows a pairing QR or transfer type/name/progress. A dropped connection gets a fresh 20-second connection window; timeout turns the radio off until N is selected again.
+- **A** provides a temporary AP, web uploads and home Wi-Fi setup.
+- **Off** closes networking.
 
-## 关机、开机与电量
+USB book transfer is paused and disabled by default because actual-SD USB failures remain unresolved. U is hidden; ordinary builds do not expose the card. CDC serial/programming remains available. Transfer books through A or a safely removed SD card. The retained MSC implementation requires an explicit experimental build; it is not normal user operation.
 
-同时按住 A+B 至少 2 秒，看到关机画面后再松开。关机先保存位置；如果提示保存失败，仍保持开机，重试即可。
+Inactive entries carry `¬`. Leaving settings closes networking. After reboot, restored settings start with N/A inactive. USB attachment enables neither book transfer nor networking. Reading settings and shutdown-image management are available only through A.
 
-开机恢复关机前的阅读页、书库位置或设置页；首次没有记录时进入书库。阅读恢复的是保存的文本位置，版式改变后页码可能不同。公开固件没有私人关机图；私人构建可通过仓库外的 `PAPERDIY_SHUTDOWN_HEADER` 提供。
+N uses the [LAN client](lan-protocol.md); an AI agent can use the [delivery skill](skills/paperdiy-delivery/SKILL.md). Initial pairing requires the five-minute, single-use on-screen payload; subsequent connections pin that device certificate. Ordinary files enter SD `Books` without overwriting names. Push is one fixed library entry containing at most 16 KiB UTF-8 Markdown with supported formulas. New content replaces it; bounded history stays on the sender instead of accumulating books on the reader. With N off, the device receives nothing. A bounded sender queue can sync after N is enabled again. Delivery never automatically opens a book or changes the current reading position.
 
-书库显示电池状态，底边图标表示设备状态。空闲时按条件休眠，首次按键应直接执行操作；网络工作期间暂停手动轻睡眠。充电指示灯由充电状态决定。功耗设计与验证范围见 [power.md](power.md)，实际电流仍需仪器测量。
+## Japanese and EPUB objects
+
+Supported EPUB content declaring `vertical-rl` flows top-to-bottom and right-to-left. A language tag alone does not rotate horizontal Japanese. Bounded ruby, two-digit text combination, some MathML and simple tables are supported. Complex CSS, nested tables and unsupported objects retain readable text fallback. See [EPUB typesetting](epub-typesetting.md) for fonts and compatibility.
+
+## Shutdown, startup and battery
+
+Hold A+B for at least two seconds, then release after the shutdown scene appears. Shutdown saves progress first; a save failure leaves the reader on for retry.
+
+Startup restores the prior reading scene, library selection or settings; a first boot opens the library. Reading resumes by saved text position, so page numbers can change with layout. Public firmware has no private shutdown image. A private build may supply `PAPERDIY_SHUTDOWN_HEADER` outside the repository.
+
+The library shows battery state, and the bottom icon shows device state. Conditional idle sleep should execute the first press directly. Active networking blocks manual light sleep. The charging LED follows charging state. See [power behavior](power.md) for evidence and limits; electrical current still requires measurement.
 
 ## WebUI settings
 

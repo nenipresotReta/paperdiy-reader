@@ -7,7 +7,7 @@
 namespace {
 
 void paint(lgfx::LGFXBase* display, const reader_font::Font& font,
-           uint32_t codepoint, int x, int y, uint32_t color) {
+           uint32_t codepoint, int x, int y, uint16_t color) {
   reader_font::drawGlyphRuns(font, codepoint, x, y,
       [display, color](int left, int top, int width) {
         display->drawFastHLine(left, top, width, color);
@@ -68,6 +68,7 @@ NativeFont body(reader_font::FONT_28), small(reader_font::FONT_24);
 } // namespace
 
 static const reader_font::Font& activeBody(){return reader_settings::geometry().pixels==24?reader_font::FONT_24:reader_font::FONT_28;}
+const reader_font::Font& bodyNativeFont(){return activeBody();}
 const lgfx::IFont* bodyFont() { return reader_settings::geometry().pixels==24?&small:&body; }
 const reader_font::Glyph* bodyGlyph(uint32_t codepoint) {
   return reader_font::findGlyph(activeBody(), codepoint);
@@ -78,7 +79,7 @@ int bodyGlyphAdvance(uint32_t codepoint) {
 bool bodyFontHasGlyph(uint32_t codepoint) {
   return reader_font::hasGlyph(activeBody(), codepoint);
 }
-void drawBodyGlyph(const char* text, size_t bytes, int x, int y, uint32_t foreground) {
+void drawBodyGlyph(const char* text, size_t bytes, int x, int y, uint16_t foreground) {
   paint(&M5.Display, activeBody(), readerCodepoint(text, bytes), x, y, foreground);
 }
 const lgfx::IFont* readerFont() { return &small; }
@@ -91,9 +92,9 @@ bool readerFontHasGlyph(uint32_t codepoint) {
 uint32_t readerCodepoint(const char* text, size_t bytes) {
   return reader_font::decodeCodepoint(text, bytes);
 }
-void drawReaderGlyph(const char* text, size_t bytes, int x, int y, uint32_t foreground) {
+void drawReaderGlyph(const char* text, size_t bytes, int x, int y, uint16_t foreground) {
   paint(&M5.Display, reader_font::FONT_24, readerCodepoint(text, bytes), x, y, foreground);
 }
 
 int interfaceGlyphAdvance(uint32_t cp){return reader_font::glyphAdvance(reader_font::FONT_28,cp);}
-void drawInterfaceGlyph(const char* text,size_t bytes,int x,int y,uint32_t foreground){paint(&M5.Display,reader_font::FONT_28,readerCodepoint(text,bytes),x,y,foreground);}
+void drawInterfaceGlyph(const char* text,size_t bytes,int x,int y,uint16_t foreground){paint(&M5.Display,reader_font::FONT_28,readerCodepoint(text,bytes),x,y,foreground);}

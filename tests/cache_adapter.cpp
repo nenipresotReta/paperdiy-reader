@@ -16,6 +16,8 @@
 #include <sys/stat.h>
 #include <openssl/sha.h>
 #include <chrono>
+#include "epub_reader.h"
+#include "resident_book.h"
 using String=std::string;
 static std::string root;
 static size_t writeBudget=SIZE_MAX;
@@ -24,6 +26,8 @@ static uint32_t fakeMillis=0,ioMillis=0;
 static unsigned delayCalls=0;
 static std::string watchedSource;
 static size_t sourceReadBytes=0;
+static size_t sourceReadBudget=SIZE_MAX;
+static int sourceStatError=0;
 static std::function<void()> onSourceRead,onSourceStat;
 void runOnce(std::function<void()>& callback){
  if(callback){auto action=std::move(callback);callback=nullptr;action();}
@@ -34,6 +38,7 @@ struct File {
  File(std::string p,bool write):path(p){f=std::make_shared<std::fstream>(p,std::ios::binary|(write?(std::ios::in|std::ios::out|std::ios::trunc):std::ios::in));}
  explicit operator bool()const{return f&&bool(*f);}
  size_t read(uint8_t* p,size_t n){
+   if(path==watchedSource&&sourceReadBudget!=SIZE_MAX){n=std::min(n,sourceReadBudget);sourceReadBudget-=n;}
    fakeMillis+=ioMillis;f->read((char*)p,n);size_t count=f->gcount();
    if(path==watchedSource){sourceReadBytes+=count;runOnce(onSourceRead);}
    return count;
@@ -67,6 +72,7 @@ struct Disk {
 } SD;
 int cacheStat(const char* p,struct stat* s){
  std::string path=p;assert(path.rfind("/sd",0)==0);path=root+path.substr(3);
+ if(path==watchedSource&&sourceStatError){errno=sourceStatError;return -1;}
  int result=::stat(path.c_str(),s);
  if(path==watchedSource)runOnce(onSourceStat);
  return result;
@@ -91,11 +97,13 @@ struct {
  uint32_t getUInt(const char* k,uint32_t d){if(failRead)return d;auto i=data.find(k);return i==data.end()?d:i->second;}
 } prefs;
 bool bookEnglishHyphens=true;
+text_language::Language bookLanguage=text_language::Language::EnglishUS;
 void prepareReaderFont(){}
 static uint32_t retainedOffset=UINT32_MAX,retainedPage=UINT32_MAX;
 void retainReadingAnchor(uint32_t offset){retainedOffset=offset;retainedPage=pageNumber;}
 #define stat(p,s) cacheStat(p,s)
 #include "sd_cache.h"
+#include "deferred_cache.h"
 namespace reader_typography {const Style style;}
 #undef stat
 void writeSource(const std::string& p,const std::string& data){std::ofstream(root+p,std::ios::binary)<<data;}
@@ -104,7 +112,7 @@ void replaceKeepingTimestamp(const std::string& p,const std::string& data){
  auto before=std::filesystem::last_write_time(root+p);
  writeSource(p,data);std::filesystem::last_write_time(root+p,before);
 }
-void seed(BookCache& c){c.dependencies.clear();c.observe("");bookLength=12;memcpy(book,"hello\nworld\n",12);pageOffsets={0,6};bookmarkKey="c0123456789abcd";}
+void seed(BookCache& c){bookDocument.clear();bookLanguage=text_language::Language::EnglishUS;c.dependencies.clear();c.observe("");bookLength=12;memcpy(book,"hello\nworld\n",12);pageOffsets={0,6};bookmarkKey="c0123456789abcd";}
 void corrupt(const std::string& path,size_t pos){
  std::fstream f(root+path,std::ios::binary|std::ios::in|std::ios::out);f.seekg(pos);char v;f.get(v);v^=1;f.seekp(pos);f.put(v);
 }
@@ -114,7 +122,8 @@ void legacyFixture(BookCache& c,uint32_t layout=0x20261025,uint32_t version=1){
  h.directory=c.directory;h.textBytes=bookLength;h.pages=pageOffsets.size();h.deps=c.dependencies.size();
  std::vector<uint8_t> data;
  auto append=[&](const void* p,size_t n){auto b=(const uint8_t*)p;data.insert(data.end(),b,b+n);};
- for(const auto& dep:c.dependencies){uint32_t fields[3]={(uint32_t)dep.name.length(),dep.size,dep.mtime};append(fields,sizeof(fields));if(version==2)append(dep.digest,sizeof(dep.digest));append(dep.name.c_str(),dep.name.length());}
+ if(version==3){reader_cache::Extension ext{reader_cache::TEXT_REVISION,0,1,0};append(&ext,sizeof(ext));}
+ for(const auto& dep:c.dependencies){uint32_t fields[3]={(uint32_t)dep.name.length(),dep.size,dep.mtime};append(fields,sizeof(fields));if(version>=2)append(dep.digest,sizeof(dep.digest));append(dep.name.c_str(),dep.name.length());}
  h.metaBytes=data.size();append(pageOffsets.data(),pageOffsets.size()*4);append(book,bookLength);
  memcpy(h.source,c.sourceHash,32);memcpy(h.bookmark,bookmarkKey.c_str(),16);
  SHA256_CTX sha;SHA256_Init(&sha);SHA256_Update(&sha,&h,offsetof(reader_cache::Header,digest));SHA256_Update(&sha,data.data(),data.size());SHA256_Final(h.digest,&sha);
@@ -129,6 +138,79 @@ std::string withLayout(std::string image,uint32_t layout){
  SHA256_Update(&sha,&h,offsetof(reader_cache::Header,digest));
  SHA256_Update(&sha,image.data()+sizeof(h),image.size()-sizeof(h));
  SHA256_Final(h.digest,&sha);memcpy(&image[0],&h,sizeof(h));return image;
+}
+void verticalLayoutMigrationRegression(){
+ const std::string source="/prior-layout.epub";writeSource(source,"synthetic source");
+ BookCache cache(source,false);seed(cache);assert(cache.save());
+ const auto current=readFile(cache.path);
+ const auto previous=withLayout(current,0x20266000|(reader_cache::LAYOUT&2047u));
+ writeSource(cache.path,previous);if(SD.exists(cache.path+".bak"))SD.remove(cache.path+".bak");
+ pageOffsets.clear();bookLength=0;
+ assert(!cache.load()&&cache.loadTextForReflow()&&bookLength==12);
+ assert(readFile(cache.path)==previous); // Text recovery is read-only.
+ assert(reader_cache::compatibleText(0x20266000|35,false));
+ assert(!reader_cache::currentLayout(0x20266000|35));
+ const auto interim=withLayout(current,0x20268000|(reader_cache::LAYOUT&2047u));
+ writeSource(cache.path,interim);prefs.data["c0123456789abcd"]=7;
+ const auto progress=prefs.data;pageOffsets.clear();bookLength=0;
+ assert(!cache.load()&&!cache.loadTextForReflow()&&bookLength==0&&pageOffsets.empty());
+ uint32_t anchor=UINT32_MAX;
+ assert(cache.loadLegacyForMigration(anchor)&&anchor==7&&bookLength==12&&retainedOffset==7);
+ assert(!reader_content::active()&&prefs.data==progress&&readFile(cache.path)==interim);
+ assert(reader_cache::knownV3Layout(0x20268000|35)&&!reader_cache::compatibleText(0x20268000|35,false));
+}
+void semanticRevisionMigrationRegression(){
+ const auto savedProgress=prefs.data;
+ for(unsigned kind=0;kind<4;++kind){
+  const bool directory=kind==1,epub=kind<2;
+  const std::string source=kind==0?"/semantic-revision.epub":directory?"/semantic-directory":kind==2?"/semantic-revision.txt":"/semantic-revision.md";
+  if(directory){std::filesystem::create_directories(root+source);writeSource(source+"/section.xhtml","synthetic source");}
+  else writeSource(source,"synthetic source");
+  BookCache cache(source,directory);seed(cache);bookEnglishHyphens=true;
+  if(directory){cache.dependencies.clear();cache.enabled=true;assert(cache.observe("section.xhtml"));}
+  assert(cache.save());const auto image=readFile(cache.path);
+  reader_cache::Header header;reader_cache::Extension ext;
+  memcpy(&header,image.data(),sizeof(header));memcpy(&ext,image.data()+sizeof(header),sizeof(ext));
+  assert(ext.semanticRevision==(epub?reader_cache::EPUB_SEMANTIC_REVISION:0));
+  // Every saved record survives reimport. The current content key supplies
+  // the exact offset even when geometry and canonical text are unchanged.
+  for(unsigned i=0;i<49;++i)prefs.data["preserved-"+std::to_string(i)]=i*37;
+  prefs.data[header.bookmark]=7;const auto progress=prefs.data;
+  for(uint32_t revision:{0u,1u,reader_cache::EPUB_SEMANTIC_REVISION+1}){
+   if(!epub&&revision==0)continue;
+   for(uint32_t family:{reader_cache::LAYOUT_BASE,0x20268000u,0x20266000u}){
+    auto old=image;memcpy(&old[sizeof(header)+offsetof(reader_cache::Extension,semanticRevision)],&revision,sizeof(revision));
+    old=withLayout(old,family|(header.layout&2047u));writeSource(cache.path,old);
+    if(SD.exists(cache.path+".bak"))assert(SD.remove(cache.path+".bak"));
+    bookLength=777;pageOffsets={0,111};pageNumber=99;retainedOffset=123;
+    assert(!cache.load()&&!cache.loadTextForReflow());
+    assert(bookLength==777&&pageOffsets==std::vector<uint32_t>({0,111})&&pageNumber==99&&retainedOffset==123);
+    uint32_t offset=UINT32_MAX;
+    if(epub&&revision<reader_cache::EPUB_SEMANTIC_REVISION){
+     assert(cache.loadLegacyForMigration(offset)&&offset==7&&retainedOffset==7);
+     assert(bookLength==12&&!memcmp(book,"hello\nworld\n",12)&&bookmarkKey==header.bookmark);
+     assert(!reader_content::active()); // Migration always authenticates every old byte.
+    }else assert(!cache.loadLegacyForMigration(offset));
+    assert(prefs.data==progress&&readFile(cache.path)==old&&!SD.exists(cache.path+".tmp"));
+   }
+  }
+  writeSource(cache.path,image);assert(cache.load()&&retainedOffset==7&&prefs.data==progress);
+ }
+ prefs.data=savedProgress;
+}
+void managedCacheRegression(){
+ std::filesystem::create_directories(root+"/.paperdiy/lan");
+ for(const char* path:{"/.paperdiy/lan/push0.md","/.paperdiy/lan/push1.md"}){
+  writeSource(path,"synthetic managed document");BookCache cache(path,false);seed(cache);
+  assert(!cache.enabled);
+  // Even a pre-existing legacy image must not supply a rolling document.
+  legacyFixture(cache,reader_cache::layoutFor(true,true),3);const auto image=readFile(cache.path);const auto progress=prefs.data;
+  uint32_t offset=123;const auto lease=storage_validation::lease();
+  assert(!cache.load()&&!cache.loadTextForReflow()&&!cache.loadLegacyForMigration(offset)&&!cache.loadPrepared()&&!cache.preparedChanged());
+  assert(!cache.recoveryRequired()&&offset==123&&!cache.save());
+  DeferredCacheWrite writer(cache);assert(!writer.begin(pageOffsets));
+  assert(prefs.data==progress&&readFile(cache.path)==image&&storage_validation::lease()==lease);
+ }
 }
 void sourceStampRegression(){
  const std::string source="/stamp.txt",original(3*8192+1,'a');
@@ -152,6 +234,7 @@ void sourceStampRegression(){
  const auto progress=prefs.data;
  auto rejected=[&](){
    assert(!c.load()&&c.recoveryRequired());
+   assert(!c.ioFailed); // Missing/replaced content must not lower the SD clock.
    assert(bookLength==777&&pageOffsets==std::vector<uint32_t>({0,111})&&pageNumber==99);
    assert(bookmarkKey=="unchanged-key"&&bookIdentity=="unchanged-identity");
    assert(retainedOffset==123&&retainedPage==456&&prefs.data==progress);
@@ -203,7 +286,7 @@ void styleCacheRegression(){
   writeSource(source,"original style source");BookCache cache(source,false);
   SD.remove(cache.path);SD.remove(cache.path+".bak");
   // Authenticated caches from older selectable layouts remain migration inputs.
-  legacyFixture(cache,reader_cache::layoutFor(true,markdown,saved),2);
+  legacyFixture(cache,reader_cache::layoutFor(true,markdown,saved),3);
   prefs.data["c0123456789abcd"]=7;prefs.data["cnStyle"]=0;
   const auto progress=prefs.data;const std::string image=readFile(cache.path);
   bookLength=777;pageOffsets={0,111};pageNumber=99;retainedOffset=123;retainedPage=456;
@@ -216,6 +299,293 @@ void styleCacheRegression(){
   assert(reader_typography::style.flags()==3&&prefs.data==progress&&readFile(cache.path)==image);
   assert(readFile(source)=="original style source"&&!SD.exists(cache.path+".bak"));
  }
+}
+void textReuseRegression(){
+ const auto config=reader_settings::current();
+ const std::string source="/reflow.epub";
+ writeSource(source,"original source");BookCache c(source,false);
+ seed(c);bookEnglishHyphens=false;assert(c.save());
+ const std::string image=readFile(c.path);const auto progress=prefs.data;
+ prefs.data["c0123456789abcd"]=7;
+ reader_settings::current().preset=0;
+ assert(!c.load());
+ assert(c.loadTextForReflow()&&bookLength==12&&retainedOffset==7&&!bookEnglishHyphens);
+ assert(bookmarkKey=="c0123456789abcd"&&bookIdentity==source);
+ assert(readFile(c.path)==image&&!SD.exists(c.path+".bak"));
+ // Reuse checks the entire text checksum, source bytes, mode and an explicit
+ // extraction revision. A legacy cache may recover an anchor, but never supply
+ // today's extraction merely because its envelope is well formed.
+ for(uint32_t layout:{0x20261040u,0x20263023u,reader_cache::LAYOUT_MARKDOWN}){
+   writeSource(c.path,withLayout(image,layout));assert(!c.loadTextForReflow());
+ }
+ writeSource(c.path,image);corrupt(c.path,image.size()-1);assert(!c.loadTextForReflow());
+ writeSource(c.path,image);replaceKeepingTimestamp(source,"ORIGINAL SOURCE");assert(!c.loadTextForReflow());
+ replaceKeepingTimestamp(source,"original source");assert(c.loadTextForReflow());
+ prefs.failRead=true;assert(!c.loadTextForReflow());prefs.failRead=false;
+ prefs.data["c0123456789abcd"]=12;assert(!c.loadTextForReflow());
+ prefs.data=progress;reader_settings::current()=config;bookEnglishHyphens=true;
+}
+void exclusiveSourceRegression(){
+ storage_validation::invalidate();
+ const std::string source="/exclusive.epub",original(3*8192+1,'s');
+ writeSource(source,original);BookCache c(source,false);seed(c);assert(c.save());
+ prefs.data["c0123456789abcd"]=7;const std::string image=readFile(c.path);
+ watchedSource=root+source;sourceReadBytes=0;
+ storage_validation::beginExclusive();
+ assert(c.load()&&sourceReadBytes==original.size());
+ sourceReadBytes=0;BookCache reopened(source,false);assert(reopened.load());
+ assert(sourceReadBytes==0&&reopened.work.reusedGraphs==1&&retainedOffset==7);
+ // Cached source fingerprints never bypass cache payload checksums.
+ corrupt(c.path,image.size()-1);assert(!reopened.load());writeSource(c.path,image);
+ // The owner invalidates before every AP/USB/source write, even if size and
+ // timestamp are retained. This must still reject substituted book content.
+ storage_validation::sourceChanged();std::string changed=original;changed[8192]='t';
+ replaceKeepingTimestamp(source,changed);sourceReadBytes=0;
+ assert(!c.load()&&sourceReadBytes==original.size());
+ storage_validation::sourceChanged();replaceKeepingTimestamp(source,original);
+ sourceReadBytes=0;assert(c.load()&&sourceReadBytes==original.size());
+ // Remount and host ownership changes force fresh validation.
+ storage_validation::invalidate();sourceReadBytes=0;
+ assert(c.load()&&sourceReadBytes==original.size()&&!storage_validation::lease());
+ storage_validation::beginExclusive();sourceReadBytes=0;
+ assert(c.load()&&sourceReadBytes==original.size());
+ storage_validation::beginExclusive();sourceReadBytes=0;
+ assert(c.load()&&sourceReadBytes==original.size());
+ // A mutation during validation invalidates the result, not just its memo.
+ // The following open must perform another complete read.
+ storage_validation::sourceChanged();sourceReadBytes=0;
+ onSourceRead=[](){storage_validation::sourceChanged();};
+ assert(!c.load()&&sourceReadBytes==original.size()&&!storage_validation::lease());
+ sourceReadBytes=0;assert(c.load()&&sourceReadBytes==original.size());
+ // GPIO events invalidate proofs immediately, even while synchronous open
+ // prevents the app loop from seeing an unplug/reinsert pair.
+ storage_validation::beginExclusive();sourceReadBytes=0;assert(c.load());
+ storage_validation::signalCardEvent();assert(storage_validation::cardEventPending()&&!storage_validation::lease());
+ replaceKeepingTimestamp(source,changed);sourceReadBytes=0;
+ assert(!c.load()&&sourceReadBytes==original.size());
+ replaceKeepingTimestamp(source,original);storage_validation::beginExclusive();
+ assert(!storage_validation::cardEventPending());sourceReadBytes=0;
+ onSourceRead=[](){storage_validation::signalCardEvent();};
+ assert(!c.load()&&sourceReadBytes==original.size()&&!storage_validation::lease());
+ storage_validation::beginExclusive();sourceReadBytes=0;
+ assert(c.load()&&sourceReadBytes==original.size());
+ storage_validation::sourceChanged();sourceReadBudget=8192;
+ assert(!c.load()&&!storage_validation::lease());sourceReadBudget=SIZE_MAX;
+ sourceReadBytes=0;assert(c.load()&&sourceReadBytes==original.size());
+ watchedSource.clear();storage_validation::invalidate();
+
+ // Bounded eviction loses only speed; it cannot transfer trust to another key.
+ storage_validation::beginExclusive();uint8_t key[32]={},digest[32]={},out[32];
+ for(size_t i=0;i<storage_validation::CAPACITY+1;++i){
+   key[0]=uint8_t(i);digest[0]=uint8_t(i+1);
+   storage_validation::remember(storage_validation::lease(),key,123,456,digest);
+ }
+ key[0]=0;assert(!storage_validation::find(key,123,456,out));
+ key[0]=1;assert(storage_validation::find(key,123,456,out)&&out[0]==2);
+ assert(!storage_validation::find(key,124,456,out));
+ const auto beforeEdge=storage_validation::lease();storage_validation::rememberGraph(beforeEdge,key,digest);
+ storage_validation::signalCardEvent();
+ assert(!storage_validation::find(key,123,456,out)&&!storage_validation::verifiedGraph(key,digest));
+ storage_validation::remember(beforeEdge,key,123,456,digest);
+ storage_validation::rememberGraph(beforeEdge,key,digest);
+ assert(!storage_validation::lease());storage_validation::sourceChanged();assert(!storage_validation::lease());
+ storage_validation::invalidate();storage_validation::acknowledgeCardEvent();
+ assert(!storage_validation::cardEventPending()&&!storage_validation::lease());
+ assert(!storage_validation::find(key,123,456,out)&&!storage_validation::verifiedGraph(key,digest));
+ storage_validation::beginExclusive();
+ assert(storage_validation::lease()!=beforeEdge&&!storage_validation::find(key,123,456,out)&&!storage_validation::verifiedGraph(key,digest));
+ storage_validation::invalidate();assert(!storage_validation::find(key,123,456,out));
+}
+void semanticAndPreparedRegression(){
+ const std::string source="/prepared.epub",original(256,'z');writeSource(source,original);
+ BookCache c(source,false);seed(c);bookEnglishHyphens=true;bookLanguage=text_language::Language::EnglishGB;
+ epub::structure::Collector collector;collector.begin();
+ const auto language=collector.internLanguage("en-GB");
+ auto paragraph=collector.open(epub::structure::Kind::Heading,0,epub::structure::NONE,epub::structure::NONE,0,0,language,2);
+ collector.text(0,12,paragraph,epub::structure::NONE,epub::structure::Strong,1,language);
+ collector.close(paragraph,12);collector.finish(book,bookLength);
+ assert(bookDocument.assign(collector,book,bookLength));
+ std::vector<uint8_t> metadata;assert(bookDocument.encode(metadata));
+ memset(c.preparedDigest,0x5a,sizeof(c.preparedDigest));
+ assert(c.save());prefs.data["c0123456789abcd"]=7;
+ const std::string image=readFile(c.path);
+ bookEpubTransientFallback=true;assert(!c.save());
+ assert(readFile(c.path)==image&&!SD.exists(c.path+".tmp"));
+ assert(c.load()&&!bookEpubTransientFallback&&bookDocument.ready());
+ bookDocument.clear();bookLanguage=text_language::Language::None;
+ assert(c.load()&&c.languageKnown&&bookLanguage==text_language::Language::EnglishGB&&bookDocument.ready());
+ assert(bookDocument.run(0).flags&markdown::Heading);
+ assert(bookDocument.run(0).flags&markdown::Strong);
+ assert(bookDocument.run(0).language==text_language::Language::EnglishGB&&retainedOffset==7);
+ reader_cache::Header h;memcpy(&h,image.data(),sizeof(h));
+ assert(h.version==3&&(h.layout&1536u)==1536u);
+ // The first semantic firmware has a different page geometry, but identical
+ // extraction and v3 metadata. Reflow must retain all metadata and the exact
+ // byte anchor while refusing its obsolete page table.
+ const uint32_t earlier=0x20264000u|(h.layout&2047u);
+ writeSource(c.path,withLayout(image,earlier));BookCache prior(source,false);
+ assert(!prior.load()&&prior.loadTextForReflow());
+ assert(prior.languageKnown&&bookLanguage==text_language::Language::EnglishGB&&bookDocument.ready());
+ assert(bookDocument.run(0).language==text_language::Language::EnglishGB&&retainedOffset==7);
+ assert(!memcmp(prior.preparedDigest,c.preparedDigest,32)&&prior.preparedDigest[0]==0x5a);
+ for(uint32_t mismatch:{earlier&~512u,earlier&~1024u,0x2026c000u|(h.layout&2047u)}){
+   writeSource(c.path,withLayout(image,mismatch));assert(!prior.loadTextForReflow());
+ }
+ writeSource(c.path,image);
+ auto altered=image;altered[sizeof(h)+8]=char(255); // Invalid language, with valid envelope SHA.
+ writeSource(c.path,withLayout(altered,h.layout));assert(!c.load());
+ altered=image;altered[sizeof(h)+sizeof(reader_cache::Extension)+reader_cache::DEP_BYTES+metadata.size()-1]=char(1);
+ writeSource(c.path,withLayout(altered,h.layout));assert(!c.load()); // Reserved Doc byte, authenticated envelope.
+ writeSource(c.path,image);assert(c.load());
+ const auto config=reader_settings::current();reader_settings::current().preset=0;
+ assert(!c.load()&&c.loadTextForReflow()&&bookDocument.ready()&&retainedOffset==7);
+ reader_settings::current()=config;
+
+ auto prepared=[&](const std::string& text,const std::vector<uint8_t>& meta){
+   prepared_epub::Header header;header.sourceBytes=original.size();header.textBytes=text.size();header.metadataBytes=meta.size();header.flags=2;
+   SHA256((const uint8_t*)original.data(),original.size(),header.sourceDigest);
+   SHA256_CTX sha;SHA256_Init(&sha);SHA256_Update(&sha,text.data(),text.size());SHA256_Update(&sha,meta.data(),meta.size());SHA256_Final(header.payloadDigest,&sha);
+   std::string result(prepared_epub::HEADER_BYTES,'\0');assert(prepared_epub::encode(header,(uint8_t*)&result[0],result.size()));
+   result+=text;if(!meta.empty())result.append((const char*)meta.data(),meta.size());return result;
+ };
+ const auto good=prepared("hello\nworld\n",metadata);writeSource(source+".pdt",good);
+ assert(c.preparedChanged());
+ assert(c.loadPrepared()&&bookLanguage==text_language::Language::EnglishGB&&bookDocument.ready()&&bookLength==12&&!c.preparedChanged());
+ pageOffsets={0,6};bookmarkKey="c0123456789abcd";assert(c.save());
+ BookCache resumed(source,false);assert(resumed.load()&&!resumed.preparedChanged()&&retainedOffset==7);
+ const auto flat=prepared("hello\nworld\n",{});writeSource(source+".pdt",flat);
+ assert(c.preparedChanged());
+ assert(c.loadPrepared()&&!bookDocument.ready()&&bookLength==12);
+ for(size_t at:{size_t(12),size_t(32),size_t(64),prepared_epub::HEADER_BYTES+1}){
+   auto bad=good;bad[at]^=1;writeSource(source+".pdt",bad);bookLength=777;
+   assert(!c.loadPrepared()&&bookLength==777);
+ }
+ auto invalidMetadata=metadata;invalidMetadata.back()=1;
+ writeSource(source+".pdt",prepared("hello\nworld\n",invalidMetadata));assert(!c.loadPrepared());
+ writeSource(source+".pdt",prepared(std::string("\xc0\xaf",2),{}));assert(!c.loadPrepared());
+ writeSource(source+".pdt",good);assert(c.loadPrepared());
+ c.dependencies.clear();replaceKeepingTimestamp(source,std::string(256,'Z'));assert(c.observe("")==original.size());
+ assert(!c.loadPrepared());bookDocument.clear();bookLanguage=text_language::Language::EnglishUS;
+}
+void ioFailureRegression(){
+ storage_validation::invalidate();const std::string source="/io-source.epub",original(8193,'x');
+ writeSource(source,original);watchedSource=root+source;
+ // A resource-size callback must distinguish I/O loss from an absent optional
+ // EPUB file so the reader can remount at a lower bus clock.
+ sourceReadBudget=17;BookCache shortSource(source,false);
+ assert(shortSource.observe("")==SIZE_MAX&&shortSource.ioFailed&&!storage_validation::lease());
+ sourceReadBudget=SIZE_MAX;sourceStatError=EIO;BookCache failedStat(source,false);
+ assert(failedStat.observe("")==SIZE_MAX&&failedStat.ioFailed);
+ sourceStatError=ENOENT;BookCache absent(source,false);
+ assert(absent.observe("")==SIZE_MAX&&!absent.ioFailed);
+ sourceStatError=0;BookCache fresh(source,false);seed(fresh);assert(fresh.save()&&!fresh.ioFailed);
+ const auto image=readFile(fresh.path);watchedSource=root+fresh.path;
+ // A valid-length file that returns too few bytes is I/O failure. A complete
+ // read of an already truncated/corrupt file is simply an invalid cache.
+ for(size_t budget:{size_t(17),sizeof(reader_cache::Header)+size_t(17)}){
+   sourceReadBudget=budget;BookCache interrupted(source,false);
+   assert(!interrupted.load()&&interrupted.ioFailed);
+ }
+ sourceReadBudget=SIZE_MAX;writeSource(fresh.path,"truncated");BookCache malformed(source,false);
+ assert(!malformed.load()&&!malformed.ioFailed);
+ writeSource(fresh.path,image);corrupt(fresh.path,image.size()-1);BookCache checksum(source,false);
+ assert(!checksum.load()&&!checksum.ioFailed);
+ writeSource(fresh.path,image);BookCache recovered(source,false);assert(recovered.load()&&!recovered.ioFailed);
+ watchedSource.clear();storage_validation::invalidate();
+}
+void largeDependencyGraphRegression(){
+ storage_validation::invalidate();const std::string source="/large-dir.epub";
+ std::filesystem::create_directory(root+source);BookCache c(source,true);
+ const size_t count=storage_validation::CAPACITY*2+1;const std::string resource(97,'x');
+ for(size_t i=0;i<count;++i){
+   const auto name="part-"+std::to_string(i)+".xhtml";writeSource(source+"/"+name,resource);
+   assert(c.observe(name)==resource.size());
+ }
+ bookDocument.clear();bookLanguage=text_language::Language::EnglishUS;bookEnglishHyphens=true;
+ bookLength=12;memcpy(book,"hello\nworld\n",12);pageOffsets={0,6};bookmarkKey="c0123456789abcd";assert(c.save());
+ storage_validation::beginExclusive();BookCache first(source,true);assert(first.load());
+ assert(first.work.sourceBytes==count*resource.size());
+ BookCache warm(source,true);assert(warm.load());
+ assert(warm.work.sourceBytes==0&&warm.work.reusedGraphs==1&&warm.dependencies.size()==count);
+ // A single file modification in a graph larger than the per-file memo must
+ // still be detected after the owning writer announces its mutation.
+ storage_validation::sourceChanged();
+ replaceKeepingTimestamp(source+"/part-128.xhtml",std::string(97,'y'));
+ assert(!warm.load());
+ storage_validation::sourceChanged();replaceKeepingTimestamp(source+"/part-128.xhtml",resource);
+ assert(warm.load());storage_validation::invalidate();
+ BookCache remounted(source,true);assert(remounted.load()&&remounted.work.sourceBytes==count*resource.size());
+}
+void residentRegression(){
+ resident_book::Snapshot resident;const auto config=reader_settings::current();
+ storage_validation::beginExclusive();const auto generation=storage_validation::lease();
+ const auto shape=reader_cache::layoutFor(true,false,3,true,true);
+ resident.remember("/one.epub","c0123456789abcd",generation,shape,12345);
+ assert(resident.matches("/one.epub","c0123456789abcd",generation,shape,12345));
+ assert(!resident.matches("/two.epub","c0123456789abcd",generation,shape,12345));
+ assert(!resident.matches("/one.epub","c9876543210abcd",generation,shape,12345));
+ assert(!resident.matches("/one.epub","c0123456789abcd",generation,shape,12346));
+ reader_settings::current().preset=0;
+ assert(!resident.matches("/one.epub","c0123456789abcd",generation,reader_cache::layoutFor(true,false,3,true,true),12345));
+ reader_settings::current()=config;
+ assert(!resident.matches("/one.epub","c0123456789abcd",generation,reader_cache::layoutFor(true,false,3,true,false),12345));
+ storage_validation::signalCardEvent();
+ assert(!resident.matches("/one.epub","c0123456789abcd",storage_validation::lease(),shape,12345));
+ storage_validation::beginExclusive();
+ assert(!resident.matches("/one.epub","c0123456789abcd",storage_validation::lease(),shape,12345));
+ storage_validation::sourceChanged();
+ assert(!resident.matches("/one.epub","c0123456789abcd",storage_validation::lease(),shape,12345));
+ storage_validation::invalidate();
+ assert(!resident.matches("/one.epub","c0123456789abcd",storage_validation::lease(),shape,12345));
+ resident.clear();assert(!resident.matches("/one.epub","c0123456789abcd",generation,shape,12345));
+ resident.remember("/one.epub","c0123456789abcd",0,shape,12345);assert(!resident.generation);
+}
+void deferredPublicationRegression(){
+ SD.resetFaults();bookEpubTransientFallback=false;bookDocument.clear();
+ const std::string source="/deferred.epub",payload(100003,'a');writeSource(source,payload);
+ storage_validation::beginExclusive();BookCache cache(source,false);cache.observe("");
+ bookIdentity=source;bookLength=payload.size();memcpy(book,payload.data(),payload.size());
+ bookmarkKey="c0123456789abcd";bookEnglishHyphens=true;bookLanguage=text_language::Language::EnglishUS;
+ const std::vector<uint32_t> canonical={0,12000,24000,50000,90000};pageOffsets=canonical;
+ assert(cache.save());const std::string expected=readFile(cache.path);
+ assert(cache.save());const auto originalProgress=prefs.data;
+ // Visible local-window offsets must never leak into the published cache.
+ pageOffsets={50100};pageNumber=0;retainedOffset=50105;
+ auto run=[&](DeferredCacheWrite& writer){
+   unsigned steps=0;
+   while(!writer.done()&&!writer.failed()){
+     const auto before=cache.work;writer.step();
+     assert(cache.work.cacheWriteBytes-before.cacheWriteBytes<=8192);
+     assert(cache.work.cacheReadBytes-before.cacheReadBytes<=8192);
+     assert(++steps<200);assert(prefs.data==originalProgress);
+     assert(pageOffsets==std::vector<uint32_t>({50100})&&retainedOffset==50105);
+   }
+   return steps;
+ };
+ {DeferredCacheWrite writer(cache);assert(writer.begin(canonical));assert(run(writer)>30);assert(writer.done());}
+ assert(readFile(cache.path)==expected&&readFile(cache.path+".bak")==expected);
+ // Any interrupted phase keeps a complete older generation. Neither short
+ // writes, corrupt flushes, rename failures nor a revoked card lease publish.
+ for(unsigned fault=0;fault<5;++fault){
+   SD.resetFaults();storage_validation::beginExclusive();cache.ioFailed=false;
+   writeSource(cache.path,expected);writeSource(cache.path+".bak",expected);
+   {
+     DeferredCacheWrite writer(cache);assert(writer.begin(canonical));
+     if(fault==0)writeBudget=sizeof(reader_cache::Header)+20;
+     if(fault==1)corruptOnFlush=true;
+     if(fault==2)SD.failRenames={SD.renameCalls+1};
+     if(fault==3)SD.failRenames={SD.renameCalls+2};
+     if(fault==4){writer.step();storage_validation::sourceChanged();}
+     run(writer);assert(writer.failed());
+   }
+   assert(readFile(cache.path)==expected||readFile(cache.path+".bak")==expected);
+ }
+ // A corrupt primary cannot cause a good rollback copy to be discarded.
+ SD.resetFaults();storage_validation::beginExclusive();cache.ioFailed=false;
+ writeSource(cache.path,expected);writeSource(cache.path+".bak",expected);corrupt(cache.path,0);
+ {DeferredCacheWrite writer(cache);assert(writer.begin(canonical));run(writer);assert(writer.done());}
+ assert(readFile(cache.path)==expected&&readFile(cache.path+".bak")==expected);
+ SD.resetFaults();storage_validation::invalidate();
 }
 int main(){
  root=(std::filesystem::temp_directory_path()/("paperdiy-cache-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))).string();assert(std::filesystem::create_directory(root));
@@ -360,8 +730,18 @@ int main(){
  exerciseTransfers(32,1000,1,0);
  exerciseTransfers(2*8192,1,30,UINT32_MAX-20);
 
+ verticalLayoutMigrationRegression();
+ semanticRevisionMigrationRegression();
+ managedCacheRegression();
  sourceStampRegression();
  styleCacheRegression();
+ textReuseRegression();
+ exclusiveSourceRegression();
+ semanticAndPreparedRegression();
+ largeDependencyGraphRegression();
+ residentRegression();
+ ioFailureRegression();
+ deferredPublicationRegression();
 
  uint32_t invalid[]={0,6,6};assert(!reader_cache::validOffsets(invalid,3,12));assert(!reader_cache::validResource("../secret",9));
  std::filesystem::remove_all(root);

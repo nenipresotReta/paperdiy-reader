@@ -1753,6 +1753,13 @@ public:
     */
     XMLError Parse( const char* xml, size_t nBytes=static_cast<size_t>(-1) );
 
+    // PaperDIY local patch: observer only; callbacks must not mutate/reenter
+    // this document. No parser result, cursor or error behavior is changed.
+    void SetProgressCallback(void (*callback)(void*), void* context) {
+        _progressCallback = callback; _progressContext = context;
+    }
+
+
     /**
     	Load an XML file from disk.
     	Returns XML_SUCCESS (0) on success, or
@@ -1934,6 +1941,10 @@ public:
 private:
     XMLDocument( const XMLDocument& );	// not supported
     void operator=( const XMLDocument& );	// not supported
+
+    void (*_progressCallback)(void*) = 0;
+    void* _progressContext = 0;
+    void Progress() { if (_progressCallback) _progressCallback(_progressContext); }
 
     bool			_writeBOM;
     bool			_processEntities;
