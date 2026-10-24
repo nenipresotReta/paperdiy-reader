@@ -1,9 +1,15 @@
 # LAN document and message delivery
 
-Status: review draft, 2026-10-23. This document proposes future work; it does not
-enable a LAN service. The shipped N mode only joins saved Wi-Fi and shows its
-state/IP. It has no Web UI, push endpoint, cloud connection or background inbox
-polling. A mode remains the existing, separately authenticated AP upload page.
+[English](lan-design.md) | [简体中文](lan-design.zh-CN.md)
+
+Status: historical proposal, 2026-10-23. Retained as design context, not the
+current protocol or an implementation checklist. The development implementation
+is specified in [LAN protocol](lan-protocol.md) and the
+[architecture report](architecture-and-implementation.md). It uses explicit
+N sessions, certificate pinning, a bounded sender queue, one overwritten Push
+book and ordinary file delivery. mDNS, a multi-message inbox and receiving while
+reading remain outside the implemented scope. The proposals below may differ
+from the final limits and lifecycle; use the protocol document for integration.
 
 ## Scope and recommendation
 
