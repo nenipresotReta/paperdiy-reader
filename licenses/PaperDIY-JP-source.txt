@@ -1,0 +1,26 @@
+PaperDIY JP native vertical and kana-ruby bitmap derivative
+
+Derived from Noto Serif CJK SC Regular 2.003, SIL OFL 1.1.
+Copyright 2017-2024 Adobe. Reserved font name: Noto.
+Derivative internal name: PaperDIY JP. License: Noto-OFL.txt.
+
+The pinned source contains Japanese regional outlines. The generator applies
+hani/JAN locl then vrt2 substitutions, uses vmtx/VORG advances and origins, and
+bakes native 24/28 px JIS X 0208 differences plus U+9AD9/U+20BB7 name forms,
+and 12/14 px kana/Latin ruby. Tiny cells preserve native descender ink with
+at most two extra vertical pixels; no bitmap scaling or clipping is applied.
+Identical body glyphs reuse NativeFont. No installed or private font is used.
+
+Pinned commit: 9b0f1436e455d902de067a2501422e5dc71ad16b
+Source: https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Regular.otf
+SHA-256: 2a2eae2628df83556c54018c41e20fa532c1b862c5256ae8b3f23feb918d12ca
+
+Unicode Vertical_Orientation table 17.0.0:
+https://www.unicode.org/Public/17.0.0/ucd/VerticalOrientation.txt
+SHA-256: dcef09c3fb24d356b042569c328ec341efc5b53447700d799f2fb4834c3cd3cd
+License: Unicode.txt (Unicode License v3).
+
+Final derivative regeneration environment: Python 3.14.8, Pillow 12.2.0,
+FreeType 2.14.3, fontTools 4.62.1. Generated files pass exact regeneration
+checks in that environment. Body sideways placement preserves the original
+bitmap within a separately reserved three-pixel allowance; no resampling.

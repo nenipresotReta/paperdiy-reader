@@ -97,6 +97,8 @@ def repertoire() -> set[int]:
     # Vertical kana repeat marks span two ems. A horizontal line cannot render
     # them at their native dimensions; use the visible missing-glyph box.
     codes.difference_update(range(0x3031, 0x3036))
+    # Two explicitly bounded Japanese name forms from the same pinned source.
+    codes.update((0x9ad9, 0x20bb7))
     return codes
 
 
