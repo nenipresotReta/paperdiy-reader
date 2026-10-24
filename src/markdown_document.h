@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "text_language.h"
 
 namespace markdown {
 
@@ -19,6 +20,7 @@ struct Run {
   uint16_t flags = 0;
   uint8_t indent = 0, headingLevel = 0;
   Kind kind = Kind::Text;
+  text_language::Language language = text_language::Language::EnglishUS;
 };
 
 using Tick = void (*)(void*);
