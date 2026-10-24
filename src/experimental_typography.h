@@ -2,6 +2,8 @@
 // Contextual spacing core shared by production and the original A/B laboratory.
 // Shares the deployed line breaker; changes only pen positions and advances.
 #include "pagination.h"
+#include "latin_metrics.h"
+#include "line_quality.h"
 
 namespace typography_experiment {
 struct Options {
@@ -9,6 +11,10 @@ struct Options {
   int hanLatinGap=0; // Candidate 4 px; caller may compare 0 / 4 / 7 explicitly.
   int maxPunctuationTrim=14;
   int minInkGap=2;
+  unsigned latinPixels=0; // Native 24/28 px Latin metrics; 0 preserves the laboratory baseline.
+  bool balanceLines=false;
+  bool strictBreaks=false;
+  int opticalMargin=0;
 };
 struct Metrics { int advance=0,inkLeft=0,inkRight=0;bool ink=false; };
 enum class Punctuation { None,Open,Close,Stop };
@@ -62,53 +68,83 @@ int leading(const char* text,size_t length,size_t at,size_t lineBegin,
 
 template<class Measure,class Draw,class Tick>
 size_t page(const char* text,size_t length,size_t from,pagination::Geometry g,
-            const Options& options,Measure measure,Draw draw,Tick tick){
+            const Options& options,Measure measure,Draw draw,Tick tick,bool paint=true){
   if(g.right<=g.left||g.lineHeight<=0||g.bottom<g.top)return from;
-  size_t p=from;unsigned hyphenLines=0;
+  size_t p=from;unsigned hyphenLines=0,qualityAttempts=0;
+  const bool precise=options.latinPixels==24||options.latinPixels==28;
+  const int unit=precise?64:1;
+  pagination::Geometry horizontal=g;
+  horizontal.left*=unit;horizontal.right*=unit;horizontal.hangLimit*=unit;
+  horizontal.strictBreaks=options.strictBreaks;
   const uintptr_t begin=reinterpret_cast<uintptr_t>(text),end=begin+length;
   const bool continuation=from&&from<length&&
     (pagination::latin(pagination::previous(text,from))||pagination::previous(text,from)==0xad)&&
     pagination::latin(pagination::codepoint(text+from,pagination::utf8Bytes(text+from,length-from)));
   const bool multiLine=g.top+g.lineHeight<=g.bottom;
+  auto offset=[&](size_t at,size_t lineBegin){
+    int result=leading(text,length,at,lineBegin,options,measure)*unit;
+    if(at==lineBegin&&at<length&&options.opticalMargin>0){
+      const uint32_t cp=pagination::codepoint(text+at,pagination::utf8Bytes(text+at,length-at));
+      if(pagination::opening(cp)){
+        const auto ink=measure(cp);
+        result-=std::min(std::max(0,std::min(options.opticalMargin,g.left)),
+          ink.ink?std::max(0,ink.advance-ink.inkLeft)/3:0)*unit;
+      }
+    }
+    if(precise&&at>lineBegin&&at<length){
+      const uint32_t current=pagination::codepoint(text+at,pagination::utf8Bytes(text+at,length-at));
+      result+=latin_metrics::kern64(options.latinPixels,pagination::previous(text,at),current);
+    }
+    return result;
+  };
+  auto makeWidth=[&](size_t lineBegin){return [&,lineBegin](const char* ch,size_t n){
+    const uint32_t cp=pagination::codepoint(ch,n);
+    const int fallback=measure(cp).advance;
+    int value=precise?latin_metrics::advance64(options.latinPixels,cp,fallback):fallback;
+    const uintptr_t address=reinterpret_cast<uintptr_t>(ch);
+    // Literal discretionary hyphens have no source context or pair adjustment.
+    if(address>=begin&&address<end)value+=offset(size_t(address-begin),lineBegin);
+    return std::max(0,value);
+  };};
+  auto pixel=[&](int value){return precise?(value+32)/64:value;};
   for(int y=g.top;y<=g.bottom&&p<length;y+=g.lineHeight){
-    const size_t lineBegin=p;
-    auto width=[&](const char* ch,size_t n){
-      const uint32_t cp=pagination::codepoint(ch,n);
-      int value=measure(cp).advance;
-      const uintptr_t address=reinterpret_cast<uintptr_t>(ch);
-      // Hyphenation also measures literal space/hyphen strings, which do not
-      // belong to the source. Never subtract unrelated pointers.
-      if(address>=begin&&address<end)
-        value+=leading(text,length,size_t(address-begin),lineBegin,options,measure);
-      return std::max(0,value);
-    };
+    const size_t lineBegin=p;const auto width=makeWidth(lineBegin);
     const bool lastLine=multiLine&&y+g.lineHeight>g.bottom;
     const bool allowHyphen=hyphenLines<2&&!(y==g.top&&continuation)&&!lastLine;
-    const auto row=pagination::line(text,length,p,g,width,tick,allowHyphen);
+    auto row=pagination::line(text,length,p,horizontal,width,tick,allowHyphen);
     if(row.next<=p)return p;
     if(lastLine&&row.emergency)return p;
-    const int spare=g.right-g.left-row.advance,spaceWidth=std::max(0,width(" ",1));
-    const bool justify=g.justify&&!row.paragraphEnd&&row.latinText&&row.compatible&&
-      !row.formatted&&!row.emergency&&row.spaces>0&&spare>=0&&
-      spare<=row.spaces*std::max(1,spaceWidth*3/4);
-    int x=g.left,usedSpaces=0;
-    for(size_t at=row.begin;at<row.end;){
-      const size_t n=pagination::utf8Bytes(text+at,row.end-at);
-      const uint32_t cp=pagination::codepoint(text+at,n);
-      if(!pagination::invisible(cp)){
-        const int w=pagination::advance(text+at,n,cp,width);
-        const int offset=leading(text,length,at,lineBegin,options,measure);
-        if(pagination::space(cp)||pagination::noBreakSpace(cp))draw(" ",1,x,y);
-        else draw(text+at,n,x+offset,y);
-        x+=w;
-        if(justify&&pagination::space(cp)&&at>row.begin){
-          const int before=spare*usedSpaces/row.spaces;++usedSpaces;
-          x+=spare*usedSpaces/row.spaces-before;
-        }
-      }
-      at+=n;
+    if(options.balanceLines&&!lastLine&&qualityAttempts<2){
+      line_quality::Budget quality;
+      row=line_quality::choose(text,length,p,horizontal,row,makeWidth,tick,hyphenLines,
+        y+2*g.lineHeight>g.bottom,&quality);
+      if(quality.measured)++qualityAttempts;
     }
-    if(row.hyphen)draw("-",1,x,y);
+    // Indexing shares all line decisions, but does not walk glyphs a second time.
+    if(paint){
+      const int spare=horizontal.right-horizontal.left-row.advance;
+      const int spaceWidth=std::max(0,width(" ",1));
+      const bool justify=g.justify&&!row.paragraphEnd&&row.latinText&&row.compatible&&
+        !row.formatted&&!row.emergency&&row.spaces>0&&spare>=0&&
+        spare<=row.spaces*std::max(1,spaceWidth*3/4);
+      int x=horizontal.left,usedSpaces=0;
+      for(size_t at=row.begin;at<row.end;){
+        const size_t n=pagination::utf8Bytes(text+at,row.end-at);
+        const uint32_t cp=pagination::codepoint(text+at,n);
+        if(!pagination::invisible(cp)){
+          const int w=pagination::advance(text+at,n,cp,width);
+          if(pagination::space(cp)||pagination::noBreakSpace(cp))draw(" ",1,pixel(x),y);
+          else draw(text+at,n,pixel(x+offset(at,lineBegin)),y);
+          x+=w;
+          if(justify&&pagination::space(cp)&&at>row.begin){
+            const int before=spare*usedSpaces/row.spaces;++usedSpaces;
+            x+=spare*usedSpaces/row.spaces-before;
+          }
+        }
+        at+=n;
+      }
+      if(row.hyphen)draw("-",1,pixel(x),y);
+    }
     hyphenLines=row.hyphen?hyphenLines+1:0;p=row.next;tick();
   }
   return p;

@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 #include "pagination.h"
+#include "line_quality.h"
+#include "latin_metrics.h"
 #include "native_font_data.h"
 
 struct Glyph { std::string text; int x, y, w; bool inserted; };
@@ -266,6 +268,77 @@ void readerGeometryRegression() {
   }
   assert(visible==expected);
 }
+void boundedQualityRegression() {
+  std::string text="A representation of extraordinary circumstances may need a discretionary hyphen, but a short final line should rest naturally at the left margin.";
+  auto g=geometry(96,4);
+  auto factory=[](size_t){return fixed;};
+  const auto greedy=pagination::line(text.data(),text.size(),0,g,fixed,[](){});
+  line_quality::Budget work;
+  const auto improved=line_quality::choose(text.data(),text.size(),0,g,greedy,factory,[](){},0,false,&work);
+  assert(greedy.hyphen&&!improved.hyphen&&improved.end<greedy.end);
+  assert(text.substr(0,improved.end)=="A representation of");
+  assert(work.measured<=line_quality::MAX_MEASUREMENTS&&!work.exhausted);
+  // No unbounded suffix scanning or speculative acceptance on pathological text.
+  for(const std::string& suffix:{std::string(100000,'x'),std::string(100000,' ')}){
+    const std::string longText="A representation of "+suffix;
+    const auto line=pagination::line(longText.data(),longText.size(),0,g,fixed,[](){});
+    line_quality::Budget budget;
+    auto chosen=line_quality::choose(longText.data(),longText.size(),0,g,line,factory,[](){},0,false,&budget);
+    assert(budget.measured<=line_quality::MAX_MEASUREMENTS);
+    if(budget.exhausted)assert(chosen.end==line.end&&chosen.next==line.next);
+  }
+  // Japanese nonstarters are not punctuation eligible for margin hanging.
+  assert(pagination::prohibitedStart(0x30fc)&&!pagination::closing(0x30fc));
+  assert(pagination::prohibitedStart(0x3063)&&!pagination::closing(0x3063));
+  g=geometry(24,3);g.strictBreaks=true;g.hyphenate=false;
+  for(const std::string& sample:{std::string("日本コーラの本"),std::string("漢字——続く"),std::string("漢字……続く")}){
+    auto lines=render(sample,g);
+    for(const auto& row:lines){
+      assert(!row.second.empty());
+      const auto cp=pagination::codepoint(row.second.front().text.data(),row.second.front().text.size());
+      assert(!pagination::prohibitedStart(cp));
+      if(row.second.back().text=="—"||row.second.back().text=="…"){
+        assert(row.second.size()>=2&&row.second[row.second.size()-2].text==row.second.back().text);
+      }
+    }
+  }
+  // Fractional accumulation preserves pair spacing without touching bitmaps.
+  for(unsigned pixels:{24u,28u}){
+    assert(latin_metrics::kern64(pixels,'A','V')<0);
+    assert(latin_metrics::kern64(pixels,'T','o')<0);
+    assert(latin_metrics::kern64(pixels,' ',0x4e2d)==0);
+    int exact=0;
+    for(int i=0;i<100;++i)exact+=latin_metrics::advance64(pixels,'i',0);
+    assert(exact==100*latin_metrics::advance64(pixels,'i',0));
+  }
+}
+void latinLookupRegression(){
+  std::vector<uint32_t> supported;
+  for(uint32_t cp=32;cp<=126;++cp)supported.push_back(cp);
+  for(uint32_t cp:{0x2010u,0x2013u,0x2014u,0x2018u,0x2019u,0x201cu,0x201du,0x2026u})supported.push_back(cp);
+  assert(supported.size()==latin_metrics::COUNT);
+  // Independent ordered lookup checks the direct ASCII path and every other
+  // Unicode code point, including unsupported/surrogate values and fallbacks.
+  for(uint32_t cp=0;cp<=0x10ffff;++cp){
+    const auto found=std::lower_bound(supported.begin(),supported.end(),cp);
+    const int expected=found!=supported.end()&&*found==cp?int(found-supported.begin()):-1;
+    assert(latin_metrics::index(cp)==expected);
+    for(unsigned pixels:{24u,28u}){
+      const auto* advances=pixels==24?latin_metrics::ADVANCE_24:latin_metrics::ADVANCE_28;
+      assert(latin_metrics::advance64(pixels,cp,19)==(expected<0?19*64:advances[expected]));
+    }
+  }
+  for(uint32_t cp:{0x110000u,UINT32_MAX}){
+    assert(latin_metrics::index(cp)==-1);
+    assert(latin_metrics::advance64(28,cp,19)==19*64);
+    assert(latin_metrics::kern64(28,cp,'A')==0&&latin_metrics::kern64(28,'A',cp)==0);
+  }
+  for(unsigned pixels:{24u,28u}){
+    const auto* pairs=pixels==24?latin_metrics::KERN_24:latin_metrics::KERN_28;
+    for(size_t a=0;a<supported.size();++a)for(size_t b=0;b<supported.size();++b)
+      assert(latin_metrics::kern64(pixels,supported[a],supported[b])==4*pairs[a*supported.size()+b]);
+  }
+}
 void visual(const char* directory) {
   std::string text="Careful typography makes a long passage easier to read. Each line should preserve the shape of its words while the spaces remain calm and consistent. A representation of extraordinary circumstances may need a discretionary hyphen, but a short final line should rest naturally at the left margin.\n\n"
     "When the reader changes the layout, the book itself remains untouched. Navigation remembers a position in the original text. This distinction keeps a passage accessible even when a different arrangement produces a different number of pages.\n\n"
@@ -286,7 +359,7 @@ void visual(const char* directory) {
   printf("visual bytes=%zu/%zu\n",end,text.size());
 }
 int main(int argc,char** argv) {
-  basic();paginationRegression();punctuationWorkRegression();readerGeometryRegression();
+  basic();paginationRegression();punctuationWorkRegression();readerGeometryRegression();boundedQualityRegression();latinLookupRegression();
   if(argc>1)visual(argv[1]);
   puts("word wrapping, Liang patterns, bounded justification, controls, mixed text, cached/drawn boundaries: PASS");
 }

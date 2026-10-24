@@ -4,11 +4,14 @@
 #include <cstdint>
 #include <vector>
 #include "english_hyphenation.h"
+#include "text_language.h"
 
 namespace pagination {
 struct Geometry {
   int left = 24, right = 516, top = 24, bottom = 886, lineHeight = 40;
   bool hyphenate = true, justify = true;
+  bool strictBreaks = false;
+  text_language::Language language=text_language::Language::EnglishUS;
   // Maximum display-only overhang beyond `right`; 0 keeps it unbounded.
   int hangLimit = 0;
 };
@@ -63,6 +66,22 @@ inline bool closing(uint32_t c) {
     default: return false;
   }
 }
+// Line-start prohibition is separate from hanging punctuation: kana and
+// iteration/prolongation marks stay attached, but never hang into the margin.
+inline bool prohibitedStart(uint32_t c) {
+  if(closing(c))return true;
+  switch(c){
+    case 0x3005:case 0x303b:case 0x309d:case 0x309e:case 0x30fd:case 0x30fe:case 0x30fc:
+    case 0x3041:case 0x3043:case 0x3045:case 0x3047:case 0x3049:case 0x3063:
+    case 0x3083:case 0x3085:case 0x3087:case 0x308e:case 0x3095:case 0x3096:
+    case 0x30a1:case 0x30a3:case 0x30a5:case 0x30a7:case 0x30a9:case 0x30c3:
+    case 0x30e3:case 0x30e5:case 0x30e7:case 0x30ee:case 0x30f5:case 0x30f6:return true;
+    default:return c>=0x31f0&&c<=0x31ff;
+  }
+}
+inline bool pairedMark(uint32_t previous,uint32_t current) {
+  return previous==current&&(current==0x2014||current==0x2026);
+}
 inline bool latin(uint32_t c) {
   return english_hyphenation::letter(c < 128 ? uint8_t(c) : 0) ||
          (c >= 0xc0 && c <= 0x2af && c != 0xd7 && c != 0xf7);
@@ -95,9 +114,11 @@ inline uint32_t previous(const char* text, size_t at) {
   while (p && at - p < 4 && (uint8_t(text[p]) & 0xc0) == 0x80) --p;
   return codepoint(text + p, at - p);
 }
-template<class Width>
+struct NoAtoms {size_t operator()(size_t at)const{return at;}};
+template<class Width,class Atom=NoAtoms>
 bool automatic(const char* text, size_t length, size_t overflow,
-               int available, Width width, const Line& scanned, Line& result) {
+               int available, Width width, const Line& scanned, Line& result,
+               text_language::Language language=text_language::Language::EnglishUS,Atom atom=Atom()) {
   if (overflow >= length) return false;
   size_t probe = overflow;
   if (!english_hyphenation::letter(uint8_t(text[probe]))) {
@@ -120,7 +141,10 @@ bool automatic(const char* text, size_t length, size_t overflow,
         (cp == '.' && end + 1 < length &&
          (latin(uint8_t(text[end + 1])) || (text[end + 1] >= '0' && text[end + 1] <= '9')))) return false;
   }
-  uint64_t points = english_hyphenation::points(text + start, end - start);
+  // A canonical semantic atom may contain ordinary Latin source bytes. They
+  // are not part of the surrounding word and can never be hyphenation cuts.
+  for(size_t at=start;at<end;++at)if(atom(at)>at)return false;
+  uint64_t points = english_hyphenation::points(text + start, end - start,language);
   if (!points) return false;
   int base = scanned.advance;
   size_t visibleStart = std::max(start, scanned.begin);
@@ -140,19 +164,22 @@ bool automatic(const char* text, size_t length, size_t overflow,
   }
   return found;
 }
-inline bool softPoint(const char* text, size_t length, size_t at) {
+template<class Atom=NoAtoms>
+inline bool softPoint(const char* text,size_t length,size_t at,Atom atom=Atom()) {
   unsigned before = 0, after = 0;
   size_t p = at, budget = 0;
   while (p && before < 2 && budget++ < 64) {
     uint32_t cp = previous(text, p);
     size_t begin = p - 1;
     while (begin && p - begin < 4 && (uint8_t(text[begin]) & 0xc0) == 0x80) --begin;
+    if(atom(begin)>begin)break;
     if (latin(cp)) ++before;
     else if (cp != 0xad && !combining(cp)) break;
     p = begin;
   }
   p = at + 2; budget = 0;
   while (p < length && after < 3 && budget++ < 64) {
+    if(atom(p)>p)break;
     size_t n = utf8Bytes(text + p, length - p);
     uint32_t cp = codepoint(text + p, n);
     if (latin(cp)) ++after;
@@ -162,20 +189,23 @@ inline bool softPoint(const char* text, size_t length, size_t at) {
   return before >= 2 && after >= 3;
 }
 
-template<class Width, class Tick>
+template<class Width, class Tick,class Atom=NoAtoms>
 Line line(const char* text, size_t length, size_t from, Geometry g,
-          Width width, Tick tick, bool allowHyphen = true) {
+          Width width, Tick tick, bool allowHyphen = true,Atom atom=Atom()) {
   Line current; current.begin = current.end = current.next = from;
   Line best = current;
   int available = g.right - g.left;
   size_t p = from, inkEnd = from;
   int inkWidth = 0, inkSpaces = 0;
   uint32_t prev = 0;
-  bool prevSpace = false;
+  bool prevSpace = false,prevAtom=false;
   unsigned units = 0;
   while (p < length) {
-    size_t n = utf8Bytes(text + p, length - p);
-    uint32_t cp = codepoint(text + p, n);
+    const size_t atomEnd=atom(p);const bool atomic=atomEnd>p;
+    if(atomic&&atomEnd>length)return current;
+    size_t n=atomic?atomEnd-p:utf8Bytes(text+p,length-p);
+    uint32_t cp=atomic?0xfffcu:codepoint(text+p,n);
+    if(p>from&&(atomic||prevAtom)&&current.advance<=available){best=current;best.end=best.next=p;}
     if (cp == '\n') {
       current.end = inkEnd; current.next = p + n;
       current.advance = inkWidth; current.spaces = inkSpaces;
@@ -185,7 +215,8 @@ Line line(const char* text, size_t length, size_t from, Geometry g,
     // Legal CJK boundaries are independent of English word boundaries.
     if (p > from && !space(cp) && !invisible(cp) && !space(prev) &&
         (cjk(prev) || cjk(cp) || prev == 0x2013 || prev == 0x2014) &&
-        !opening(prev) && !closing(cp) && !combining(cp) &&
+        !opening(prev) && !(g.strictBreaks?prohibitedStart(cp):closing(cp)) &&
+        !(g.strictBreaks&&pairedMark(prev,cp)) && !combining(cp) &&
         !noBreakSpace(prev) && !noBreakSpace(cp) && prev != 0x2060 &&
         current.advance <= available) {
       best = current; best.end = best.next = p;
@@ -199,7 +230,7 @@ Line line(const char* text, size_t length, size_t from, Geometry g,
     } else if (cp == 0x200b) {
       if (inkEnd > from) { best = current; best.end = inkEnd; best.next = p + n; }
     } else if (cp == 0xad) {
-      if (allowHyphen && softPoint(text, length, p) &&
+      if (allowHyphen && softPoint(text,length,p,atom) &&
           current.advance + std::max(0, width("-", 1)) <= available) {
         best = current; best.end = best.next = p + n;
         best.advance += std::max(0, width("-", 1)); best.hyphen = true;
@@ -218,6 +249,7 @@ Line line(const char* text, size_t length, size_t from, Geometry g,
         // Once the margin is exceeded, later nonnegative advances cannot make
         // the run fit. Scanning its remaining suffix at every line is quadratic.
         while (q < length && (g.hangLimit <= 0 || hang <= g.hangLimit)) {
+          if(atom(q)>q)break;
           size_t qn = utf8Bytes(text + q, length - q);
           uint32_t qc = codepoint(text + q, qn);
           if (!closing(qc)) break;
@@ -231,6 +263,7 @@ Line line(const char* text, size_t length, size_t from, Geometry g,
           current.hang = hang;
           size_t next = runEnd;
           while (next < length) {
+            if(atom(next)>next)break;
             size_t nn = utf8Bytes(text + next, length - next);
             uint32_t nc = codepoint(text + next, nn);
             if (space(nc) || nc == '\r') {
@@ -241,12 +274,12 @@ Line line(const char* text, size_t length, size_t from, Geometry g,
             break;
           }
           if (next >= length) { current.next = length; current.paragraphEnd = true; }
-          else if (text[next] == '\n') { current.next = next + 1; current.paragraphEnd = true; }
+          else if (atom(next)<=next&&text[next] == '\n') { current.next = next + 1; current.paragraphEnd = true; }
           else current.next = next;
           return current;
         }
       }
-      if (g.hyphenate && allowHyphen) automatic(text, length, p, available, width, current, best);
+      if (g.hyphenate && allowHyphen&&!atomic) automatic(text,length,p,available,width,current,best,g.language,atom);
       if (best.end > from) return best;
       current.end = current.next = p; current.emergency = true; return current;
     }
@@ -260,10 +293,12 @@ Line line(const char* text, size_t length, size_t from, Geometry g,
     }
     p += n;
     current.end = current.next = p;
-    if (cp == '-' || cp == 0x2010 || cp == 0x2013 || cp == 0x2014 || cp == '/') {
+    const bool breakAfter=cp=='-'||cp==0x2010||cp==0x2013||cp==0x2014||cp=='/';
+    const uint32_t following=p<length?(atom(p)>p?0xfffcu:codepoint(text+p,utf8Bytes(text+p,length-p))):0;
+    if (breakAfter&&!(g.strictBreaks&&pairedMark(cp,following))) {
       if (current.advance <= available) { best = current; best.end = best.next = p; }
     }
-    prevSpace = space(cp); prev = cp;
+    prevSpace = space(cp); prev = cp;prevAtom=atomic;
     if ((++units & 255) == 0) tick();
     // A malicious stream of zero-width marks cannot monopolize one line.
     if (units == 8192) { current.emergency = true; return current; }
@@ -275,7 +310,7 @@ Line line(const char* text, size_t length, size_t from, Geometry g,
 
 template<class Width, class Draw, class Tick>
 size_t page(const char* text, size_t length, size_t from, Geometry g,
-            Width width, Draw draw, Tick tick) {
+            Width width, Draw draw, Tick tick, bool paint = true) {
   if (g.right <= g.left || g.lineHeight <= 0 || g.bottom < g.top) return from;
   size_t p = from;
   unsigned hyphenLines = 0;
@@ -291,6 +326,7 @@ size_t page(const char* text, size_t length, size_t from, Geometry g,
     // A long word that cannot fit without a hyphen is moved to the next page
     // rather than split on the page's last line.
     if (lastLine && row.emergency) return p;
+    if (paint) {
     int spare = g.right - g.left - row.advance;
     int spaceWidth = std::max(0, width(" ", 1));
     bool justify = g.justify && !row.paragraphEnd && row.latinText && row.compatible &&
@@ -314,6 +350,7 @@ size_t page(const char* text, size_t length, size_t from, Geometry g,
       at += n;
     }
     if (row.hyphen) draw("-", 1, x, y);
+    }
     hyphenLines = row.hyphen ? hyphenLines + 1 : 0;
     p = row.next; tick();
   }
