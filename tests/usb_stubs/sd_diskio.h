@@ -1,0 +1,9 @@
+#pragma once
+#include <cstdint>
+#include <SPI.h>
+uint8_t sdcard_init(uint8_t,SPIClass*,int);
+uint8_t sdcard_uninit(uint8_t);
+uint32_t sdcard_sector_size(uint8_t);
+uint32_t sdcard_num_sectors(uint8_t);
+bool sd_read_raw(uint8_t,uint8_t*,uint32_t);
+bool sd_write_raw(uint8_t,uint8_t*,uint32_t);
