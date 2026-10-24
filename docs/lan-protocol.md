@@ -4,9 +4,9 @@
 
 This is the client/device integration contract. The foreground Python sender,
 firmware TLS receiver and bounded persistent store are implemented. Host tests
-cover protocol behavior, storage faults and ownership gates. Current physical
-acceptance and unresolved hardware work are recorded in the
-[architecture report](architecture-and-implementation.md).
+cover protocol behavior, storage faults and ownership gates. The [architecture report](architecture-and-implementation.md) describes
+implementation boundaries; protocol tests do not establish physical delivery
+or wireless performance.
 Run synthetic client tests with `python3 tests/lan_client.py`.
 They use generated test certificates and listeners bound only to `127.0.0.1`
 on ephemeral ports. They do not exercise a physical reader or Wi-Fi delivery.

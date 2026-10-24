@@ -2,24 +2,21 @@
 
 [English](power.md) | [简体中文](power.zh-CN.md)
 
-This document records the implemented idle power policy, its source review,
-and validation results. USB-connected operation and a short battery sleep/wake
-run have been checked on a device. Longer endurance and peripheral checks remain
-open. No current meter is available, so neither current consumption nor
-battery-life gains have been measured. A successful wakeup alone does not
-establish a power saving.
+This document describes the implemented idle policy and its technical limits. Source review and host tests cannot establish electrical current, battery life or physical wake reliability. Those require controlled measurements with synthetic documents and stated conditions.
 
 ## Policy
 
 After one second without activity, lower the CPU from 240 MHz to 80 MHz.
-Exclusive MSC storage ownership is the exception: enter at 240 MHz and retain
+USB book transfer is disabled by default; `PAPERDIY_EXPERIMENTAL_USB_MSC=1` is
+reserved for private experimental builds. When enabled, exclusive MSC ownership
+is the exception: enter at 240 MHz and retain
 that clock until explicit host eject and successful raw-driver release,
 including exit-requested and fault states. Raw SD callbacks run in the USB task,
 so application byte-delta polling cannot safely decide when to downclock.
 This conservative choice avoids clock transitions during raw I/O and gives
 predictable first-burst latency at the cost of higher connected-idle CPU power.
-It does not identify the cause of the observed USB media fault, and its power
-cost has not been measured.
+This clock policy alone does not establish USB reliability or quantify power
+cost.
 
 On battery power, also enter manual light sleep with a one-second timer fallback.
 On USB or other external power, only lower the CPU frequency; keep the processor
@@ -117,8 +114,8 @@ have not been measured.
 
 The USB build flag selects the transport. With `ARDUINO_USB_MODE=1`, `Serial`
 is the USB Serial/JTAG `HWCDC` implementation and USB storage is unavailable.
-With `ARDUINO_USB_MODE=0`, native TinyUSB provides CDC plus the explicitly
-enabled MSC medium. Check the selected build configuration; these are distinct
+With `ARDUINO_USB_MODE=0`, native TinyUSB provides CDC; MSC remains disabled
+unless the private experimental compile gate is explicitly enabled. Check the selected build configuration; these are distinct
 firmware variants. Power code uses `usb_transport` for both variants.
 
 In the HWCDC variant, `HWCDC::isPlugged()` detects host SOF packets, while
@@ -142,11 +139,6 @@ Recheck host connection immediately before entry. If USB is attached during
 sleep, the timer bounds the next power-source check to about one second.
 Enumeration after USB attachment during sleep still needs device acceptance.
 
-The older battery/USB results below describe their tested firmware. Current
-native-USB workflow acceptance and unresolved hardware results are maintained
-in the [architecture report](architecture-and-implementation.md). They do not
-establish USB suspend behavior or power consumption.
-
 MSC read/write callbacks release the storage mutex and wait at least one RTOS
 tick on success, failure and lock contention, allowing other tasks to run
 between callbacks. This does not preempt one synchronous SD operation. A
@@ -166,7 +158,7 @@ stops waiting on subsequent rows;
 attempted after an interrupted one. A host draining within those deadlines receives
 the full frame. Dropping logs does not eject storage or prove synchronization.
 RX, serial initialization and the ownership-dependent reboot guard keep their
-existing paths. CDC reopen acceptance belongs to the hardware record linked above.
+existing paths. CDC reopen behavior requires separate physical validation.
 
 Do not infer that USB is absent from `isCharging()`: charging can stop while
 the cable remains connected. Do not use a zero returned by `getPowerSource()`
@@ -229,29 +221,12 @@ The following are source evidence, not measurements on this reader:
   These online hardware notes may change; SDK and library claims above refer
   to the pinned versions.
 
-## Validation status
-
-Native CTest suites pass with ASan/UBSan, and both the public and diagnostic
-firmware build successfully. Device acceptance is limited to the synthetic
-diagnostic contract below; battery endurance, SD hot-plug and electrical
-measurements remain open.
-
-One telemetry limitation remains: `unknown_source_seen=1` is a sticky flag,
-not a count of failed reads. `sourceKnown` starts false, and diagnostic
-arming/observation can run before the first power-source sample in the same
-application loop. Thus the flag can mean "not sampled yet" or an actual I2C
-read failure; this report cannot distinguish them or establish a driver fault.
-The runtime sleep gate still requires a successful checked source read,
-battery power, and no external power/USB host. An unknown source blocks sleep.
-
-No private books, reading records, device images or NVS contents are part of
-the public evidence.
-
 ## Optional battery retention diagnostic
 
 Build with both `PAPERDIY_DIAGNOSTICS` and `PAPERDIY_DEVICE_TESTS` to enable the
 one-shot telemetry in [`tests/device_power.h`](../tests/device_power.h). These
-flags are disabled in the normal build. Use a loaded synthetic document with room to turn forward and back, and keep it open during the run.
+flags are disabled in the normal build. Use a loaded synthetic document with
+room to turn forward and back, and keep it open during the run.
 
 1. With USB connected, send `POWER_ARM`. Save the returned eight-digit
    hexadecimal `nonce` on the host.
@@ -271,8 +246,9 @@ it cannot establish that the result belongs to the current experiment.
 
 Check `valid_book=1`, `sleep_seen=1`, `battery_sleep_seen=1`, matching text and
 page-index checksums, and zero frequency/sleep failures. Review an unknown-source
-flag separately using the schema limitation above; it does not count I2C
-failures. Confirm the intended final position and A/B action counts.
+flag separately: `unknown_source_seen` is sticky, and `sourceKnown` starts
+false, so the flag can mean either not yet sampled or an actual I2C read failure.
+It is not an I2C failure count. Unknown source still blocks runtime sleep. Confirm the intended final position and A/B action counts.
 The telemetry checks text and page-index CRCs; framebuffer retention and visible
 refresh behavior still need their own checks.
 
@@ -284,11 +260,11 @@ The diagnostic does not write the reader's bookmark namespace. Normal page-turn
 bookmark persistence remains active. A reset before completion loses the active
 experiment, so always retain and check its nonce.
 
-Raw reports include book identifiers and reading positions. Keep those details
-out of public logs; publish only the relevant checks and anonymized outcomes.
-The telemetry limitation is recorded above.
+Raw reports can include book identifiers and reading positions; keep them out
+of public logs. Public test reports must use synthetic documents rather than
+anonymized personal reading records.
 
-## Hardware acceptance still required
+## Hardware validation requirements
 
 - Exercise hundreds of battery sleep/wake cycles while checking the loaded
   book, page offsets, and framebuffer for corruption. Compare a PSRAM checksum
@@ -308,6 +284,6 @@ The telemetry limitation is recorded above.
   refresh, and shutdown. Record instrument, duration, and conditions before
   making current or battery-life claims.
 
-Record additional results with the tested firmware revision and conditions
-here once available. The longer battery, peripheral, and electrical checks
-above remain pending.
+Public benchmarks should state the reproducible fixture, tested revision,
+instrument and conditions. Keep personal device-operation logs outside this
+implementation guide.

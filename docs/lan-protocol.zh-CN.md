@@ -2,7 +2,7 @@
 
 [English](lan-protocol.md) | [简体中文](lan-protocol.zh-CN.md)
 
-本文是客户端与设备的集成契约。前台 Python 发送端、固件 TLS 接收端及有界持久存储已实现。主机测试覆盖协议、存储故障与所有权门控；当前实机验收及未决问题统一见[架构报告](architecture-and-implementation.md)。运行 `python3 tests/lan_client.py` 执行合成客户端测试：使用临时生成的证书，只在 `127.0.0.1` 的临时端口监听，不验证真实阅读器或 Wi-Fi 投递。
+本文是客户端与设备的集成契约。前台 Python 发送端、固件 TLS 接收端及有界持久存储已实现。主机测试覆盖协议、存储故障与所有权门控；[架构报告](architecture-and-implementation.zh-CN.md)说明实现边界；协议测试不能证明实体投递或无线性能。运行 `python3 tests/lan_client.py` 执行合成客户端测试：使用临时生成的证书，只在 `127.0.0.1` 的临时端口监听，不验证真实阅读器或 Wi-Fi 投递。
 
 接收端仅在明确选择 N 的会话中存在。CLI 不安装守护进程、不启用网络、不修改主机网络、不扫描子网、不使用中继。双方必须同时在线。`queued` 表示发送端保存了内容，`delivered` 表示已验证匹配的提交回执；两者都不代表设备已显示内容或用户已阅读。
 

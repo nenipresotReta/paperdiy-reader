@@ -2,7 +2,7 @@
 
 [English](architecture-and-implementation.md) · [简体中文](architecture-and-implementation.zh-CN.md)
 
-This report describes the working source reviewed on 2026-10-24. It covers ownership, data formats, algorithms and failure behavior. Hardware acceptance is listed separately in section 12; an implementation or host test does not establish device reliability. Released behavior is recorded in the [release notes](releases/v0.3.0.md).
+This report describes module ownership, data formats, algorithms and failure behavior. Section 12 lists test coverage and known limits. Released behavior is recorded in the [release notes](releases/v0.3.0.md).
 
 ## 1. Execution model
 
@@ -284,29 +284,13 @@ Final raw-card acceptance remains open. The earlier successful transfer and subs
 
 A checked build-time replacement corrects the pinned SDK card-lifetime issue: the card was freed before the SPI lock destructor used it. It compiles an SD source copy without modifying the installed framework. Read/write callbacks release their mutex and yield one RTOS tick, including the busy/retry path. Source and linked-ELF inspection showed that own-task USB queue sends already use zero wait; no SDK queue patch is applied. An 88-byte, two-slot CRC journal in RTC memory records stage/counters/stack watermark across supported resets without NVS writes. These measures do not establish the cause of the disconnect; a single SDK SPI call can still block.
 
-## 12. Verification and remaining limits
+## 12. Tests and limits
 
-Native CMake tests use ASan/UBSan, assertions, production parsers/composers and injectable storage/allocator/clock interfaces. Python generates fixtures and checks fonts; Node executes production browser code. Diagnostic firmware is opt-in. Public builds contain no diagnostic command parser or synthetic device fixture flags.
+Native CMake tests use ASan/UBSan, assertions and injectable storage, allocator and clock interfaces. Python generates synthetic fixtures and checks font assets; Node runs the browser code. Coverage includes malformed input, allocation failures, chapter and page recovery, canonical-text/PDS parity, layout geometry, protocol replay and storage ownership. Diagnostic commands and device fixtures require explicit build flags.
 
-| Evidence | Established boundary |
-| --- | --- |
-| Recorded integration checkpoint | 54/54 host suites passed in 27.67 s; six extraction/USB/SDK suites passed again after the opening-lease fix |
-| Browser/native preparation | 108 accepted, 94 rejected fixtures and four flat/semantic pairs; Worker cancellation and bounded-memory recovery |
-| RAM-disk MSC | 8 KiB write/readback, temporary-file removal, ordinary eject and remount passed without touching the SD card |
-| Remaining device acceptance | Actual-SD USB retest, the new progressive-pagination fixture and final overlay restoration after the RGB565 correction remain incomplete |
-
-Earlier actual-SD USB attempts faulted or lost enumeration. RAM-disk
-success does not establish that raw SD USB is repaired, and the cause remains
-unresolved. Device-specific logs, images, paths and hashes are not public
-evidence.
-
-Chapter snapshots have host tests for repeated restart, torn/corrupt records, cancellation, allocation/write-denial fallback, actual I/O failure and revoked leases, with exact canonical/PDS and native/WASM parity. Device acceptance of this new extraction path is still pending. Further limits are complete EPUB/CSS compatibility, universal font coverage, complex Japanese shaping, FAT power-loss durability, electrical power measurements and broad wireless/card testing.
-
-Development tests must never change the host Wi-Fi state, network service configuration, static IP/DHCP, DNS, routes or preferred networks. Use USB, mocks or isolated loopback listeners on `127.0.0.1` with OS-assigned ports. Do not stop unrelated services to make a test pass. The same restriction applies to developer and handoff instructions.
+USB mass storage is disabled by default because actual-SD disconnects remain unresolved. RAM-disk tests do not establish real-card reliability. Other limits include full EPUB/CSS compatibility, universal font coverage, complex Japanese shaping, FAT power-loss durability and unmeasured standby current.
 
 ## 13. Build, publication and next boundaries
-
-Public and private builds use the checked build-local SDK corrections. Build identities belong to their matching build receipts.
 
 Build with Python 3.12+, the pinned development requirements and PlatformIO. Native tests also require CMake, a C++ compiler, OpenSSL headers and Node 18+. Committed browser assets run without Emscripten; regeneration uses pinned Emscripten 4.0.18. See [development](development.md) for commands.
 

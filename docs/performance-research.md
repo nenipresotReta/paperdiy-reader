@@ -2,7 +2,7 @@
 
 [简体中文](performance-research.zh-CN.md)
 
-Research date: 2026-10-24. This document separates verified source behavior, engineering deductions, and proposals. The working tree includes progressive EPUB pagination/deferred cache publication, closed-chapter extraction recovery and offline browser WASM preparation. Section 9 records historical complete-open and first-page observations plus actual localhost browser validation; current implementation and hardware status are centralized in the architecture evidence table. Two reading-anchor changes in a later snapshot remain unattributed; no rollback was performed and universal bookmark preservation is not claimed. It contains no borrowed book text and no claimed device speedup without a measurement. The detailed source map is in [architecture-and-implementation.md](architecture-and-implementation.md).
+This document separates implemented behavior, engineering deductions and proposals. It covers opening costs, cache trust, chapter-boundary recovery, browser preparation and bounded multilingual typography. Benchmarks use synthetic or publicly redistributable fixtures; personal device operations and reading records do not belong here. The source map is in [architecture and implementation](architecture-and-implementation.md).
 
 ## 1. Optimize the delay the reader actually experiences
 
@@ -131,7 +131,7 @@ pagination interruption independently of page-index checkpoints. Every poll
 and publication requires the same nonzero storage lease, even if the optional
 journal is unavailable. Current tests cover chapter-by-chapter restart and
 byte-identical canonical text/PDS1/PDS2/PDS3; hardware cold-import and interruption
-measurements remain separate from the historical timings below.
+measurements require a separate reproducible benchmark.
 
 ### Implemented first-page and deferred-publication path
 
@@ -169,7 +169,7 @@ Pending background work keeps Reading/Library active, so reduced first-page
 latency is not itself evidence of lower energy consumption. Entering Settings
 pauses the job. Revoking storage ownership cancels SD publication but allows
 indexing of the still-owned RAM document to finish; replacing the book/card or
-layout and shutdown cancel the corresponding job explicitly. USB timing and its preservation limits are recorded in [section 9](#current-usb-and-local-browser-evidence).
+layout and shutdown cancel the corresponding job explicitly. Measurement boundaries and the synthetic regression matrix are in [section 9](#9-benchmark-and-regression-plan).
 
 ### Implemented cache text windows
 
@@ -325,7 +325,7 @@ Do not automatically transform source archives to “optimize” them by removin
 
 ## 6. English typography: four improvements with explicit bounds
 
-The current working tree implements these four bounded mechanisms. The following sections explain their rationale and limits; they do not claim complete browser/TeX layout. `line_quality.h` caps local measurement work, generated `latin_metrics.cpp` supplies a single copy of native font tables through `latin_metrics.h`, `epub_document.h` preserves supported semantic spans, and `text_language.h` selects US/GB patterns. Full-device acceptance is recorded separately.
+The current working tree implements these four bounded mechanisms. The following sections explain their rationale and limits; they do not claim complete browser/TeX layout. `line_quality.h` caps local measurement work, generated `latin_metrics.cpp` supplies a single copy of native font tables through `latin_metrics.h`, `epub_document.h` preserves supported semantic spans, and `text_language.h` selects US/GB patterns. Physical-device validation is separate from these host and source checks.
 
 ### 6.1 Bounded paragraph lookahead
 
@@ -398,34 +398,13 @@ The first two stages provide an engineering prototype. They must not be called p
 
 ## 9. Benchmark and regression plan
 
-### Current USB and local browser evidence
+Use public synthetic fixtures with fixed source hashes and documented generation parameters. Native/WASM byte parity and host fault injection test correctness; they do not establish physical SD throughput, wireless performance or power consumption. Keep first-page, canonical-index and cache-publication boundaries separate.
 
-Earlier local device observations are intentionally omitted. The reproducible
-evidence in this version is the synthetic browser/worker test below and the
-regression matrix. Actual-SD USB reliability remains unresolved and is not
-established by RAM-disk tests.
-
-Earlier synthetic acceptance also covered a 32/32 ASan/UBSan host run and a synthetic compressed EPUB opened through the AP transaction service and a host-generated PDT sidecar. Both paths retained the same synthetic semantic runs and page boundaries. These results do not establish device or electrical behavior.
-
-The actual desktop browser fetched and executed the production worker and
-WASM under production CSP from an isolated loopback HTTP service. A synthetic
-9,184-byte EPUB and its 706,858-byte prepared result matched their independent
-references. The UI completed the source-first/prepared-second flow and paired
-the sidecar with the server's renamed source; no console errors or warnings
-were observed. This exercised the real page/worker/assets but a local test
-transport, **not the ESP32 AP or a physical phone**. No fixture was delivered
-to the device in this browser trial. The owned test tab and server were closed.
-Host-network configuration was not changed for this localhost validation.
-
-Further acceptance can cover deep-anchor navigation, cancellation, cold new
-imports and physical phone/AP delivery without changing the developer host's
-network. See [test-host isolation](development.md#test-host-isolation). Preserve
-separate first-page, canonical-index and complete-cache boundaries; do not
-reuse the earlier complete-open measurements as new first-page results.
+USB book transfer is disabled by default. The retained MSC implementation requires an explicit private experimental build; its source-level corrections do not establish raw SD reliability.
 
 ### Continuing regression matrix
 
-Use deterministic synthetic EPUBs or redistributable public-domain inputs; do not use private books. Generate inputs varying archive size, text size, chapter count, compression ratio, language mixture, XML node count, long words, repetitive punctuation and large unused assets. Keep source hashes fixed per fixture.
+Use deterministic synthetic EPUBs or redistributable public-domain inputs. Generate inputs varying archive size, text size, chapter count, compression ratio, language mixture, XML node count, long words, repetitive punctuation and large unused assets. Keep source hashes fixed per fixture.
 
 For each profile measure:
 
@@ -446,6 +425,6 @@ Correctness gates include complete text coverage, monotonic UTF-8 offsets, ident
 
 ## 10. Recommended sequence and explicit deferred scope
 
-The implemented sequence now includes measurement-work reduction, verified content reuse across layouts, source-validation memoization within controlled storage ownership, semantic caching, native/browser production-importer preparation, bounded first-page EPUB indexing, independent closed-chapter extraction and partial-page-index recovery, deferred cache publication and authenticated cache-text windows. Combined hardware acceptance of the newest changes remains separate from the older measurements above. Typography improvements consume the same metrics and cache identities rather than create a parallel uncached renderer.
+The implemented sequence now includes measurement-work reduction, verified content reuse across layouts, source-validation memoization within controlled storage ownership, semantic caching, native/browser production-importer preparation, bounded first-page EPUB indexing, independent closed-chapter extraction and partial-page-index recovery, deferred cache publication and authenticated cache-text windows. Host correctness and hardware performance require separate validation. Typography improvements consume the same metrics and cache identities rather than create a parallel uncached renderer.
 
-Closed-chapter recovery is implemented; suspending within deflate/XML, streaming chapter DOM allocation and reducing the 4 MiB reservation remain further performance work. Full-source hashing and individual filesystem calls still impose cold-open/cancellation latency. A full browser CSS engine, arbitrary downloaded fonts and complete MathML are outside the bounded reader implementation. Japanese, semantic-object, LAN and USB features have independent implementation/acceptance records; the earlier timing evidence above does not certify those additions.
+Closed-chapter recovery is implemented; suspending within deflate/XML, streaming chapter DOM allocation and reducing the 4 MiB reservation remain further performance work. Full-source hashing and individual filesystem calls still impose cold-open/cancellation latency. A full browser CSS engine, arbitrary downloaded fonts and complete MathML are outside the bounded reader implementation. Japanese, semantic-object and LAN support have their own bounded contracts. USB book transfer remains disabled by default; explicit experimental compilation does not imply hardware reliability.
