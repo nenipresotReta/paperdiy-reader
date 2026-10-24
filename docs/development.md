@@ -1,349 +1,378 @@
 # Development
 
-## Ownership and rendering
+[简体中文](development.zh-CN.md)
 
-`app` owns navigation and lifecycle; `input` owns button events; `ui` draws scenes.
-`reader` shares pagination and drawing metrics, `sd_reader` discovers/imports
-books, `epub_core` extracts EPUB text, and `sd_cache` validates stored source
-fingerprints, text and page offsets. `document_format` is the shared,
-case-insensitive format/size policy for discovery and AP admission: TXT 4 MiB,
-EPUB 64 MiB, Markdown 1 MiB. Extracted EPUB text remains limited to 4 MiB.
+This guide records development contracts and commands. The [architecture report](architecture-and-implementation.md) owns the source map and current evidence table; build success, host correctness, device acceptance and publication are separate outcomes.
 
-`markdown_document` builds bounded runs and a monotonic source/render offset
-map from the unchanged UTF-8 source. Lists may generate presentation bytes,
-entities may collapse several source bytes, and a supported formula becomes
-one layout atom. Bookmarks always refer to original source byte offsets,
-including a leading BOM. Raw table text and rejected formulas retain their
-source, delimiters and line breaks. Parser failure discards the IR and permits
-plain-source fallback; it must never publish a partially parsed document.
+## Test-host isolation
 
-`markdown_pagination` reuses the English/CJK line breaker and computes each
-row's ascent, descent and height from its contents. Measurement and painting
-use the same path. Page boundaries must advance monotonically and resume
-without dropping generated markers, text or formula atoms. Individually
-admissible inline formulas may still need separate rows when their combined
-baseline extents exceed a page.
+Device development and flashing do not authorize changes to the host computer's
+network. Do not toggle Wi-Fi, join device access points, alter DHCP/static IP,
+DNS, gateway, service order or preferred networks, including automatic
+restoration in cleanup handlers. Use USB for device checks and offline tests
+or HTTP/browser fixtures explicitly bound to `127.0.0.1` on an ephemeral port.
+Do not stop or reconfigure unrelated services or processes. Keep physical
+phone/AP delivery as an explicitly untested boundary when these local checks
+cannot cover it; never claim local worker parity proves wireless delivery.
 
-`math_layout` provides a bounded TeX subset, not a TeX interpreter.
-It emits glyph/rule commands with width, ascent and descent; glyph command
-coordinates use a baseline relative to the formula's top edge, while rules
-use a rectangle top. Limits are 4096 source bytes, 256 nodes, 1024 commands,
-16 levels, 8×8 matrix cells and 128 KiB scratch storage per layout.
-The reader prepares one reusable workspace and eight fixed output slots
-before document admission. Recomputing an admitted formula does not allocate.
-The slots form a bounded replacement ring keyed by source span, not an LRU.
-A failed formula must remain readable as its whole original source, never a
-zero-sized or partial success. See [supported syntax](markdown.md).
+## Build and dependencies
 
-The vendored MD4C 0.5.2 parser has checked allocation, source-range and
-cooperative-tick extensions, plus allocation-failure cleanup fixes.
-[PATCHES.md](../lib/md4c/PATCHES.md) records the upstream checksums and local
-changes. The document limits are 1 MiB source/render text, 4096 runs,
-8192 mappings and a 512 KiB transient parser allocation budget.
-
-## Settings extension contract
-
-Each additional settings page is another virtual book in the library, appended
-immediately below the existing settings books. Keep this ordered group before
-ordinary books and use the same row styling, selection, opening and return
-interaction. Add a page only when it has implemented settings; no placeholder
-books or extra menu hierarchy.
-
-Each physical button owns one group of mutually exclusive states and cycles
-only that group. Express the states with fixed-position logical symbols, as
-with `N / A / U` and `¬R / R`: inactive alternatives carry `¬`, an active
-alternative does not. A group with an Off state can have all alternatives
-inactive. The two button groups remain independent. Keep symbols equidistant,
-preserve physical-button correspondence after rotation, and avoid explanatory
-page titles or instructions. Required operational content, such as AP codes
-and credentials, still has a separate non-overlapping area.
-
-`settings_registry.h` keeps stable IDs `None=0` and `Network=1`. Only the
-network/rotation book is listed, leaving 21 ordinary books on the first screen.
-Wire ID 2 is retired and must not be reused. Existing V2 snapshots selecting
-that page restore Network read-only, preserving the selected book path.
-
-Punctuation compression and Han/ASCII spacing default to enabled and are
-configured through the AP WebUI. No device page or button toggles them. The legacy `cnStyle`
-NVS key is ignored and preserved; startup does not write or delete it.
-
-`reader_typography.h` applies these options to TXT/EPUB and Markdown prose.
-Compression uses native glyph ink bounds, capped at 14 px while keeping 2 px of
-ink separation. Spacing adds 0, 2 or 4 px only between adjacent Han and ASCII letters
-or digits; explicit spaces and unsupported boundaries are left alone. Markdown
-code/preformatted runs, math objects and rules block contextual adjustments on
-both sides. Code uses each native 24 px glyph's actual advance, without the old
-24 px minimum character cell; this is a proportional font, not a monospaced
-font. Preserve source spaces, indentation and newlines, with no code
-justification or hyphenation. No font regeneration is required. Page geometry
-and formula internals retain their own rules.
-Reading presets select native 24/28 px fonts and geometry; interface glyphs
-remain fixed. Layout changes preserve exact source anchors. Historical cache
-layouts remain read-only migration inputs.
-
-## Progress and caches
-
-NVS `resumeV2` stores the boot scene, stable settings ID and selected library
-path in one versioned atomic record (8-byte header; byte 5 is the settings ID).
-When V2 is absent, read `resumeV1`: its boolean maps to Network or None. A corrupt
-V2 must not resurrect an old V1 snapshot, and a key must match its wire version.
-V1 and the older scalar resume fields remain read-only fallbacks; opening the
-new firmware does not rewrite them. Rotation writes and shutdown persistence
-are checked before applying
-the new state or stopping a live network session. Per-book progress retains
-the deployed NVS namespace and supported legacy keys for recovery; failures
-must not silently become page zero or permit replacement of an unsaved book.
-Rendering never writes preferences. A restored source offset remains the reading
-anchor even when reflow places it inside a different page. Opening, redraw,
-shutdown and a successful cache load must preserve that exact offset; only a
-real page change adopts the new page's start. The in-memory anchor is tied to
-the content key and the containing page, including persistence failure/retry.
-
-The layout family `0x20262000` encodes P/S, compact spacing, reading preset,
-hyphenation preference, alignment and document mode in nine low bits. A cache
-hit must match every geometry-affecting option. Double-click timing, refresh
-policy, sleep ink and artwork do not invalidate pagination. Other layouts can provide verified text
-for read-only anchor migration, but cannot supply current page boundaries or
-change the runtime style. Other geometry or extraction changes require a new
-layout family. A temporary raw Markdown fallback must not replace a valid
-semantic cache.
-
-Caches hash source bytes, verify a temporary file before replacement and keep
-one previous generation as `.bak`. A different size/mtime rejects a source before
-hashing, including backup candidates and save validation. Equal stamps are only
-a prefilter; the complete digest and before/after stamps remain required.
-Cache hits still read sources to detect
-same-size, same-timestamp replacements. Only the cache directory is written
-by the reader; AP uploads create new books separately. Cache I/O uses an 8 KiB
-buffer and yields after 128 KiB or 50 ms.
-
-TXT/EPUB layout changes must bump both `reader_cache::LAYOUT` and
-`LAYOUT_NO_HYPHENS`. Markdown uses its independent `LAYOUT_MARKDOWN`:
-adding or changing its renderer must not invalidate unrelated books.
-Its cached text is the original source, with source offsets as page starts.
-A whole-document plain-text fallback must not replace a valid Markdown cache.
-
-Migration reads validated v1 or superseded v2 caches without modifying them,
-captures a context anchor, imports the current text, maps the saved position,
-persists it, then replaces the cache. Unchanged text identities can retain
-offsets across font/layout changes. Reject unreadable or out-of-range
-bookmarks instead of silently restarting at the beginning.
-
-EPUB XML is validated before each TinyXML2 parse: at most 32 element levels,
-1 MiB decoded text and 2 MiB of conservatively estimated DOM pools.
-Pool costs use target object sizes; the device also checks available PSRAM and
-the largest free block. UTF-8/UTF-16, whitespace, numeric and fixed XHTML named
-entities are normalized without DTD loading. Auxiliary spine items follow the
-main reading order. An optional `epub::structure::Collector` preserves block/style/language ranges
-over unchanged extracted text; the production reader does not yet use it.
-Its bounded allocation and host-only spacing experiments are documented in
-[EPUB typesetting](epub-typesetting.md). No layout/cache ID changes with these
-experiments.
-
-The loop task has a 16 KiB stack; device boundary tests
-require at least 4 KiB remaining after parsing and recursive destruction.
-
-## AP transport and retries
-
-`network` owns on-demand AP/STA and uploads. `bounded_http_request` and
-`bounded_web_server` use the pinned SDK's routing/response API, bypassing its
-unbounded multipart parser. Receive/transmit work is polled in 2 KiB budgets,
-with 5-second deadlines and explicit header/body/response memory limits.
-The service exists only in A mode. N connects saved Wi-Fi and shows status/IP;
-it has no HTTP server, document push, WebSocket or subscription.
-
-Authenticated, URL-encoded AP requests use these endpoints:
-
-| Request | Contract |
-|---|---|
-| `POST /api/upload/start` | `name`, `size`, `generation`; optional `requestId` is 32 lowercase hex characters |
-| `POST /api/upload/chunk` | `id`, exact current `offset`, base64 `data`; at most 4096 decoded bytes |
-| `GET /api/upload/status?id=…` | Active `receiving` offset/size or retained `complete` receipt |
-| `POST /api/upload/commit` | `id`; finish only after all expected bytes are saved |
-| `POST /api/upload/cancel` | `id`; only cancels the matching active transaction |
-
-One transaction holds one file. Start advances the admission generation.
-Replaying the same request identity with its original name, size and generation
-returns the existing transaction or receipt; conflicting metadata is rejected.
-Clients omitting `requestId` retain the earlier protocol behavior.
-Chunks require exact offsets: after losing a response, query status before
-retrying bytes rather than blindly appending again.
-
-Commit verifies saved size and atomically renames the owned temporary file,
-then updates the library. Existing book files are never overwritten.
-Four bounded RAM completion receipts make repeated commits return the original
-result without importing again. Receipts are cleared when AP stops or storage
-changes; physical client disconnect cancels an unfinished transfer.
-The progress lease expires after 45 seconds without new bytes. Status polling
-does not extend it. There is no durable receipt or resume guarantee across a
-reboot, AP restart, card change or receipt eviction.
-
-The page uses a stable random request identity, a 12-second fetch timeout and
-at most three attempts per retryable operation. It checks offsets after lost
-chunk responses and checks completion after lost commit responses. It never
-silently creates a fresh transaction to resolve an ambiguous response; if
-status cannot establish the outcome, it asks the user to check the book list.
-
-Cookie authentication matches the exact session token; the QR query token
-bootstraps only the root page. AP is WPA2, one client and local HTTP without
-TLS. Family Wi-Fi configuration is saved by explicit POST into one versioned
-NVS blob; legacy SSID/password keys are read-only fallbacks. Passwords are
-neither echoed nor logged. A fresh 20-second STA error window starts after each
-connected-to-disconnected transition.
-
-The AP idle timeout is five minutes; polling is not activity, while a live
-transfer holds the session open within its progress lease. `networkActive`
-blocks manual light sleep. Battery/USB policy and actual measurement limits
-are in [power.md](power.md). Future LAN discovery, pairing and push are only
-a [design proposal](lan-design.md); do not expose these AP routes in N mode.
-
-## Fonts and build
-
-The public source includes two generated OFL subsets:
-
-- `src/native_font_data.h`: Noto Serif CJK SC 2.003, native 24/28 px,
-  internal derivative name `NativeFont`.
-- `src/math_font_data.h`: STIX Two Math 2.13 b171, native 14/20/28 px,
-  derivative name `PaperDIY Math`. MATH constants, italic corrections and
-  vertical variants come from the pinned OpenType source, without runtime
-  bitmap scaling.
-
-No system font, book corpus or private artwork is needed. Both generators
-verify fixed source SHA-256 values, download only when their cache is absent,
-and write outputs atomically. Keep source fonts and temporary build artifacts
-outside Git. License/provenance are in
-[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
-
-Use the Python environment from the README. After installing requirements:
+Use Python 3.12+ and the pinned requirements. The target is ESP32-S3 with
+16 MiB flash, 8 MiB OPI PSRAM and the unchanged custom partition table.
+PlatformIO pins `espressif32@6.12.0`, Arduino-ESP32 2.0.17 / ESP-IDF 4.4.7,
+M5GFX `347a23274081a105cb9fc0fc3bbf0e15c78e79c3` and
+M5Unified `e125e73f28b6b83e621e48df432af426bb2ff935`.
+Firmware must compile as GNU++11 without exception-dependent recovery; native
+tests use C++17. A host pass does not establish Xtensa compatibility.
 
 ```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-dev.txt
 pio run
-python tools/build_fonts.py
-python tools/build_math_fonts.py
 cmake -S . -B build -DSANITIZE=ON
-cmake --build build --parallel
+cmake --build build --parallel 2
 ctest --test-dir build --output-on-failure
 ```
 
-Host tests compile a generated copy of the pinned M5GFX miniz source with its
-portable byte-read path, matching ESP32 behavior. The upstream x86 path forces
-unaligned typed reads that UBSan correctly rejects. The original dependency is
-unchanged; ASan/UBSan stay enabled and undefined behavior stops the test process.
-CMake checks the expected upstream define before applying this host-only change.
+Native tests require CMake, OpenSSL development headers and Node.js 18+.
+PlatformIO installs M5GFX/miniz first; use `-DM5GFX_DIR=/path/to/M5GFX` for an
+existing pinned copy. On Homebrew macOS, CMake may need
+`-DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"`. Host-only tests use the portable
+miniz byte-read path; they do not silently modify the pinned dependency.
+Use a separate `-DSANITIZE=OFF` build for timing.
 
-Native tests require CMake, a C/C++17 compiler, Node.js 18+ and OpenSSL headers
-(`libssl-dev` on Ubuntu; `brew install openssl@3 cmake node` on macOS).
-On macOS, pass `-DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"` if needed.
-CMake rejects a missing/older Node version rather than silently omitting the
-actual frontend tests. `pio run` supplies M5GFX; a custom dependency path can
-be supplied with `-DM5GFX_DIR=…`. Font tests need the pinned source caches;
-a reported font-source skip is not evidence of raster regeneration coverage.
+The public default is native USB MODE0, CDC enabled at boot and MSC disabled
+at boot. The application exposes MSC only through U. Public builds exclude
+`PAPERDIY_DIAGNOSTICS`, `PAPERDIY_EPUB_TESTS`, `PAPERDIY_DEVICE_TESTS`,
+`PAPERDIY_NETWORK_TESTS` and external private artwork. Private configurations
+must remain outside public source; never rename a private image into a public
+release binary. Exact current sizes, hashes and hardware status belong in the
+architecture evidence record, not in a stale build command.
 
-Tests cover controls, release guards, power policy, refresh decisions,
-cache corruption/I/O failures, source fingerprints, bookmark migration,
-atomic resume records, NVS failures, real reader integration and EPUB
-syntax/encoding/resource boundaries, optional structure ranges, unchanged-text
-equivalence and structure-allocation fallback. Typography experiments check
-actual native-font positions and source coverage without changing production
-layout. Markdown tests cover source mappings,
-raw-source fallback, list/page boundaries, variable baselines, tall formulas,
-bounded/allocation-failed parsing and layout, and glyph provenance/metrics.
+## Ownership and source coordinates
 
-Network tests compile the production module against fault-injecting SD/NVS
-and radio adapters. The actual HTTP parser/server wrapper is tested for
-malformed framing, deadlines and disconnected/stalled peers. Run
-`node tests/web_ui.js` independently to exercise the actual inline production
-script with a fake DOM and transport: normal binary upload, lost start/chunk/
-commit responses, all commit responses lost, and bounded failure/cancellation.
-It checks transaction identity and offsets, not browser layout or real timing.
+`app` owns scenes/lifecycle, `input` owns button timing, `ui` draws scenes and
+`reader` owns the active document, exact anchor and page state. SD, catalogue,
+settings, NVS and delivery mutations are serialized on the application task.
+Cooperative jobs do not authorize concurrent FAT access. TinyUSB MSC callbacks
+run on the SDK task and use their own bounded ownership/mutex boundary.
 
-## Review and device evidence
+`document_format.h` owns shared admission: TXT 4 MiB, EPUB source 64 MiB,
+Markdown 1 MiB, all case-insensitive. Extracted EPUB text is at most 4 MiB.
+Reader rendering never rewrites source files or persists preferences.
 
-The review covers persistence, byte-offset recovery, bounded parsing/layout,
-upload authentication, idempotent retries and lifecycle/power gates.
-Passing native tests cannot prove actual current draw, e-paper ghosting,
-radio association or QR readability. Markdown is a first bounded subset,
-not a promise of full TeX/CommonMark rendering or universal font coverage.
-Device acceptance must still verify SD mounting, page turns, charging-only
-LED, A+B shutdown, scene restore, loading feedback, QR scans and uploaded bytes.
+Markdown uses original UTF-8 source offsets, including a leading BOM. Generated
+list markers, entities and math atoms have monotonic source/render mappings.
+EPUB bookmarks refer to unchanged canonical extracted bytes. Semantic sidecars
+must not insert presentation bytes into that identity. Keep the exact restored
+anchor even when its containing page starts earlier; only actual navigation
+adopts another page start. Invalid required recovery data must fail visibly,
+not become page zero or overwrite an unsaved book.
 
-Releases contain public source and a separately built application binary.
-See [upgrading](upgrading.md) for scope and checksums. Application-only updates
-with the unchanged partition table preserve NVS; do not erase flash or change
-book paths when preserving progress. Keep books, credentials, device backups,
-hardware logs and private shutdown assets out of release inputs.
+`resumeV2` atomically stores scene, stable settings ID and a bounded selected
+path. Missing V2 can read V1; corrupt V2 cannot revive stale V1. Wire key/version
+must match. Legacy fields remain read-only. Save and readback must succeed
+before destructive navigation, radio teardown or shutdown.
 
-`PAPERDIY_DIAGNOSTICS` enables bounded serial commands such as `STATUS`,
-`SCREEN`, `OPEN n`, `NEXT`, `PREV`, `ENTER`, `LIBRARY`, `RESCAN`,
-`SHUTDOWN_PREVIEW`, `REFRESH`, `PAGE_TEXT` and `CACHEINFO`. The last only reads
-cache headers. Also enabling `PAPERDIY_DEVICE_TESTS` adds local parser,
-typography and power checks. `MD_CHECKS` verifies measurement/drawing agreement;
-`MD_BENCH` indexes fixed synthetic prose twice without SD/NVS writes, then frees
-its sample before restoring the original adapter. Diagnostic work discards
-input accumulated while busy. Neither flag is part of a normal build.
+## EPUB extraction and chapter recovery
 
-Test-only `SD_IO n` probes an existing library source; an expanded EPUB directory
-is reported as a directory without opening it as a file. `SD_CACHE_IO n` probes
-the existing cache derived from that source path, without loading, creating or
-rebuilding a cache. Each reads at most the first 256 KiB twice, in 8 KiB chunks,
-and compares SHA-256 internally; neither filenames, content nor digest values
-are printed. Metadata reports file kind/size and captured error codes. FatFs can
-report ENOENT for a directory passed to file-open, so the probe stats first.
+`epub::Importer::begin()` validates setup/package data and constructs a stable
+primary/auxiliary chapter plan. `stepChapter()` processes one complete chapter;
+`run()` is the synchronous wrapper over the same path. It preserves the prior
+canonical byte order and text normalization. XML/deflate state is not suspended
+or serialized between calls.
 
-The 12-second read deadline and 20-second synthetic-layout deadline are
-cooperative checks between synchronous calls, not cancellation of a blocked
-SDK operation. Prefix agreement is not whole-file validation. `read_us` excludes
-hash work and is not book-open latency; `mount_hz=0` means unknown, and a mount
-frequency must instead be verified from the successful boot attempt. No clock
-or mount changes are performed by these probes.
+`sd_open::Job` in `sd_open_job.h` owns the cold EPUB opening lifecycle. Source
+hashing is still complete; a chapter still needs bounded compressed/input/DOM
+allocations. Per-byte-chunk, parser and tree-walk observers service cooperation
+and latch input. Cancellation becomes terminal only after the current chapter
+and any required checkpoint commit reach a safe boundary. These callbacks do
+not make a blocked filesystem operation preemptible, make whole-source hashing
+constant-time, or provide resumable streaming XML/deflate.
 
-`PAPERDIY_NETWORK_TESTS` additionally exposes local AP fixture hashing/cleanup.
-Cleanup recognizes only fixed fixture paths with exact SHA-256 contents and
-an exact dummy Wi-Fi record; it must never replace real saved credentials.
-Remove the flag after acceptance. An optional `PAPERDIY_SHUTDOWN_HEADER` may
-name a private bitmap header; keep it and its build configuration outside Git.
+Extraction recovery uses separate files:
 
-## Public release checks
+| Product | Contract |
+| --- | --- |
+| `.exttext` | Canonical prefix spool, at most 4 MiB; only the uncommitted suffix is writable |
+| `.ext0` / `.ext1` | Two independently checked `PXE1` commits; 192-byte header and at most 1 MiB metadata each |
+| `ECS1` inside a commit | Explicit portable Collector state, not native structs or flattened PDS |
 
-Build releases from the reviewed public branch, with diagnostics and the optional
-shutdown header disabled. `src/version.h` supplies the firmware version. Keep the
-README short; user-facing changes and upgrade details live under `docs/`.
+The bounded product is at most 6 MiB plus 384 header bytes per book. ECS1 has a
+96-byte header; its codec ceiling is 525,536 bytes, while fully used default
+Collector capacities require at most 398,560 bytes. It retains records/parents,
+resources/paths, language interns, math/TeX pools, counters and status. Ruby and
+table relationships remain in the record tree. A closed nonempty chapter ends
+with at least two canonical newlines, sealing the committed text prefix.
+Final `finish()` may clip raw semantic boundaries; every commit stores a full
+Collector snapshot, so metadata must not be saved as an append-only record tail.
 
-`python tools/check_public_source.py --index .` checks every staged source blob;
-`--tree DIR` checks the unpacked source artifact. The allowlist rejects generated
-files, private paths, artwork, credential markers and non-regular entries. It does
-not replace an outgoing-history review or the separate firmware audit. Test it
-with `python tests/public_source.py`. CI runs this gate, the pinned font-source
-checks, all native tests and the default public firmware build, with read-only
-repository permissions and Actions pinned to full commit IDs.
+A commit binds full source/dependency proof, framed chapter plan, extractor,
+text/semantic revisions, chapter cursor, prefix length/digest and metadata.
+Restart revalidates the source and every already-read directory dependency,
+including optional missing-resource sentinels. Size/mtime alone is insufficient.
+Corrupt/torn/newer slots can fall back to an older checked commit. If no commit
+survives, recreate the fresh package/title and Collector state before appending
+new text; failed verification may already have overwritten scratch bytes.
 
-Source archives come from the exact release commit. Firmware packages contain
-only the application image, upgrade instructions, checksums and matching license
-notices. Record the source commit and SHA-256 digests. Do not package a working
-directory, merged flash, NVS, SD content, logs, source font caches or private builds.
+Only closed chapters are checkpoint frontiers. Current scheduling starts after
+the first nonempty prefix, then requires at least 256 KiB or 64 additional
+chapters and one second since the previous successful save; cancellation and
+completion request a commit. Transfers/readback are at most 8 KiB per poll.
+Open, flush, rename and individual parser/SDK calls remain synchronous.
 
-## Web settings and sleep artwork
+Allocation fallback and a whole-import flat retry are volatile: they cannot
+replace a richer semantic cache or become durable extraction success.
+Deterministic budget fallback retains its explicit status. No ordinary book
+identity, bookmark key or NVS progress is published for an unfinished prefix.
+On the journal-enabled path, a fully validated completed extraction is committed
+before `indexBook()` and ordinary reading publication. Optional journal failure
+can permit complete RAM import with an explicit volatile outcome. Every poll
+and final publication independently require the same nonzero opening lease.
 
-`reader_settings.h` owns validated defaults, bounded geometry presets and the
-20-byte `readerCfgV1` NVS wire record. It has a version, reserved-byte checks and
-CRC; missing/corrupt values use defaults without a startup write. A successful
-single-blob write publishes a new runtime configuration. No legacy preference,
-Wi-Fi or bookmark key is rewritten. The legacy `cnStyle` remains ignored.
+## Semantic layout and fonts
 
-`web_page.h` contains the English AP page; `/api/settings` GET/POST and
-`/api/artwork` POST use the same session authentication as book upload. Full
-settings requests are validated before narrowing, persistence or application.
-Uploads block concurrent setting/image-choice mutations. Reading already left
-its scene and saved its anchor before AP mode; the next book open uses the new
-cache identity and reflows. No background network service is added.
+Collector uses one checked optional allocation. A failure discards all
+observable sidecar records; flat extraction must remain complete. The renderer
+consumes PDS1/PDS2/PDS3 over the same canonical bytes. See
+[EPUB typesetting](epub-typesetting.md) for CSS, vertical/ruby/TCY, MathML/table
+limits, fallback and the quantified Japanese font audit.
 
-Artwork shares the bounded, receipt-backed chunk protocol with `kind=art`.
-The `PDI1` mask has a 16-byte header (magic, LE width/height, four reserved zero
-bytes, LE payload CRC32) and row-aligned MSB-first black bits, at most 540×960.
-The browser handles image codecs; firmware validates bounded dimensions,
-length and checksum before rendering. It writes an inactive SD slot and only
-then atomically switches the NVS image choice. Failed uploads or NVS writes
-leave the active image intact. Two `/.paperdiy/shutdown-{1,2}.bin` slots are
-excluded from book discovery. Remove disables the choice before deleting these
-slots; with no card inserted, the disabled choice persists without SD cleanup.
-The private compiled fallback remains outside the repository.
+Markdown uses vendored MD4C 0.5.2 with documented allocation, source-range,
+yield and failure-cleanup changes in [PATCHES.md](../lib/md4c/PATCHES.md).
+Limits are 1 MiB source and rendered text, 4,096 runs, 8,192 mappings and a
+512 KiB parser budget. Parse failure exposes the full original source.
+
+Math is a bounded TeX-like renderer, not TeX execution: at most 4,096 source
+bytes, 256 nodes, depth 16, 1,024 commands and an 8 × 8 matrix. Admission reserves
+128 KiB workspace and eight fixed command slots (about another 128 KiB on the
+target). Slots form a bounded source-span replacement ring, not an LRU.
+Recomputation after admission does not allocate. An admitted formula consumes
+its complete source span once; display math owns a row. Unsupported syntax,
+missing glyphs and geometry/resource failures preserve complete source fallback.
+
+All glyphs are native bitmaps, without runtime scaling:
+
+| Header | Source / sizes |
+| --- | --- |
+| `native_font_data.h` | Noto Serif CJK SC 2.003; 24/28 px, derivative NativeFont |
+| `vertical_font_data.h` | Same pinned source's JAN/vertical forms at 24/28 px and ruby at 12/14 px, derivative PaperDIY JP |
+| `math_font_data.h` | STIX Two Math 2.13 b171; 14/20/28 px with selected OpenType MATH metrics, derivative PaperDIY Math |
+
+Orientation data is Unicode 17.0.0 under Unicode License v3. Regeneration uses
+`tools/build_fonts.py`, `build_vertical_fonts.py`, `build_math_fonts.py` and
+fixed source hashes, never installed/private fonts. The recorded JP derivative
+regeneration used Python 3.14.8, Pillow 12.2.0, FreeType 2.14.3 and fontTools
+4.62.1; keep actual toolchain provenance distinct from the development
+requirements' Pillow 13.0.0 pin. Exact-generation tests must not be reported as
+passed when fixed ignored source caches are absent.
+
+## Cache, pagination and trust
+
+The layout family is `0x2026a000`; eleven low bits bind the relevant geometry,
+mode, language and semantic presence. `TEXT_REVISION=1` is unchanged; EPUB
+requires `semanticRevision=2`. Old semantics and intermediate `0x20268000`
+layouts supply checked migration anchors only, not current pages or direct
+cached-text reflow. Fresh import recovers missing semantics while unchanged
+canonical text preserves progress. TXT/Markdown retain audited text-family reuse.
+
+Current complete caches use version 3. Validation checks source/dependencies,
+lengths, digest, UTF-8, semantic bounds and strictly increasing pages before
+exposing state. A same-size/same-mtime source can have different bytes. Two
+64-entry volatile rings memoize full fingerprints and dependency graphs only
+within an exclusive storage epoch; remount, source mutation, I/O error, sleep
+entry and USB handoff revoke them. Reboot requires fresh validation.
+
+EPUB first measures a page near the exact saved anchor. The local window holds
+at most 32 starts; backtracking uses at most 16 page measurements from a 4 KiB earlier seed,
+plus the same bounded word/UTF-8 boundary adjustment. Canonical indexing separately advances at most two pages under a
+12 ms soft budget per application-loop visit. One page can exceed that budget.
+Completion updates the footer, not the visible anchor. TXT/Markdown retain
+synchronous indexing.
+
+Partial pagination uses `.idx0`/`.idx1`, at most 524,624 bytes together. Its
+identity includes layout, complete text/semantics and source/dependencies.
+Saves begin at 32 pages, then need 128 additional pages and five seconds.
+Restore cannot move the already visible anchor or invent a whole-book total.
+These are page-index checkpoints, separate from chapter extraction commits.
+
+`DeferredCacheWrite` starts after complete indexing and a checked progress save.
+It snapshots metadata/pages, borrows stable text and reads/writes/verifies at
+most 8 KiB per step. Pointer, length, key, layout and lease guard every step.
+Only validated temporary output can replace the primary, retaining a checked
+`.bak`. An Arduino `flush()`/FAT rename is not proof of power-loss durability.
+
+An optional `.chunks` manifest binds the complete cache prefix and SHA-256 of
+each 8 KiB text block; at most 512 blocks / 16,504 manifest bytes. Missing,
+stale or damaged manifests fall back to full verification. The 4 MiB address
+reservation and global offsets remain. Pins include up to 256 bytes of
+lookbehind, the next canonical page and at least 1,024 bytes of lookahead, clipped at EOF.
+Unloaded bytes cannot be read by layout. Ruby/math/table-row spans must be fully
+resident; exceptional spans request full verified materialization. Failure
+restores the prior pinned view and exact anchor without additional I/O.
+
+## Settings and display contracts
+
+A setting page is a virtual book immediately before ordinary books, using the
+same row/navigation. Add one only for implemented functionality, without empty
+placeholders. Stable IDs are None=0 and Network=1; retired ID2 maps read-only to
+Network and cannot be reused. The first screen has one settings row and 21
+ordinary books. Physical button groups remain independent across rotation.
+
+Punctuation compression and Han/ASCII spacing default on and are configured
+only through the AP WebUI. Ignore and preserve legacy `cnStyle`. Read current
+style from validated `readerCfgV1`, a 20-byte versioned/CRC record with bounds
+and reserved-byte checks. Save/readback precedes applying changes. Geometry
+settings affect cache identity; click timing, refresh cadence and artwork do not.
+
+P/S changes use native ink and preserve explicit spaces. Code/pre/math/rule
+boundaries stop contextual prose adjustments. Code is native 24 px proportional
+text, not synthesized monospace; it preserves indentation and disables normal
+justification/hyphenation. Panel completion precedes clock lowering or shutdown.
+Power evidence and U's 240 MHz ownership gate are in [power](power.md).
+
+Sleep artwork is optional `PDI1`: 16-byte header, LE dimensions, reserved zero
+bytes, payload CRC32 and row-aligned MSB-first pixels, at most 540×960. The
+browser fits/converts locally, without upscaling, and previews it. The device
+writes/verifies an inactive SD slot before changing selection. Persist “none”
+before removal; “firmware default” restores the compiled fallback. Missing or
+invalid custom artwork uses that fallback. Book files/progress are unaffected.
+
+## AP and preparation
+
+A provides a WPA2 single-client AP with English settings/provisioning/upload UI
+and local HTTP; no TLS is claimed. An exact session cookie authenticates API
+requests; the QR query token bootstraps only the root page. Routes do not expose
+passwords or grant authority on the LAN receiver. `wifiCfgV1` stores a checked
+Wi-Fi record; legacy SSID/password keys are read-only fallback. NVS is not encrypted.
+
+The HTTP adapter bounds headers to 3 KiB, request bodies to 17,000 bytes,
+arguments to 16 and buffered responses to 32 KiB. I/O work is at most 2 KiB per
+poll with five-second ordinary deadlines. Immutable compiled assets can stream
+from flash up to 1 MiB under a separate 45-second response deadline. This avoids
+an asset-sized RAM response; it does not preempt one blocking SDK operation.
+
+AP admission checks name, format, size, storage, catalogue capacity, generation
+and optional 128-bit request identity. Chunks are at most 4 KiB with exact
+offsets. Four RAM completion receipts support same-session retries; AP restart,
+card change or receipt eviction ends that recovery window. The browser keeps a
+stable request ID, 12-second fetch deadline and at most three retry attempts;
+unknown completion asks the user to check rather than silently import another copy.
+The active transfer lease is 45 seconds of progress; AP closes after five idle
+minutes, and background polling does not extend it.
+
+The browser Worker/WASM and host CLI use the production importer/PDS serializer
+and PDT1 extractor2. Source-first upload uses the returned filename for the
+sidecar. Preparation supplies text/semantics, never a device page table or
+bookmark. Source SHA-256 and payload SHA-256 are integrity checks, not publisher
+signatures. See [prepared content](prepared-content.md) for commands, fields,
+trust, hard Worker cancellation and regeneration.
+
+## LAN identity and managed Push
+
+`lan_nvs::Store` owns only `paperlan`. `nvs_get_blob` distinguishes Absent,
+Present and Error; only NOT_FOUND permits first creation. Identity key and
+certificate share one checked blob; at most four client verifier records share
+another. Labels are nonempty valid UTF-8, at most 48 bytes, without C0/C1.
+Open/type/read/commit errors fail closed. Uncertain credential mutation
+invalidates the registry until verified reload and closes admission after the
+active response drains. Secrets use constant-time comparison and non-elidable
+zeroization on the target.
+
+N exists only while explicitly selected. Device-specific P-256 TLS 1.2 uses
+ECDHE-ECDSA/AES-128-GCM; the sender verifies exact certificate-DER SHA-256 before
+any HTTP, token or pairing secret. Bearer authorization is separate from AP
+cookies/Wi-Fi. Two 16 KiB record capacities allocate 33,434 internal buffer bytes
+on the pinned SDK, plus TLS/crypto contexts. PSRAM cannot supply that internal
+heap. Handshake, idle and absolute deadlines are cooperative, not crypto preemption.
+
+The bounded store has one transaction, exact-offset 4 KiB chunks, 8 KiB
+verification steps and sixteen shared client-scoped receipt slots. Ordinary
+files never overwrite books. Push is at most 16 KiB Markdown in two owned SD
+slots; fixed `pushRead0`/`pushRead1` progress records bind digest/length, avoiding
+one NVS key per revision. Push bypasses ordinary page-cache/resident reuse.
+Receipt replay precedes revision checks; identical validated Push content is a
+no-op preserving its revision/anchor. Unknown publication stays Uncertain,
+with recovery based on stored bytes, not an exactly-once FAT claim.
+Protocol/CLI/physical inventory are in [LAN protocol](lan-protocol.md).
+
+## Pinned USB DCD correction
+
+The unmodified MIT-licensed controller source is pinned to lib-builder commit
+`62d849ae49ac9b71c408bcc35039a5e487802806`; its exact checksum and notices are in
+[third-party notices](../THIRD_PARTY_NOTICES.md) and the
+[vendor record](../tools/vendor/arduino-esp32-2.0.17/README.md).
+`patch_usb_dcd.py` serializes all three FIFO-empty mask updates with one shared
+task/ISR spinlock. IN completion retires the old mask and acknowledges pending
+completion/timeout before publishing the event, then skips old-transfer work.
+TXFEMP is read-only. Critical sections cover only the register update, with no
+event, queue, log or FIFO copy under the lock.
+
+The POST hook `pio_usb_dcd.py` checks source/archive/object identities, compiles
+a build-local copy and replaces exactly one SDK library token with the checked
+archive. The installed framework stays unchanged; firmware builds need no
+network download. Verify final link-map provenance as well as the portable
+`tests/usb_dcd_patch.py` regressions; pass its `--framework` and `--ar` arguments
+to include the installed-archive check. This correction has separate hardware
+acceptance and does not identify the cause of a particular disconnect.
+
+## USB ownership and firmware recovery
+
+The default MODE0 build provides CDC and app-controlled MSC. U first saves
+progress, stops storage/network jobs, closes handles, revokes leases and
+unmounts FAT. HostOwned, ExitRequested and Fault keep exclusive host ownership;
+only accepted host eject and successful raw-driver release permit local FAT.
+PREVENT/ALLOW, synchronization and START STOP UNIT govern that transition.
+Disconnect, suspend, USB reset and idle time are not safe eject.
+
+Callbacks transfer at most 4 KiB. The latest source holds 240 MHz throughout
+ownership and retains first media/driver error plus backend/card-detect details.
+A Fault cannot be treated as owned=0. Shutdown/reset/1200 touch are guarded while
+the host owns the medium. A disposable RAM-disk test never accesses the SD card.
+The RAM-disk MSC trial passed write/readback, ordinary eject and remount.
+Actual-SD USB, the new progressive-pagination
+fixture and final overlay restoration after the RGB565 correction remain
+unverified. See the architecture evidence table; the RAM result does not
+establish that raw SD USB is repaired.
+
+Only after safe ownership release, native CDC recovery may use 1200 baud with DTR and RTS both asserted, followed by a newly enumerated ROM port.
+Confirm the exact reader,
+partition layout and selected application binary before writing only app0.
+Do not erase NVS, flash bootloader/partition data or change book paths when
+preserving progress. Never reset or flash while the host owns the medium.
+
+## Tests, diagnostics and publication
+
+Run relevant regressions, then required full native/pinned-SDK checks. Native
+fixtures cover malformed XML/ZIP, UTF-8/source mappings, PDS/ECS/PDT bounds,
+chapter and page restart, torn writes, poisoned unpinned text, exact anchors,
+allocation failure, actual ink and formula primitive counts, geometry/footer/
+rotation, protocol replay, persistence errors and USB ownership. A draw/index
+parity pass alone cannot establish that an object was painted only once.
+
+`PAPERDIY_DIAGNOSTICS` exposes bounded local commands including STATUS, SCREEN,
+PAGE_TEXT, OPEN, navigation and CACHEINFO. Offset and exact anchor are separate
+fields. OPEN/NEXT/PREV are mutations, not read-only probes. Optional EPUB/DEVICE/
+NETWORK test flags expose only synthetic acceptance helpers; none is public.
+`SD_IO` and `SD_CACHE_IO` read at most 256 KiB twice in 8 KiB chunks, comparing
+SHA internally without printing names/content/digests; directories are classified
+before file-open. Prefix agreement is not whole-file validation, and `read_us`
+is not book-open time. Deadlines are cooperative; they do not cancel a blocked
+filesystem call. No mount clock change is performed by the probe.
+
+Keep device logs, framebuffers, backups, credentials, originals and custom art
+outside public source. Native tests cannot establish electrical current,
+battery lifetime, card endurance, physical wake behavior, QR readability or
+wireless throughput. Report preparation, delivery, device acceptance and display
+separately. Hardware data belongs in the architecture evidence table with its
+actual build scope.
+
+Use `python tools/check_public_source.py --index .` for the entire staged blobs,
+and `--tree DIR` for an unpacked source artifact. The allowlist and private
+markers do not replace human diff/outgoing-history review or a firmware audit.
+Run `python tests/public_source.py`. Source releases must come from the reviewed
+commit; firmware packages contain only the public app image, checksums,
+upgrade guidance and matching licenses. Never package a working tree, handoff,
+NVS/SD/flash dump, books, private logs/source-font caches or private artwork.
+A successful test/CI run is not authorization to commit, push, tag or publish.
