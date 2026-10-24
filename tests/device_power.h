@@ -1,4 +1,5 @@
 #pragma once
+#include "console.h"
 #ifdef PAPERDIY_DEVICE_TESTS
 // One opt-in, one-book retention check. Polling is RAM-only; completion writes
 // one result blob in its own namespace, never the reader's progress namespace.
@@ -110,7 +111,7 @@ inline int matchValue(uint32_t match) {
 
 inline void printResult(const Record& record, bool persisted) {
   bool validBook = !(record.flags & (BookChanged | MissingBook));
-  Serial.printf(
+  Console.printf(
       "POWER_RESULT nonce=%08x schema=%u persisted=%d reason=%u valid_book=%d "
       "book_changed=%d missing_book=%d sleep_seen=%d battery_sleep_seen=%d "
       "unknown_source_seen=%d elapsed_ms=%u observation_ms=%u sleep_us=%llu "
@@ -204,18 +205,18 @@ inline void finish(Reason reason) {
   test.haveResult = true;
   test.saved = writeResult(record);
   printResult(record, test.saved);
-  if (!test.saved) Serial.println("POWER_RESULT_SAVE_FAILED namespace=powercheck");
+  if (!test.saved) Console.println("POWER_RESULT_SAVE_FAILED namespace=powercheck");
   powerActivity();
 }
 
 inline void arm() {
   State& test = state();
   if (test.armed) {
-    Serial.printf("POWER_ARM already_armed=1 nonce=%08x\n", unsigned(test.record.nonce));
+    Console.printf("POWER_ARM already_armed=1 nonce=%08x\n", unsigned(test.record.nonce));
     return;
   }
   if (!loaded()) {
-    Serial.println("POWER_ARM failed=no_loaded_book");
+    Console.println("POWER_ARM failed=no_loaded_book");
     return;
   }
   powerActivity();
@@ -238,7 +239,7 @@ inline void arm() {
   test.firstSleepAt = 0;
   test.haveResult = test.saved = false;
   test.armed = true;
-  Serial.printf("POWER_ARM nonce=%08x page=%u offset=%u key=%s bytes=%u pages=%u "
+  Console.printf("POWER_ARM nonce=%08x page=%u offset=%u key=%s bytes=%u pages=%u "
                 "text_crc=%08x index_crc=%08x window_ms=%u nvs_writes=0\n",
                 unsigned(test.record.nonce), unsigned(test.record.originalPage),
                 unsigned(test.record.originalOffset), test.record.originalKey,
@@ -265,7 +266,7 @@ inline bool parseNonce(const char* text, uint32_t& value) {
 inline void report(uint32_t expectedNonce) {
   State& test = state();
   if (test.armed) {
-    Serial.printf("POWER_REPORT state=armed nonce=%08x expected=%08x expected_match=%d\n",
+    Console.printf("POWER_REPORT state=armed nonce=%08x expected=%08x expected_match=%d\n",
                   unsigned(test.record.nonce), unsigned(expectedNonce),
                   !expectedNonce || expectedNonce == test.record.nonce);
     return;
@@ -274,15 +275,15 @@ inline void report(uint32_t expectedNonce) {
   bool persisted = !test.haveResult || test.saved;
   if (test.haveResult) record = test.record;
   else if (!readResult(record)) {
-    Serial.println("POWER_REPORT state=missing_or_invalid");
+    Console.println("POWER_REPORT state=missing_or_invalid");
     return;
   }
   if (expectedNonce && expectedNonce != record.nonce) {
-    Serial.printf("POWER_REPORT state=stale expected=%08x stored=%08x\n",
+    Console.printf("POWER_REPORT state=stale expected=%08x stored=%08x\n",
                   unsigned(expectedNonce), unsigned(record.nonce));
     return;
   }
-  Serial.printf("POWER_REPORT state=complete nonce=%08x expected=%08x latest_only=%d\n",
+  Console.printf("POWER_REPORT state=complete nonce=%08x expected=%08x latest_only=%d\n",
                 unsigned(record.nonce), unsigned(expectedNonce), !expectedNonce);
   printResult(record, persisted);
 }
@@ -293,12 +294,12 @@ inline bool devicePowerCommand(const String& command) {
   if (command == "POWER_ARM") arm();
   else if (command == "POWER_FINISH") {
     if (state().armed) finish(Explicit);
-    else Serial.println("POWER_FINISH armed=0");
+    else Console.println("POWER_FINISH armed=0");
   } else if (command == "POWER_REPORT") report(0);
   else if (command.startsWith("POWER_REPORT ")) {
     uint32_t nonce;
     if (parseNonce(command.c_str() + 13, nonce)) report(nonce);
-    else Serial.println("POWER_REPORT failed=expected_8_hex_nonce");
+    else Console.println("POWER_REPORT failed=expected_8_hex_nonce");
   } else return false;
   return true;
 }

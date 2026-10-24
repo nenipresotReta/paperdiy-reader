@@ -16,7 +16,7 @@
 int readerGlyphWidth(uint32_t codepoint);
 uint32_t readerCodepoint(const char* utf8, size_t bytes);
 void drawReaderGlyph(const char* utf8, size_t bytes, int x, int y,
-                     uint32_t foreground);
+                     uint16_t foreground);
 
 class SimDisplay {
  public:
@@ -30,6 +30,7 @@ class SimDisplay {
   int cursorX = 0, cursorY = 0;
   int rotation = 0;
   uint32_t textFg = TFT_BLACK;
+  void (*observe)(int,int,int,int,uint32_t)=nullptr;
 
   SimDisplay() : fb(W * H, 255), panel(W * H, 255) {}
 
@@ -60,6 +61,7 @@ class SimDisplay {
   }
 
   void fillRect(int x, int y, int w, int h, uint32_t color) {
+    if(observe)observe(x,y,w,h,color);
     int x0 = std::max({0, x, clipX0}), x1 = std::min({W, x + w, clipX1});
     int y0 = std::max({0, y, clipY0}), y1 = std::min({H, y + h, clipY1});
     if (x0 >= x1 || y0 >= y1) return;
@@ -74,6 +76,7 @@ class SimDisplay {
   }
 
   void drawFastHLine(int x, int y, int w, uint32_t color) {
+    if(observe)observe(x,y,w,1,color);
     if (w <= 0) return;
     int x0 = std::max({0, x, clipX0}), x1 = std::min({W, x + w, clipX1});
     if (x0 >= x1 || y < clipY0 || y >= clipY1) return;
