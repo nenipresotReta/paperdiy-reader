@@ -28,6 +28,7 @@ struct HTTPUpload {
 struct MockResponse {
  int code=0;
  String type,body;
+ size_t contentLength=0;
  std::map<std::string,String> headers;
 };
 class WebServer {
@@ -77,12 +78,14 @@ class WebServer {
   bool hasHeader(const char* key)const{return header(key).length()>0;}
   HTTPUpload& upload(){return uploadState;}
   void sendHeader(const char* key,const String& value,bool=false){response.headers[key]=value;}
+  void setContentLength(size_t length){_contentLength=length;}
   void send(int code,const char* type,const String& body=""){
     response.code=code;response.type=type;response.body=body;
+    response.contentLength=_contentLength==CONTENT_LENGTH_NOT_SET?body.length():_contentLength;
     if(_currentClient){
       String output="HTTP/1.1 "+String(code)+" Response\r\nContent-Type: "+type+"\r\n";
       for(const auto& [key,value]:response.headers)output+=String(key)+": "+value+"\r\n";
-      output+="Content-Length: "+String(body.length())+"\r\n\r\n"+body;
+      output+="Content-Length: "+String(response.contentLength)+"\r\n\r\n"+body;
       _currentClientWrite(output.c_str(),output.length());
     }
   }
@@ -97,6 +100,7 @@ class WebServer {
   }
   void prepare(const String& cookie=""){
     args.clear();requestHeaders.clear();response={};uploadState={};
+    _contentLength=CONTENT_LENGTH_NOT_SET;
     if(cookie.length())requestHeaders["Cookie"]=cookie;
   }
   void invoke(const char* path,HTTPMethod method=HTTP_GET){

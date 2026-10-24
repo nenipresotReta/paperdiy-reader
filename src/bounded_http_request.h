@@ -121,7 +121,7 @@ class BoundedHttpRequest {
       } else if (name == "host") {
         if (hasHost || value.empty()) return bad(400);
         hasHost = true;
-      } else if (name == "cookie") {
+      } else if (name == "cookie" || name == "authorization") {
         for (const auto& prior : headers) if (prior.first == name) return bad(400);
       }
       headers.emplace_back(name, value);

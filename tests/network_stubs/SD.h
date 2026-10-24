@@ -39,7 +39,7 @@ struct MockSD {
  std::map<std::string,std::shared_ptr<MockNode>> files;
  bool mounted=true,failOpen=false,failMkdir=false,failRename=false,failWrite=false;
  uint64_t capacity=64ull*1024*1024*1024,used=0;
- unsigned renames=0,removes=0;
+ unsigned renames=0,removes=0,failRenameAt=0;
  uint8_t cardType()const{return mounted?CARD_SD:CARD_NONE;}
  uint64_t totalBytes()const{return mounted?capacity:0;}
  uint64_t usedBytes()const{return used;}
@@ -64,7 +64,7 @@ struct MockSD {
    used=used>=it->second->size?used-it->second->size:0;files.erase(it);return true;
  }
  bool rename(const String& from,const String& to){
-   ++renames;if(!mounted||failRename||files.count(to.c_str()))return false;
+   ++renames;if(!mounted||failRename||renames==failRenameAt||files.count(to.c_str()))return false;
    auto it=files.find(from.c_str());if(it==files.end()||it->second->openHandles)return false;
    files[to.c_str()]=it->second;files.erase(it);return true;
  }

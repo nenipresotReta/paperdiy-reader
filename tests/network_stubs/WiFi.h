@@ -49,12 +49,13 @@ class WiFiServer {
 struct MockWiFi {
  int currentMode=WIFI_OFF,connection=WL_DISCONNECTED;
  uint8_t stations=0,maxStations=0;
- bool failAp=false,persistentEnabled=true,sleepEnabled=false;
+ bool failAp=false,failOff=false,persistentEnabled=true,sleepEnabled=false;
  unsigned beginCalls=0;
  String joinedSsid,joinedPass;
  IPAddress staIp{192,168,1,25};
  void persistent(bool value){persistentEnabled=value;}
- bool mode(int value){currentMode=value;return true;}
+ bool mode(int value){if(value==WIFI_OFF&&failOff)return false;currentMode=value;return true;}
+ int getMode()const{return currentMode;}
  bool softAP(const char*,const char*,int=1,int=0,int max=4){maxStations=max;return !failAp;}
  IPAddress softAPIP()const{return {};}
  uint8_t softAPgetStationNum()const{return stations;}

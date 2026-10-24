@@ -7,11 +7,23 @@ class SocketServer : public BoundedWebServer {
  public:
   bool writable = true;
   size_t writeLimit = POLL_BYTES, largestWrite = 0;
+  const char* flashStart = nullptr;
+  size_t flashSize = 0, directFlashBytes = 0, bufferedBytes = 0;
  protected:
+  size_t _currentClientWrite(const char* bytes, size_t size) override {
+    bufferedBytes += size;
+    return BoundedWebServer::_currentClientWrite(bytes, size);
+  }
   int writeAvailable(const char* bytes, size_t size) override {
     largestWrite = std::max(largestWrite, size);
     if (!writable) return 0;
-    return int(_currentClient.write(bytes, std::min(size, writeLimit)));
+    const size_t written = std::min(size, writeLimit);
+    if (flashStart && uintptr_t(bytes) >= uintptr_t(flashStart) &&
+        uintptr_t(bytes) < uintptr_t(flashStart) + flashSize) {
+      assert(uintptr_t(bytes) + written <= uintptr_t(flashStart) + flashSize);
+      directFlashBytes += written;
+    }
+    return int(_currentClient.write(bytes, written));
   }
 };
 
@@ -155,6 +167,65 @@ void boundedResponses() {
   assert(oversize->output.find("503 ") != std::string::npos);
   assert(oversize->output.find(std::string(100, 'A')) == std::string::npos);
 }
+void flashResponses() {
+  static const std::string asset = [] {
+    std::string bytes(65537, '\0');
+    for (size_t i = 0; i < bytes.size(); ++i) bytes[i] = char(i % 251);
+    return bytes;
+  }();
+  SocketServer server;
+  server.flashStart = asset.data(); server.flashSize = asset.size();
+  server.on("/", HTTP_GET, [&] {
+    server.sendHeader("Content-Encoding", "gzip");
+    server.sendFlash(200, "application/wasm", reinterpret_cast<const uint8_t*>(asset.data()), asset.size());
+  });
+  auto client = server.queueClient(GET);
+  pollClosed(server, client);
+  const size_t headerEnd = client->output.find("\r\n\r\n") + 4;
+  assert(client->output.find("Content-Length: 65537\r\n") != std::string::npos);
+  assert(client->output.substr(headerEnd) == asset);
+  assert(server.directFlashBytes == asset.size());
+  assert(server.bufferedBytes < 1024); // No body copy through the RAM response buffer.
+
+  server.writeLimit = 701;
+  auto partial = server.queueClient(GET);
+  pollClosed(server, partial);
+  assert(partial->output == client->output);
+  for (uint32_t start : {uint32_t(10), uint32_t(UINT32_MAX - 100)}) {
+    testClock = start;
+    server.writable = false;
+    auto stalled = server.queueClient(GET);
+    server.handleClient();
+    testClock += BoundedWebServer::REQUEST_TIMEOUT_MS - 1;
+    server.handleClient(); assert(stalled->open);
+    ++testClock; server.handleClient(); assert(!stalled->open);
+    // Making occasional progress cannot keep an asset connection forever.
+    server.writable = true; server.writeLimit = 1;
+    auto slow = server.queueClient(GET);
+    server.handleClient();
+    for (unsigned i = 0; i < 11; ++i) {
+      testClock += 4000; server.handleClient(); assert(slow->open);
+    }
+    testClock += 1000; server.handleClient(); assert(!slow->open);
+  }
+  server.writeLimit = BoundedWebServer::POLL_BYTES;
+  auto interrupted = server.queueClient(GET);
+  server.handleClient(); assert(interrupted->open);
+  server.stop(); assert(!interrupted->open);
+  server.on("/small", HTTP_GET, [&] { server.send(200, "text/plain", "small"); });
+  auto small = server.queueClient("GET /small HTTP/1.1\r\nHost: x\r\n\r\n");
+  pollClosed(server, small);
+  assert(small->output.substr(small->output.find("\r\n\r\n") + 4) == "small");
+  size_t invalidSize = 0;
+  server.on("/invalid", HTTP_GET, [&] {
+    server.sendFlash(200, "application/wasm", reinterpret_cast<const uint8_t*>(asset.data()), invalidSize);
+  });
+  for (size_t size : {size_t(0), BoundedWebServer::MAX_FLASH_RESPONSE + 1}) {
+    invalidSize = size;
+    auto invalid = server.queueClient("GET /invalid HTTP/1.1\r\nHost: x\r\n\r\n");
+    pollClosed(server, invalid); assert(server.response.code == 503);
+  }
+}
 }
 
 int main() {
@@ -162,5 +233,6 @@ int main() {
   rejectAndRecover();
   incompleteRequestDeadlines();
   boundedResponses();
+  flashResponses();
   std::cout << "bounded HTTP transport: routing, framing, per-poll budget, timeout, overflow, cleanup passed\n";
 }

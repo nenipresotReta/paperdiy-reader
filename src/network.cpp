@@ -1,6 +1,9 @@
+#include "console.h"
 #include <WiFi.h>
 #include <DNSServer.h>
 #include <SD.h>
+#include <mbedtls/sha256.h>
+#include "prepared_epub.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -13,12 +16,21 @@
 #include "sd_reader.h"
 #include "reader_settings.h"
 #include "shutdown_art.h"
+#include "storage_validation.h"
 #include "web_page.h"
+#include "prepared_web_assets.h"
+#include "prepare_worker.h"
+#include "lan_service.h"
 
 namespace {
+static_assert(sizeof(prepared_web_assets::CORE_JS_GZ)+sizeof(prepared_web_assets::CORE_WASM_GZ)+
+              sizeof(PREPARE_WORKER_JS)<=BoundedWebServer::MAX_FLASH_RESPONSE,
+              "Browser preparation assets exceed the bounded flash budget");
 BoundedWebServer* web=nullptr;
 DNSServer dns;
 bool apRunning=false,staRunning=false;
+bool radioStopFailed=false;
+bool deliveryDirty=false,receiverAttempted=false;
 uint32_t apActivity=0,staStarted=0,uploadGeneration=0;
 String apToken;
 
@@ -32,7 +44,7 @@ constexpr char TEMP_PREFIX[]="paperdiy-upload-";
 
 struct UploadState {
   File file;
-  bool active=false,art=false;
+  bool active=false,art=false,prepared=false;
   String id,temp,finalPath,sourceName;
   uint32_t expected=0,total=0,lastActivity=0,requestGeneration=0;
 } upload;
@@ -41,11 +53,14 @@ struct UploadState {
 struct UploadReceipt {
   String id,sourceName,finalName;
   uint32_t size=0,requestGeneration=0;
+  bool prepared=false,art=false;
 };
 constexpr size_t RECEIPT_COUNT=4;
 UploadReceipt receipts[RECEIPT_COUNT];
 size_t nextReceipt=0;
 uint8_t chunkBuffer[UPLOAD_CHUNK_SIZE];
+mbedtls_sha256_context preparedSha;
+bool preparedShaActive=false;
 
 
 
@@ -113,11 +128,16 @@ bool validText(const String& text){
   }
   return true;
 }
-String validName(const String& name){
-  if(name.length()==0||name.length()>96||name.charAt(0)=='.'||!validText(name))return "";
+String validName(const String& name,bool prepared=false){
+  // A valid 96-byte original may gain "-99" on collision and ".pdt" when
+  // paired. Derived names must still refer to an existing unique source leaf.
+  if(name.length()==0||name.length()>(prepared?103u:96u)||name.charAt(0)=='.'||!validText(name))return "";
   if(name.charAt(name.length()-1)==' '||name.charAt(name.length()-1)=='.')return "";
   for(size_t i=0;i<name.length();++i)if(strchr("/\\:*?\"<>|",name.charAt(i)))return "";
-  if(document_format::detect(name.c_str())==document_format::Kind::Unsupported)return "";
+  const String original=prepared&&name.length()>4?name.substring(0,name.length()-4):name;
+  String lower=name;lower.toLowerCase();
+  if(prepared){if(!lower.endsWith(".epub.pdt")||document_format::detect(original.c_str())!=document_format::Kind::Epub)return "";}
+  else if(document_format::detect(name.c_str())==document_format::Kind::Unsupported)return "";
   return name;
 }
 bool parseUnsigned(const String& value,uint32_t& number){
@@ -130,7 +150,7 @@ bool parseUnsigned(const String& value,uint32_t& number){
   }
   number=result;return true;
 }
-bool cardReady(){return sdOK&&digitalRead(48)==LOW&&SD.cardType()!=CARD_NONE;}
+bool cardReady(){return sdOK&&!sdOwnedByUsb()&&digitalRead(48)==LOW&&SD.cardType()!=CARD_NONE;}
 uint64_t freeBytes(){
   if(!cardReady())return 0;
   const uint64_t total=SD.totalBytes(),used=SD.usedBytes();
@@ -145,6 +165,7 @@ String uniquePath(const String& path){
   return "";
 }
 void resetUpload(){
+  if(preparedShaActive){mbedtls_sha256_free(&preparedSha);preparedShaActive=false;}
   if(upload.file)upload.file.close();
   if(upload.temp.length()&&cardReady())SD.remove(upload.temp);
   upload=UploadState{};
@@ -201,17 +222,26 @@ void handleRoot(){
   touchAp();
   web->sendHeader("Set-Cookie","diy_token="+apToken+"; Path=/; HttpOnly; SameSite=Strict");
   web->sendHeader("Cache-Control","no-store");
-  web->sendHeader("Content-Security-Policy","default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'");
+  web->sendHeader("Content-Security-Policy","default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'");
   web->sendHeader("X-Content-Type-Options","nosniff");
   web->sendHeader("X-Frame-Options","DENY");
   web->sendHeader("Referrer-Policy","no-referrer");
   web->send_P(200,"text/html",INDEX_HTML);
 }
+void handlePrepareAsset(const uint8_t* bytes,size_t size,const char* type,bool gzip=true){
+  if(!requireAuth())return;
+  touchAp();
+  web->sendHeader("Cache-Control","no-store");
+  if(gzip)web->sendHeader("Content-Encoding","gzip");
+  web->sendHeader("X-Content-Type-Options","nosniff");
+  web->sendHeader("Content-Security-Policy","default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'");
+  web->sendFlash(200,type,bytes,size);
+}
 void handleStatus(){
   if(!requireAuth())return;
   char freeString[24];snprintf(freeString,sizeof(freeString),"%llu",(unsigned long long)freeBytes());
   sendJson("{\"clients\":"+String(WiFi.softAPgetStationNum())+",\"busy\":"+(upload.active?"true":"false")+
-    ",\"sd\":"+(cardReady()?"true":"false")+",\"free\":"+freeString+",\"uploadGeneration\":"+String(uploadGeneration)+"}");
+    ",\"sd\":"+(cardReady()?"true":"false")+",\"free\":"+freeString+",\"preprocessing\":true,\"uploadGeneration\":"+String(uploadGeneration)+"}");
 }
 void handleFiles(){
   if(!requireAuth())return;
@@ -266,6 +296,7 @@ void handleArtwork(){
   // Disable the image durably before deleting only our two upload slots.
   // The compiled private fallback, books and progress are untouched.
   if(action=="remove"&&cardReady()){
+    storage_validation::sourceChanged();
     for(uint8_t slot=1;slot<=2;++slot)if(SD.exists(shutdown_art::path(slot))&&!SD.remove(shutdown_art::path(slot))){
       sendError(500,"Image disabled, but SD cleanup failed. Please retry.");return;
     }
@@ -289,19 +320,27 @@ void sendStart(const String& id,uint32_t offset){
 void sendReceipt(const UploadReceipt& receipt){
   sendJson("{\"ok\":true,\"name\":\""+jsonEscape(receipt.finalName)+"\"}");
 }
+String preparedSource(const String& name){
+  const String leaf=name.substring(0,name.length()-4);String source;
+  for(const auto& path:sdBooks)if(path.substring(path.lastIndexOf('/')+1)==leaf){
+    if(source.length())return "";source=path;
+  }
+  if(source.length()){File file=SD.open(source);const bool regular=file&&!file.isDirectory();file.close();if(!regular)return "";}
+  return source;
+}
 void handleUploadStart(){
   if(!requireAuth())return;
   const String requestId=web->hasArg("requestId")?web->arg("requestId"):String();
   if(web->hasArg("requestId")&&!validRequestId(requestId)){sendError(400,"Invalid upload request identity.");return;}
-  const bool art=web->arg("kind")=="art";
-  if(web->hasArg("kind")&&!art){sendError(400,"Invalid upload kind.");return;}
-  const String name=art?String("shutdown.pdi"):validName(web->arg("name"));
-  if(name.length()==0){sendError(400,"Use a valid .epub, .txt, .md or .markdown filename, up to 96 UTF-8 bytes.");return;}
+  const bool art=web->arg("kind")=="art",prepared=web->arg("kind")=="prepared";
+  if(web->hasArg("kind")&&!art&&!prepared){sendError(400,"Invalid upload kind.");return;}
+  const String name=art?String("shutdown.pdi"):validName(web->arg("name"),prepared);
+  if(name.length()==0){sendError(400,"Use a valid book or .epub.pdt filename, up to 96 UTF-8 bytes.");return;}
   uint32_t size=0,requestedGeneration=0;
   const auto format=document_format::detect(name.c_str());
-  const size_t limit=art?shutdown_art::MAX_BYTES:document_format::sourceLimit(format);
+  const size_t limit=art?shutdown_art::MAX_BYTES:prepared?prepared_epub::HEADER_BYTES+prepared_epub::MAX_TEXT_BYTES+prepared_epub::MAX_METADATA_BYTES:document_format::sourceLimit(format);
   if(!parseUnsigned(web->arg("size"),size)||size==0||size>limit){
-    sendError(413,format==document_format::Kind::Text?"TXT must be 1 byte to 4 MiB.":
+    sendError(413,prepared?"Prepared content exceeds the supported size.":format==document_format::Kind::Text?"TXT must be 1 byte to 4 MiB.":
       format==document_format::Kind::Markdown?"Markdown must be 1 byte to 1 MiB.":"EPUB must be 1 byte to 64 MiB.");return;
   }
   if(!parseUnsigned(web->arg("generation"),requestedGeneration)||web->arg("generation")!=String(requestedGeneration)){
@@ -309,25 +348,28 @@ void handleUploadStart(){
   }
   if(requestId.length()){
     if(upload.active&&upload.id==requestId){
-      if(upload.sourceName!=name||upload.expected!=size||upload.requestGeneration!=requestedGeneration){sendError(409,"Upload identity already used for different metadata.");return;}
+      if(upload.sourceName!=name||upload.expected!=size||upload.requestGeneration!=requestedGeneration||upload.art!=art||upload.prepared!=prepared){sendError(409,"Upload identity already used for different metadata.");return;}
       upload.lastActivity=millis();touchAp();sendStart(upload.id,upload.total);return;
     }
     if(const UploadReceipt* receipt=findReceipt(requestId)){
-      if(receipt->sourceName!=name||receipt->size!=size||receipt->requestGeneration!=requestedGeneration){sendError(409,"Upload identity already used for different metadata.");return;}
+      if(receipt->sourceName!=name||receipt->size!=size||receipt->requestGeneration!=requestedGeneration||receipt->art!=art||receipt->prepared!=prepared){sendError(409,"Upload identity already used for different metadata.");return;}
       touchAp();sendStart(receipt->id,receipt->size);return;
     }
   }
   if(upload.active){sendError(409,"Another upload is in progress. Retry when it finishes.");return;}
-  if(!art&&sdBooks.size()>=256){sendError(409,"The library is full (256 books).");return;}
+  if(!art&&!prepared&&sdBooks.size()>=256){sendError(409,"The library is full (256 books).");return;}
   if(requestedGeneration!=uploadGeneration){sendError(409,"Upload state changed. Refresh and retry.");return;}
   if(!cardReady()){sendError(503,"SD card unavailable");return;}
+  const String source=prepared?preparedSource(name):String();
+  if(prepared&&source.length()==0){sendError(409,"Upload the matching EPUB first. Its filename must be unique in the library.");return;}
   if(size>freeBytes()){sendError(507,"Not enough free space on the SD card.");return;}
+  storage_validation::sourceChanged();
   if((!SD.exists("/Books")&&!SD.mkdir("/Books"))||(!SD.exists("/Books/.incoming")&&!SD.mkdir("/Books/.incoming"))){
     sendError(500,"Cannot create the book directory.");return;
   }
   if(art&&!SD.exists("/.paperdiy")&&!SD.mkdir("/.paperdiy")){sendError(500,"Cannot create image directory.");return;}
-  upload.art=art;
-  upload.finalPath=art?String(shutdown_art::path(reader_settings::current().art==1?2:1)):uniquePath("/Books/"+name);
+  upload.art=art;upload.prepared=prepared;
+  upload.finalPath=art?String(shutdown_art::path(reader_settings::current().art==1?2:1)):prepared?source+".pdt":uniquePath("/Books/"+name);
   if(upload.finalPath.length()==0){resetUpload();sendError(409,"Cannot allocate a filename.");return;}
   for(unsigned attempt=0;attempt<4;++attempt){
     const String candidate=String("/Books/.incoming/")+TEMP_PREFIX+randomHex(16)+".part";
@@ -338,6 +380,7 @@ void handleUploadStart(){
   if(!upload.file){uploadFailure(500,"Cannot write to the SD card.");return;}
   upload.active=true;upload.id=requestId.length()?requestId:randomHex(32);upload.expected=size;upload.total=0;upload.lastActivity=millis();
   upload.sourceName=name;upload.requestGeneration=requestedGeneration;
+  if(prepared){mbedtls_sha256_init(&preparedSha);mbedtls_sha256_starts_ret(&preparedSha,0);preparedShaActive=true;}
   ++uploadGeneration;touchAp();sendStart(upload.id,0);
 }
 void handleUploadStatus(){
@@ -391,6 +434,10 @@ void handleUploadChunk(){
   if(!decodeChunk(web->arg("data"),bytes)||bytes>upload.expected-upload.total){uploadFailure(400,"Invalid upload chunk.");return;}
   if(!cardReady()){uploadFailure(503,"SD card removed during upload.");return;}
   if(!upload.file||upload.file.write(chunkBuffer,bytes)!=bytes){uploadFailure(500,"SD write failed.");return;}
+  if(upload.prepared){
+    const size_t skip=upload.total<prepared_epub::HEADER_BYTES?std::min(bytes,prepared_epub::HEADER_BYTES-size_t(upload.total)):0;
+    if(bytes>skip)mbedtls_sha256_update_ret(&preparedSha,chunkBuffer+skip,bytes-skip);
+  }
   upload.total+=(uint32_t)bytes;upload.lastActivity=millis();touchAp();
   sendJson("{\"offset\":"+String(upload.total)+"}");
 }
@@ -404,14 +451,33 @@ void handleUploadCommit(){
   File completed=SD.open(upload.temp);
   bool complete=completed&&completed.size()==upload.expected;
   if(complete&&upload.art)complete=bool(shutdown_art::read(completed));
+  if(complete&&upload.prepared){
+    uint8_t header[prepared_epub::HEADER_BYTES],digest[32];prepared_epub::Header metadata;
+    complete=completed.read(header,sizeof(header))==sizeof(header)&&prepared_epub::decode(header,sizeof(header),completed.size(),metadata);
+    mbedtls_sha256_finish_ret(&preparedSha,digest);mbedtls_sha256_free(&preparedSha);preparedShaActive=false;
+    complete=complete&&!memcmp(digest,metadata.payloadDigest,sizeof(digest));
+    File source=SD.open(upload.finalPath.substring(0,upload.finalPath.length()-4));
+    complete=complete&&source&&!source.isDirectory()&&source.size()==metadata.sourceBytes;source.close();
+    // The reader independently verifies source SHA, payload SHA, UTF-8 and IR
+    // after rereading SD, before any prepared content becomes visible.
+  }
   if(completed)completed.close();
   if(!complete){uploadFailure(500,"Could not verify the saved file.");return;}
   // Recheck immediately before rename; the destination must never overwrite a book.
   if(upload.art){
     if(SD.exists(upload.finalPath)&&!SD.remove(upload.finalPath)){uploadFailure(500,"Cannot replace inactive image.");return;}
+  }else if(upload.prepared){
+    const String backup=upload.finalPath+".bak";
+    if(SD.exists(upload.finalPath)){
+      if(SD.exists(backup)&&!SD.remove(backup)){uploadFailure(500,"Cannot rotate prepared content.");return;}
+      if(!SD.rename(upload.finalPath,backup)){uploadFailure(500,"Cannot retain previous prepared content.");return;}
+    }
   }else upload.finalPath=uniquePath(upload.finalPath);
-  if(upload.finalPath.length()==0||!SD.rename(upload.temp,upload.finalPath)){uploadFailure(500,"Cannot finalize the book.");return;}
-  const bool artwork=upload.art;
+  if(upload.finalPath.length()==0||!SD.rename(upload.temp,upload.finalPath)){
+    if(upload.prepared&&!SD.exists(upload.finalPath)&&SD.exists(upload.finalPath+".bak"))SD.rename(upload.finalPath+".bak",upload.finalPath);
+    uploadFailure(500,"Cannot finalize the book.");return;
+  }
+  const bool artwork=upload.art,prepared=upload.prepared;
   if(artwork){
     auto next=reader_settings::current();next.art=next.art==1?2:1;
     if(!reader_settings::save(prefs,next)){SD.remove(upload.finalPath);uploadFailure(500,"Could not save image choice. Please retry.");return;}
@@ -420,10 +486,11 @@ void handleUploadCommit(){
   const String name=savedPath.substring(savedPath.lastIndexOf('/')+1);
   UploadReceipt& receipt=receipts[nextReceipt];
   receipt.id=upload.id;receipt.sourceName=upload.sourceName;receipt.finalName=name;
+  receipt.art=upload.art;receipt.prepared=upload.prepared;
   receipt.size=upload.expected;receipt.requestGeneration=upload.requestGeneration;
   nextReceipt=(nextReceipt+1)%RECEIPT_COUNT;
   upload.temp="";resetUpload();
-  if(artwork){touchAp();sendReceipt(receipt);return;}
+  if(artwork||prepared){touchAp();sendReceipt(receipt);return;}
   // This AP is the only SD writer. Publish the known leaf without unmounting
   // the card or disturbing the selected book and its independent bookmark.
   const String previous=selectedBook<sdBooks.size()?sdBooks[selectedBook]:String();
@@ -459,6 +526,9 @@ void startAp(){
   const char* headerKeys[]={"Cookie"};
   web->collectHeaders(headerKeys,1);
   web->on("/",HTTP_GET,handleRoot);
+  web->on("/prepare-worker.js",HTTP_GET,[]{handlePrepareAsset(reinterpret_cast<const uint8_t*>(PREPARE_WORKER_JS),sizeof(PREPARE_WORKER_JS)-1,"application/javascript",false);});
+  web->on("/prepare-core.js",HTTP_GET,[]{handlePrepareAsset(prepared_web_assets::CORE_JS_GZ,sizeof(prepared_web_assets::CORE_JS_GZ),"application/javascript");});
+  web->on("/prepare-core.wasm",HTTP_GET,[]{handlePrepareAsset(prepared_web_assets::CORE_WASM_GZ,sizeof(prepared_web_assets::CORE_WASM_GZ),"application/wasm");});
   web->on("/api/status",HTTP_GET,handleStatus);
   web->on("/api/files",HTTP_GET,handleFiles);
   web->on("/api/wifi",HTTP_POST,handleWifi);
@@ -480,15 +550,20 @@ void startSta(){
   if(!settingsStaConfigured)return;
   WiFi.persistent(false);
   if(!WiFi.mode(WIFI_STA)){settingsStaError="Connection failed";return;}
-  WiFi.begin(ssid.c_str(),pass.c_str());staRunning=true;staStarted=millis();
+  WiFi.begin(ssid.c_str(),pass.c_str());staRunning=true;receiverAttempted=false;staStarted=millis();
 }
 }
 
 void networkStop(){
+  lan_service::stop();receiverAttempted=false;deliveryDirty=false;
   if(web){web->stop();delete web;web=nullptr;}
   dns.stop();resetUpload();clearReceipts();
   apRunning=false;staRunning=false;
-  WiFi.softAPdisconnect(true);WiFi.disconnect(true);WiFi.mode(WIFI_OFF);
+  WiFi.softAPdisconnect(true);WiFi.disconnect(true);
+  radioStopFailed=!WiFi.mode(WIFI_OFF);
+#ifdef ARDUINO
+  if(radioStopFailed)Console.println("NETWORK_STOP_FAILED radio_state_unconfirmed=1");
+#endif
   settingsApSsid="";settingsApPassword="";settingsApUrl="";apToken="";settingsApClientConnected=false;
   settingsStaConnected=false;settingsStaIp="";settingsStaError="";
 }
@@ -512,15 +587,37 @@ bool networkPoll(){
     const bool connected=WiFi.status()==WL_CONNECTED;
     if(connected){
       const String ip=WiFi.localIP().toString();
-      if(!settingsStaConnected||ip!=settingsStaIp){settingsStaConnected=true;settingsStaError="";settingsStaIp=ip;changed=true;}
+      if(!settingsStaConnected||ip!=settingsStaIp){
+        // A DHCP address change invalidates the endpoint in the physical QR.
+        if(receiverAttempted){lan_service::stop();receiverAttempted=false;}
+        settingsStaConnected=true;settingsStaError="";settingsStaIp=ip;changed=true;
+      }
+      if(!receiverAttempted){
+        receiverAttempted=true;
+        if(!lan_service::start(ip.c_str())){settingsLanState="Receiver unavailable";deliveryDirty=true;}
+      }
+      if(lan_service::poll())deliveryDirty=true;
     }else if(settingsStaConnected){
+      lan_service::stop();receiverAttempted=false;
       settingsStaConnected=false;settingsStaIp="";settingsStaError="";
       staStarted=millis();changed=true;
     }
-    if(!connected&&settingsStaError.length()==0&&millis()-staStarted>=20000){settingsStaError="Connection failed";changed=true;}
+    if(!connected&&settingsStaError.length()==0&&millis()-staStarted>=20000){
+      lan_service::stop();WiFi.disconnect(true);radioStopFailed=!WiFi.mode(WIFI_OFF);staRunning=false;
+      settingsStaError="Connection failed";changed=true;
+    }
   }
   return changed;
 }
+bool networkDeliveryChanged(){const bool changed=deliveryDirty;deliveryDirty=false;return changed;}
 bool networkApExpired(){return apRunning&&!upload.active&&millis()-apActivity>=AP_TIMEOUT_MS;}
-bool networkActive(){return apRunning||staRunning;}
-void networkStorageChanged(){resetUpload();clearReceipts();cleanIncoming();}
+bool networkActive(){
+  // Never allow the battery sleep policy to infer a stopped radio merely from
+  // application flags when the SDK rejected shutdown. A later explicit mode
+  // transition retries shutdown; querying here does not mutate the radio.
+  return apRunning||staRunning||radioStopFailed||WiFi.getMode()!=WIFI_OFF;
+}
+void networkStorageChanged(){
+  lan_service::stop();receiverAttempted=false;
+  lan_service::storageChanged();resetUpload();clearReceipts();cleanIncoming();
+}

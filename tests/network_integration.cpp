@@ -3,6 +3,7 @@
 #include <iostream>
 #include <set>
 #include <vector>
+#include <tuple>
 #include <Arduino.h>
 #include <Preferences.h>
 #include <WiFi.h>
@@ -13,7 +14,12 @@
 #include "reader.h"
 #include "reader_settings.h"
 #include "shutdown_art.h"
+#include "prepared_epub.h"
+#include "prepared_web_assets.h"
+#include "prepare_worker.h"
+#include <openssl/sha.h>
 #include "sd_reader.h"
+#include "lan_service.h"
 
 Preferences prefs;
 bool settingsSelected=false,settingsRotated=false;
@@ -21,6 +27,7 @@ NetworkMode networkMode=NetworkMode::Off;
 String settingsApSsid,settingsApPassword,settingsApUrl;
 bool settingsApClientConnected=false;
 String settingsStaSsid,settingsStaIp,settingsStaError;
+String settingsLanState;
 bool settingsStaConfigured=false,settingsStaConnected=false;
 bool sdOK=true;
 std::vector<String> sdBooks;
@@ -28,6 +35,14 @@ size_t selectedBook=0;
 String sdError;
 unsigned scans=0;
 bool scanSD(){++scans;return sdOK;}
+bool sdOwnedByUsb(){return false;}
+namespace lan_service {
+unsigned starts=0,stops=0;String lastAddress;bool canStart=true;
+bool start(const char* address){++starts;lastAddress=address;return canStart;}
+void stop(){++stops;}
+bool poll(){return false;}
+void storageChanged(){}
+}
 
 namespace {
 constexpr uint32_t TIMEOUT=5u*60u*1000u;
@@ -162,6 +177,143 @@ void readerSettingsAndArtwork(){
  assert(request("/api/artwork",cookie(),HTTP_POST,{{"action","default"}}).code==200&&reader_settings::current().art==0);
  assertNoTemporary();networkStop();
 }
+String encodedBytes(const std::vector<uint8_t>& data,size_t at,size_t count){
+  const char* a="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";String out;
+  for(size_t i=at;i<at+count;i+=3){
+    const size_t n=std::min(size_t(3),at+count-i);uint32_t v=uint32_t(data[i])<<16;
+    if(n>1)v|=uint32_t(data[i+1])<<8;if(n>2)v|=data[i+2];
+    out+=a[(v>>18)&63];out+=a[(v>>12)&63];out+=n>1?a[(v>>6)&63]:'=';out+=n>2?a[v&63]:'=';
+  }return out;
+}
+std::vector<uint8_t> preparedPacket(const std::string& source,const std::string& text){
+  prepared_epub::Header header;header.sourceBytes=source.size();header.textBytes=text.size();header.flags=prepared_epub::ENGLISH;
+  SHA256(reinterpret_cast<const uint8_t*>(source.data()),source.size(),header.sourceDigest);
+  SHA256(reinterpret_cast<const uint8_t*>(text.data()),text.size(),header.payloadDigest);
+  std::vector<uint8_t> data(prepared_epub::HEADER_BYTES+text.size());
+  assert(prepared_epub::encode(header,data.data(),prepared_epub::HEADER_BYTES));
+  std::copy(text.begin(),text.end(),data.begin()+prepared_epub::HEADER_BYTES);return data;
+}
+void preparedUploads(){
+  const std::string source="Synthetic EPUB fixture of at least twenty-two bytes";
+  const auto data=preparedPacket(source,"A prepared paragraph.\n\n");
+  const auto old=preparedPacket(source,"Previous content.\n\n");
+  const String filename="sample.epub.pdt",path="/Books/sample.epub.pdt";
+  auto metadata=[&](const String& id,size_t size,const String& name="sample.epub.pdt"){
+    return std::map<std::string,String>{{"kind","prepared"},{"name",name},{"size",String(size)},
+      {"generation",String(generation())},{"requestId",id}};
+  };
+  reset();
+  auto args=metadata("00000000000000000000000000000001",data.size());
+  assert(request("/api/upload/start",cookie(),HTTP_POST,args).code==409); // Source must exist first.
+  assert(generation()==0&&sdBooks.empty());assertNoTemporary();
+  sdBooks={"/Books/sample.epub","/Other/sample.epub"};
+  SD.add("/Books/sample.epub",source);SD.add("/Other/sample.epub",source);
+  assert(request("/api/upload/start",cookie(),HTTP_POST,args).code==409); // Ambiguous leaf.
+  sdBooks={"/Books/sample.epub"};
+  for(const auto& name:{"sample.txt.pdt","sample.pdt","../sample.epub.pdt"}){
+    auto invalid=args;invalid["name"]=name;
+    assert(request("/api/upload/start",cookie(),HTTP_POST,invalid).code==400);
+  }
+  auto invalid=args;invalid["kind"]="unknown";
+  assert(request("/api/upload/start",cookie(),HTTP_POST,invalid).code==400);
+  invalid=args;invalid.erase("kind");
+  assert(request("/api/upload/start",cookie(),HTTP_POST,invalid).code==400);
+  assert(!SD.exists(path)&&generation()==0);assertNoTemporary();
+  reset();SD.add("/Books/sample.epub",source);SD.add("/Books/keep.txt","kept text");
+  SD.add(bytes(path),std::string(old.begin(),old.end()));
+  sdBooks={"/Books/sample.epub","/Books/keep.txt"};selectedBook=1;
+  prefs.strings["sdLast"]="/Books/keep.txt";prefs.strings["reading-fixture"]="saved-offset";
+  prefs.blobs["wifiCfgV1"]={1,3,5};prefs.blobs["readerCfgV1"]={2,4,6};
+  const auto books=sdBooks;const auto strings=prefs.strings;const auto blobs=prefs.blobs;
+  const auto original=SD.files.at("/Books/sample.epub")->bytes;
+  unsigned nextId=10;
+  auto send=[&](const std::vector<uint8_t>& bytes,bool failFinalize=false){
+    char hex[33];snprintf(hex,sizeof(hex),"%032x",nextId++);const String id=hex;
+    auto meta=metadata(id,bytes.size());
+    auto admitted=request("/api/upload/start",cookie(),HTTP_POST,meta);assert(admitted.code==200);
+    const auto admission=generation();
+    assert(request("/api/upload/start",cookie(),HTTP_POST,meta).code==200&&generation()==admission);
+    auto different=meta;different.erase("kind");different["name"]="sample.epub";
+    assert(request("/api/upload/start",cookie(),HTTP_POST,different).code==409);
+    // The header is deliberately split, including a chunk spanning its end.
+    for(size_t at=0;at<bytes.size();){
+      const size_t count=std::min(size_t(97),bytes.size()-at);
+      auto result=request("/api/upload/chunk",cookie(),HTTP_POST,
+        {{"id",id},{"offset",String(at)},{"data",encodedBytes(bytes,at,count)}});
+      assert(result.code==200);at+=count;
+    }
+    if(failFinalize)SD.failRenameAt=SD.renames+2; // Old -> backup succeeds; temp -> final fails once.
+    auto result=request("/api/upload/commit",cookie(),HTTP_POST,{{"id",id}});
+    SD.failRenameAt=0;
+    assert(sdBooks==books&&selectedBook==1&&prefs.strings==strings&&prefs.blobs==blobs&&prefs.writes==0);
+    assert(SD.files.at("/Books/sample.epub")->bytes==original&&SD.exists("/Books/keep.txt"));
+    assert(scans==0);assertNoTemporary();
+    return std::make_tuple(id,meta,result);
+  };
+  const auto first=send(data);const auto& id=std::get<0>(first);const auto& meta=std::get<1>(first);
+  assert(std::get<2>(first).code==200&&SD.files.at(bytes(path))->bytes==data);
+  assert(SD.files.at(bytes(path)+".bak")->bytes==old);
+  auto listing=request("/api/files",cookie());assert(listing.body.indexOf(".pdt")==-1);
+  assert(document_format::detect("sample.epub.pdt")==document_format::Kind::Unsupported);
+  const auto renames=SD.renames;
+  assert(request("/api/upload/commit",cookie(),HTTP_POST,{{"id",id}}).body==std::get<2>(first).body);
+  assert(request("/api/upload/start",cookie(),HTTP_POST,meta).code==200&&SD.renames==renames);
+  auto status=request("/api/upload/status",cookie(),HTTP_GET,{{"id",id}});
+  assert(status.code==200&&status.body.indexOf("\"complete\"")>=0&&status.body.indexOf(filename)>=0);
+  // A failed publication restores the previous final path, not an empty file.
+  const auto replacement=preparedPacket(source,"Replacement paragraph with different bytes.\n");
+  assert(std::get<2>(send(replacement,true)).code==500);
+  assert(SD.files.at(bytes(path))->bytes==data);
+  // Header rejection and streamed payload integrity leave the last good file.
+  for(unsigned kind=0;kind<6;++kind){
+    auto bad=replacement;
+    if(kind==0)bad[0]^=1;
+    if(kind==1)bad[100]=1;
+    if(kind==2)prepared_epub::write32(bad.data()+12,prepared_epub::EXTRACTOR_ID+1);
+    if(kind==3)bad.back()^=1;
+    if(kind==4)prepared_epub::write32(bad.data()+24,1);
+    if(kind==5)prepared_epub::write32(bad.data()+16,uint32_t(source.size()+1));
+    assert(std::get<2>(send(bad)).code>=400&&SD.files.at(bytes(path))->bytes==data);
+  }
+  // Recheck the source at publication: it may have disappeared or changed
+  // size since admission. Neither case may displace the last good sidecar.
+  for(unsigned changed=0;changed<2;++changed){
+    const String transaction=changed?"000000000000000000000000000000a1":"000000000000000000000000000000a0";
+    auto meta=metadata(transaction,replacement.size());
+    assert(request("/api/upload/start",cookie(),HTTP_POST,meta).code==200);
+    assert(request("/api/upload/chunk",cookie(),HTTP_POST,
+      {{"id",transaction},{"offset","0"},{"data",encodedBytes(replacement,0,replacement.size())}}).code==200);
+    const auto originalNode=SD.files.at("/Books/sample.epub");
+    if(changed)++originalNode->size;else SD.files.erase("/Books/sample.epub");
+    assert(request("/api/upload/commit",cookie(),HTTP_POST,{{"id",transaction}}).code>=400);
+    if(changed)--originalNode->size;else SD.files["/Books/sample.epub"]=originalNode;
+    assert(SD.files.at(bytes(path))->bytes==data&&sdBooks==books);
+    assertNoTemporary();
+  }
+  // Cancellation also leaves the previous validated delivery untouched.
+  args=metadata("00000000000000000000000000000099",replacement.size());
+  assert(request("/api/upload/start",cookie(),HTTP_POST,args).code==200);
+  assert(request("/api/upload/chunk",cookie(),HTTP_POST,
+    {{"id",args.at("requestId")},{"offset","0"},{"data",encodedBytes(replacement,0,97)}}).code==200);
+  assert(request("/api/upload/cancel",cookie(),HTTP_POST,{{"id",args.at("requestId")}}).code==200);
+  assert(SD.files.at(bytes(path))->bytes==data&&sdBooks==books);assertNoTemporary();
+  // The original admission allows 96 UTF-8 bytes. A collision may append
+  // "-99", then the prepared leaf adds ".pdt" to the server-returned name.
+  reset();
+  const String renamed=std::string(91,'n')+"-99.epub";
+  const String renamedPath="/Books/"+renamed;
+  SD.add(bytes(renamedPath),source);sdBooks={renamedPath};
+  auto paired=metadata("000000000000000000000000000000a9",data.size());
+  paired["name"]=renamed+".pdt";assert(paired["name"].length()==103);
+  assert(request("/api/upload/start",cookie(),HTTP_POST,paired).code==200);
+  assert(request("/api/upload/cancel",cookie(),HTTP_POST,{{"id",paired.at("requestId")}}).code==200);
+  paired["generation"]=String(generation());paired["name"]="x"+renamed+".pdt";
+  assert(request("/api/upload/start",cookie(),HTTP_POST,paired).code==400);
+  paired["name"]=renamed;paired.erase("kind");
+  assert(request("/api/upload/start",cookie(),HTTP_POST,paired).code==400); // Original limit is unchanged.
+  assert(SD.files.at(bytes(renamedPath))->bytes==std::vector<uint8_t>(source.begin(),source.end()));assertNoTemporary();
+  std::cout<<"network: prepared-content admission, hidden sidecars, atomic rollback, integrity and idempotent receipts\n";
+}
 void authenticationAndRandomness(){
   reset();assert(WiFi.currentMode==WIFI_AP&&!WiFi.persistentEnabled&&WiFi.maxStations==1);
   assert(server().collected.count("Cookie"));
@@ -184,6 +336,44 @@ void authenticationAndRandomness(){
   assert(token()!=savedToken&&settingsApSsid!=savedSsid&&settingsApPassword!=savedPass);
   assert(request("/api/status","diy_token="+savedToken).code==401);
   std::cout<<"network: authentication and fresh credentials\n";
+}
+void browserPrepareAssets(){
+  reset();
+  const auto beforeBooks=sdBooks;
+  const auto beforeStrings=prefs.strings;
+  const auto beforeBlobs=prefs.blobs;
+  struct Asset {const char* path;const char* mime;size_t bytes;bool gzip;};
+  const Asset assets[]={
+    {"/prepare-worker.js","application/javascript",sizeof(PREPARE_WORKER_JS)-1,false},
+    {"/prepare-core.js","application/javascript",sizeof(prepared_web_assets::CORE_JS_GZ),true},
+    {"/prepare-core.wasm","application/wasm",sizeof(prepared_web_assets::CORE_WASM_GZ),true}
+  };
+  for(const auto& asset:assets){
+    assert(request(asset.path,"").code==401);
+    assert(request(asset.path,"",HTTP_GET,{{"t",token()}}).code==401); // Assets never accept a query token.
+    assert(request(asset.path,cookie()+"wrong").code==401);
+    const auto response=request(asset.path,cookie());
+    assert(response.code==200&&response.type==asset.mime);
+    assert(response.contentLength==asset.bytes&&asset.bytes>0&&asset.bytes<=1024*1024);
+    assert(response.body.length()==0); // sendFlash streams static bytes; no body String copy.
+    assert(response.headers.at("Cache-Control")=="no-store");
+    assert(response.headers.at("X-Content-Type-Options")=="nosniff");
+    assert(response.headers.at("Content-Security-Policy").indexOf("'wasm-unsafe-eval'")>=0);
+    if(asset.gzip)assert(response.headers.at("Content-Encoding")=="gzip");
+    else assert(response.headers.count("Content-Encoding")==0);
+    assert(request(asset.path,cookie(),HTTP_POST).code==404);
+  }
+  auto root=request("/",cookie());
+  assert(root.headers.at("Content-Security-Policy").indexOf("worker-src 'self'")>=0);
+  assert(root.headers.at("Content-Security-Policy").indexOf("'unsafe-eval'")<0);
+  assert(request("/api/status",cookie()).body.indexOf("\"preprocessing\":true")>=0);
+  assert(sdBooks==beforeBooks&&prefs.strings==beforeStrings&&prefs.blobs==beforeBlobs&&prefs.writes==0&&scans==0);
+  const auto previous=cookie();networkApply(NetworkMode::Ap);
+  for(const auto& asset:assets)assert(request(asset.path,previous).code==401);
+  networkApply(NetworkMode::Sta);assert(!WebServer::current);
+  networkApply(NetworkMode::Usb);assert(!WebServer::current);
+  networkApply(NetworkMode::Off);assert(!WebServer::current);
+  std::cout<<"network: browser preparation assets are AP-only, authenticated, immutable flash responses\n";
 }
 void qrAndTimeout(){
   reset();assert(networkActive());assert(!settingsApClientConnected);assert(!networkPoll());
@@ -346,6 +536,9 @@ void credentialsAndStation(){
   networkApply(NetworkMode::Sta);assert(networkActive());assert(!WebServer::current);
   assert(WiFi.currentMode==WIFI_STA&&WiFi.joinedSsid=="new network"&&WiFi.joinedPass=="new-password");
   assert(!networkPoll());WiFi.connection=WL_CONNECTED;assert(networkPoll());assert(settingsStaConnected);
+  const auto starts=lan_service::starts;
+  WiFi.staIp=IPAddress(192,168,1,26);assert(networkPoll());
+  assert(lan_service::starts==starts+1&&lan_service::lastAddress=="192.168.1.26");
   assert(!networkPoll());WiFi.connection=WL_DISCONNECTED;assert(networkPoll());assert(!settingsStaConnected);
   testClock+=20001;assert(networkPoll());assert(settingsStaError.length());
   networkStop();prefs.blobs.clear();networkApply(NetworkMode::Sta);
@@ -357,7 +550,7 @@ void credentialsAndStation(){
   networkApply(NetworkMode::Usb);assert(!networkActive()&&!WebServer::current&&WiFi.currentMode==WIFI_OFF);
   networkStop();prefs={};networkApply(NetworkMode::Sta);
   assert(!settingsStaConfigured&&!networkActive()&&!WebServer::current&&WiFi.currentMode==WIFI_OFF);
-  std::cout<<"network: atomic credentials, legacy fallback and STA without HTTP\n";
+  std::cout<<"network: atomic credentials, legacy fallback and STA receiver lifecycle\n";
 }
 void uploadRecovery(){
   reset();
@@ -419,7 +612,10 @@ void stationReconnectWindow(){
     assert(!settingsStaConnected&&settingsStaError.length()==0);
     testClock+=19999;assert(!networkPoll()&&settingsStaError.length()==0);
     ++testClock;assert(networkPoll()&&settingsStaError.length()>0);
-    WiFi.connection=WL_CONNECTED;assert(networkPoll()&&settingsStaError.length()==0);
+    assert(!networkActive()&&WiFi.currentMode==WIFI_OFF);
+    WiFi.connection=WL_CONNECTED;assert(!networkPoll()); // Timed out radio stays off.
+    networkApply(NetworkMode::Sta);WiFi.connection=WL_CONNECTED;
+    assert(networkPoll()&&settingsStaError.length()==0);
     testClock+=120000;WiFi.connection=WL_DISCONNECTED;assert(networkPoll());
     assert(settingsStaError.length()==0);
   }
@@ -444,11 +640,22 @@ void statusAndCleanup(){
   assert(settingsApSsid.length()==0&&settingsApPassword.length()==0&&settingsApUrl.length()==0);
   std::cout<<"network: 64-bit space reporting and lifecycle cleanup\n";
 }
+void stationStorageRecovery(){
+  reset();prefs.strings["wifiSsid"]="test network";prefs.strings["wifiPass"]="test-password";
+  networkApply(NetworkMode::Sta);WiFi.connection=WL_CONNECTED;lan_service::canStart=false;
+  networkPoll();const auto attempts=lan_service::starts;
+  networkPoll();assert(lan_service::starts==attempts);
+  lan_service::canStart=true;networkStorageChanged();networkPoll();
+  assert(lan_service::starts==attempts+1);
+  WiFi.failOff=true;networkStop();assert(networkActive());
+  assert(WiFi.currentMode==WIFI_STA&&!settingsStaConnected);
+  WiFi.failOff=false;networkStop();assert(!networkActive()&&WiFi.currentMode==WIFI_OFF);
+}
 }
 
 int main(){
- readerSettingsAndArtwork();authenticationAndRandomness();qrAndTimeout();uploadsAndFilenames();uploadFailures();ownershipAndCatalog();
- credentialsAndStation();uploadRecovery();stationReconnectWindow();statusAndCleanup();networkStop();
+ readerSettingsAndArtwork();preparedUploads();authenticationAndRandomness();browserPrepareAssets();qrAndTimeout();uploadsAndFilenames();uploadFailures();ownershipAndCatalog();
+ credentialsAndStation();uploadRecovery();stationReconnectWindow();stationStorageRecovery();statusAndCleanup();networkStop();
  assert(WebServer::constructions==WebServer::destructions);
  std::cout<<"network integration passed\n";
 }

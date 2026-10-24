@@ -10,9 +10,12 @@ body{font-family:system-ui,sans-serif;max-width:640px;margin:auto;padding:24px;c
 <h1>PaperDIY</h1><p id="status">Connecting…</p>
 <h2>Upload book</h2>
 <p>EPUB ≤ 64 MiB · TXT ≤ 4 MiB · Markdown ≤ 1 MiB</p>
-<form id="uploadForm"><input id="file" type="file" accept=".epub,.txt,.md,.markdown" required>
-<button id="uploadButton" type="submit" disabled>Upload</button></form>
-<progress id="progress" max="1" value="0" hidden></progress><p id="uploadMsg"></p>
+<form id="uploadForm"><input id="file" type="file" accept=".epub,.txt,.md,.markdown,.pdt" required>
+<label><input id="prepareBook" type="checkbox" checked>Prepare EPUB for faster opening</label>
+<p id="prepareNote">Processed on this phone. The original EPUB is kept.</p>
+<button id="uploadButton" type="submit" disabled>Upload</button> <button id="cancelUpload" type="button" hidden>Cancel</button></form>
+<progress id="progress" max="1" value="0" hidden></progress><p id="uploadMsg" role="status" aria-live="polite"></p>
+<button id="uploadOriginal" type="button" hidden>Upload original</button> <button id="retryPrepared" type="button" hidden>Retry faster-opening file</button>
 <h2>Home Wi-Fi</h2>
 <form id="wifiForm"><label>SSID<input id="ssid" maxlength="32" autocomplete="off" required></label>
 <label>Password<input id="pass" type="password" minlength="8" maxlength="63" autocomplete="new-password" required></label>
@@ -39,40 +42,115 @@ body{font-family:system-ui,sans-serif;max-width:640px;margin:auto;padding:24px;c
 <script>
 history.replaceState(null,'','/');
 const $=id=>document.getElementById(id);
-let generation=null,sending=false,polling=false;
-async function json(url,opt){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),12000);try{const r=await fetch(url,{...opt,signal:controller.signal});let j={};try{j=await r.json()}catch(e){if(r.ok)throw new Error('Incomplete response')}if(!r.ok){const err=new Error(j.error||('HTTP '+r.status));err.status=r.status;throw err}return j}finally{clearTimeout(timer)}}
-function post(url,data){return json(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data)});}
-function retryable(error){return !error.status||error.status===408||error.status>=500;}
+let generation=null,sending=false,polling=false,activeJob=null,fallbackOriginal=null,pendingPrepared=null;
+const prepareSupported=typeof Worker==='function'&&typeof WebAssembly==='object'&&typeof File==='function';
+let prepareAvailable=false;
+$('prepareBook').checked=true;
+function cancelled(){const e=new Error('Cancelled');e.cancelled=true;return e;}
+function checkJob(job){if(job&&job.cancelled)throw cancelled();}
+async function json(url,opt={}){
+ const controller=new AbortController(),external=opt.signal;const abort=()=>controller.abort();
+ if(external){if(external.aborted)throw cancelled();external.addEventListener('abort',abort,{once:true});}
+ const timer=setTimeout(abort,12000);
+ try{const r=await fetch(url,{...opt,signal:controller.signal});let j={};try{j=await r.json()}catch(e){if(r.ok)throw new Error('Incomplete response')}if(!r.ok){const err=new Error(j.error||('HTTP '+r.status));err.status=r.status;throw err}return j}
+ catch(e){if(external&&external.aborted)throw cancelled();throw e}
+ finally{clearTimeout(timer);if(external)external.removeEventListener('abort',abort)}
+}
+function post(url,data,signal){return json(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data),signal});}
+function retryable(error){return !error.cancelled&&(!error.status||error.status===408||error.status>=500);}
 async function retrySame(action){for(let attempt=0;;++attempt){try{return await action()}catch(error){if(attempt>=2||!retryable(error))throw error;await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)))}}}
 function newRequestId(){const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');}
 async function uploadState(id){return retrySame(()=>json('/api/upload/status?id='+encodeURIComponent(id)));}
-async function refresh(){if(polling||sending)return;polling=true;try{const s=await json('/api/status');generation=s.uploadGeneration;$('status').textContent=s.sd?((s.busy?'Uploading · ':'')+Math.floor(s.free/1048576)+' MB free'):'SD card unavailable';$('uploadButton').disabled=s.busy||!s.sd;const ul=$('books');ul.textContent='';let offset=0;do{const fs=await json('/api/files?offset='+offset);for(const n of fs.files){const li=document.createElement('li');li.textContent=n;ul.appendChild(li)}offset=fs.next}while(offset!==null)}catch(e){$('status').textContent=e.message;$('uploadButton').disabled=true}finally{polling=false}}
-async function uploadFile(f,art=false){
- if(!f||sending||generation===null)return;
- const messageId=art?'artMsg':'uploadMsg';
- sending=true;$('settingsFields').disabled=true;$('artUpload').disabled=true;$('uploadButton').disabled=true;$('file').disabled=true;$('progress').hidden=false;$('progress').value=0;$(messageId).textContent='Uploading…';let id=null;
+function preparationState(enabled){
+ prepareAvailable=prepareSupported&&enabled;
+ $('prepareBook').disabled=sending||!prepareAvailable;
+ $('prepareNote').textContent=prepareAvailable?'Processed on this phone. The original EPUB is kept.':'Faster opening is unavailable in this browser. Original books can still be uploaded.';
+}
+async function refresh(){if(polling||sending)return;polling=true;try{const s=await json('/api/status');generation=s.uploadGeneration;preparationState(s.preprocessing===true);$('status').textContent=s.sd?((s.busy?'Uploading · ':'')+Math.floor(s.free/1048576)+' MB free'):'SD card unavailable';$('uploadButton').disabled=s.busy||!s.sd;const ul=$('books');ul.textContent='';let offset=0;do{const fs=await json('/api/files?offset='+offset);for(const n of fs.files){const li=document.createElement('li');li.textContent=n;ul.appendChild(li)}offset=fs.next}while(offset!==null)}catch(e){$('status').textContent=e.message;$('uploadButton').disabled=true}finally{polling=false}}
+function prepareEpub(file,job){
+ return new Promise((resolve,reject)=>{
+  let worker,finished=false;const id=newRequestId();
+  const finish=(error,buffer)=>{if(finished)return;finished=true;clearTimeout(timer);if(worker)worker.terminate();job.worker=null;job.cancelPrepare=null;error?reject(error):resolve(buffer)};
+  const timer=setTimeout(()=>finish(new Error('Preparation timed out.')),120000);
+  job.cancelPrepare=()=>finish(cancelled());
+  try{
+   worker=new Worker('/prepare-worker.js');job.worker=worker;
+   worker.onerror=()=>finish(new Error('Preparation is unavailable.'));
+   worker.onmessage=event=>{
+    if(finished||job.cancelled)return;const m=event.data;if(!m||m.id!==id)return;
+    if(m.type==='progress'){$('uploadMsg').textContent=m.phase==='read'?'Reading EPUB on this phone…':m.phase==='done'?'Finishing preparation…':'Preparing EPUB on this phone…';return}
+    if(m.type==='error'){finish(new Error(typeof m.message==='string'?m.message:'Could not prepare this EPUB.'));return}
+    if(m.type==='done'){
+     if(!(m.buffer instanceof ArrayBuffer)||m.buffer.byteLength<160||m.buffer.byteLength>160+4194304+262160){finish(new Error('Invalid preparation result.'));return}
+     finish(null,m.buffer);
+    }
+   };
+   checkJob(job);worker.postMessage({type:'prepare',file,id});
+  }catch(error){finish(error)}
+ });
+}
+async function transferFile(f,kind,job){
+ checkJob(job);let id=newRequestId();job.uploadId=id;job.uploadAttempted=true;
  try{
-  id=newRequestId();const metadata={name:f.name,size:f.size,generation,requestId:id};if(art)metadata.kind='art';
-  // Replays use the same request id and admission generation, never a new upload.
-  const start=await retrySame(()=>post('/api/upload/start',metadata));
-  if(start.id!==id)throw new Error('Unexpected upload identity');
+  const metadata={name:f.name,size:f.size,generation,requestId:id};if(kind)metadata.kind=kind;
+  // Replays retain both admission generation and identity, including lost replies.
+  const start=await retrySame(()=>{checkJob(job);return post('/api/upload/start',metadata,job.controller.signal)});
+  if(start.id!==id||!Number.isInteger(start.offset)||start.offset<0||start.offset>f.size||!Number.isInteger(start.chunkSize)||start.chunkSize<1||start.chunkSize>4096)throw new Error('Unexpected upload identity or offset');
   for(let offset=start.offset;offset<f.size;){
-   const bytes=new Uint8Array(await f.slice(offset,offset+start.chunkSize).arrayBuffer());let raw='';for(const byte of bytes)raw+=String.fromCharCode(byte);
+   checkJob(job);const bytes=new Uint8Array(await f.slice(offset,offset+start.chunkSize).arrayBuffer());let raw='';for(const byte of bytes)raw+=String.fromCharCode(byte);
    const end=offset+bytes.length;let next=offset;
    for(let attempt=0;;++attempt){
-    try{const result=await post('/api/upload/chunk',{id,offset,data:btoa(raw)});next=result.offset;if(next!==end)throw new Error('Unexpected upload offset');break}
-    catch(error){if(!retryable(error))throw error;const state=await uploadState(id);if(state.state==='receiving'&&state.offset===end){next=end;break}if(state.state!=='receiving'||state.offset!==offset||attempt>=2)throw error}
+    try{checkJob(job);const result=await post('/api/upload/chunk',{id,offset,data:btoa(raw)},job.controller.signal);next=result.offset;if(next!==end)throw new Error('Unexpected upload offset');break}
+    catch(error){if(!retryable(error))throw error;checkJob(job);const state=await uploadState(id);if(state.state==='receiving'&&state.offset===end){next=end;break}if(state.state!=='receiving'||state.offset!==offset||attempt>=2)throw error}
    }
    offset=next;$('progress').value=offset/f.size;
   }
-  const result=await retrySame(()=>post('/api/upload/commit',{id}));id=null;$(messageId).textContent='Uploaded: '+result.name;$('file').value='';
+  const result=await retrySame(()=>{checkJob(job);return post('/api/upload/commit',{id},job.controller.signal)});
+  if(typeof result.name!=='string'||!result.name)throw new Error('Incomplete upload receipt');
+  return result;
  }catch(error){
-  let recovered=false;
-  if(id)try{const state=await uploadState(id);if(state.state==='complete'){$(messageId).textContent='Uploaded: '+state.name;$('progress').value=1;$('file').value='';recovered=true}else if(state.state==='receiving')await post('/api/upload/cancel',{id})}catch(ignore){}
-  if(!recovered)$(messageId).textContent=error.message+' Check the book list before retrying.';
- }finally{sending=false;$('file').disabled=false;$('settingsFields').disabled=false;$('artUpload').disabled=false;refresh();if(art)await loadSettings(false)}
+  // Cancellation may race a committed upload. Resolve its own receipt before
+  // claiming nothing arrived; never remove an already published original.
+  try{const state=await uploadState(id);if(state.state==='complete'&&typeof state.name==='string'){return {name:state.name}}if(state.state==='receiving')await post('/api/upload/cancel',{id})}catch(ignore){}
+  throw error;
+ }finally{job.uploadId=null}
+}
+async function uploadFile(f,art=false,originalOnly=false){
+ if(!f||sending||generation===null)return;
+ const messageId=art?'artMsg':'uploadMsg',prepared=!art&&/\.epub\.pdt$/i.test(f.name),epub=!art&&/\.epub$/i.test(f.name);
+ if(epub&&(!f.size||f.size>64*1048576)){$(messageId).textContent='Choose an EPUB up to 64 MiB.';return}
+ const job={cancelled:false,controller:new AbortController(),worker:null,cancelPrepare:null,sourceSaved:null,uploadAttempted:false};activeJob=job;
+ let bundle=null;
+ sending=true;$('settingsFields').disabled=true;$('artUpload').disabled=true;$('uploadButton').disabled=true;$('file').disabled=true;$('prepareBook').disabled=true;$('cancelUpload').hidden=false;$('progress').hidden=false;$('progress').value=0;
+ fallbackOriginal=null;pendingPrepared=null;$('uploadOriginal').hidden=true;$('retryPrepared').hidden=true;$(messageId).textContent='Uploading…';
+ try{
+  if(epub&&prepareAvailable&&$('prepareBook').checked&&!originalOnly){
+   $('progress').removeAttribute('value');$(messageId).textContent='Preparing EPUB on this phone…';
+   try{bundle=new Blob([await prepareEpub(f,job)],{type:'application/octet-stream'})}catch(error){if(error.cancelled)throw error;fallbackOriginal=f;$('uploadOriginal').hidden=false;$(messageId).textContent='Could not prepare this EPUB. '+error.message+' Upload the original or retry.';return}
+   checkJob(job);$('progress').value=0;$(messageId).textContent='Uploading original EPUB…';
+  }
+  const result=await transferFile(f,art?'art':prepared?'prepared':'',job);
+  if(bundle){
+   job.sourceSaved=result.name;$('file').value='';
+   // The server may rename a duplicate. Pair only with its actual receipt name.
+   const sidecar={name:result.name+'.pdt',size:bundle.size,slice:(start,end)=>bundle.slice(start,end)};
+   pendingPrepared=sidecar;checkJob(job);const state=await json('/api/status',{signal:job.controller.signal});generation=state.uploadGeneration;
+   checkJob(job);$('progress').value=0;$(messageId).textContent='Uploading faster-opening file…';
+   await transferFile(sidecar,'prepared',job);pendingPrepared=null;
+  }
+  $(messageId).textContent='Uploaded: '+result.name+(bundle?' · Faster opening ready.':'');$('progress').value=1;$('file').value='';
+ }catch(error){
+  if(job.sourceSaved){$(messageId).textContent='Uploaded: '+job.sourceSaved+'. '+(error.cancelled?'Faster opening cancelled.':'Faster-opening file was not added. You can retry.');if(pendingPrepared)$('retryPrepared').hidden=false}
+  else if(error.cancelled)$(messageId).textContent=job.uploadAttempted?'Cancelled. Check the book list before retrying.':'Cancelled. Nothing was uploaded.';
+  else $(messageId).textContent=error.message+(prepared?' The original EPUB is unchanged. You can retry.':' Check the book list before retrying.');
+  if(prepared){pendingPrepared=f;$('retryPrepared').hidden=false}
+ }finally{if(job.worker)job.worker.terminate();activeJob=null;sending=false;$('cancelUpload').hidden=true;$('progress').hidden=true;$('file').disabled=false;$('settingsFields').disabled=false;$('artUpload').disabled=false;$('prepareBook').disabled=!prepareAvailable;refresh();if(art)await loadSettings(false)}
 }
 $('uploadForm').addEventListener('submit',async e=>{e.preventDefault();await uploadFile($('file').files[0]);});
+$('cancelUpload').addEventListener('click',()=>{const job=activeJob;if(!job)return;job.cancelled=true;job.controller.abort();if(job.cancelPrepare)job.cancelPrepare();});
+$('uploadOriginal').addEventListener('click',async()=>{if(fallbackOriginal)await uploadFile(fallbackOriginal,false,true);});
+$('retryPrepared').addEventListener('click',async()=>{if(pendingPrepared)await uploadFile(pendingPrepared);});
+$('file').addEventListener('change',()=>{if(sending)return;fallbackOriginal=null;pendingPrepared=null;$('uploadOriginal').hidden=true;$('retryPrepared').hidden=true;$('uploadMsg').textContent='';});
 
 $('wifiForm').addEventListener('submit',async e=>{e.preventDefault();$('wifiButton').disabled=true;$('wifiMsg').textContent='Saving…';try{await post('/api/wifi',{ssid:$('ssid').value,pass:$('pass').value});$('pass').value='';$('wifiMsg').textContent='Saved. Select N on the reader to connect.'}catch(err){$('wifiMsg').textContent=err.message}finally{$('wifiButton').disabled=false}});
 
