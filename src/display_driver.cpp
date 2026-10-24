@@ -1,3 +1,4 @@
+#include "console.h"
 #include <Arduino.h>
 #include <M5Unified.h>
 #include "display_driver.h"
@@ -18,7 +19,7 @@ void displaySetRotated(bool rotated){
   // M5GFX rotation index of this panel.
   int target=(normalRotation+(rotated?2:0))%4;
   M5.Display.setRotation(target);
-  Serial.printf("DISPLAY_ROTATION base=%d target=%d size=%dx%d\n",normalRotation,target,M5.Display.width(),M5.Display.height());
+  Console.printf("DISPLAY_ROTATION base=%d target=%d size=%dx%d\n",normalRotation,target,M5.Display.width(),M5.Display.height());
 }
 bool beginRefresh(bool sceneChange,bool reading){
   powerActivity();
@@ -33,6 +34,6 @@ void endRefresh(const char* reason,int x,int y,int w,int h){
   else M5.Display.display();
   M5.Display.waitDisplay();
   powerActivity();
-  Serial.printf("REFRESH reason=%s mode=%s rect=%d,%d,%d,%d ms=%u partials=%u\n",reason,full?"quality":"fast",full?0:x,full?0:y,full?540:w,full?960:h,(unsigned)(millis()-started),policy.partials);
+  Console.printf("REFRESH reason=%s mode=%s rect=%d,%d,%d,%d ms=%u partials=%u\n",reason,full?"quality":"fast",full?0:x,full?0:y,full?540:w,full?960:h,(unsigned)(millis()-started),policy.partials);
 }
-void logDisplayStatus(){Serial.printf("DISPLAY fulls=%u partials_since_full=%u\n",policy.fulls,policy.partials);}
+void logDisplayStatus(){Console.printf("DISPLAY fulls=%u partials_since_full=%u\n",policy.fulls,policy.partials);}

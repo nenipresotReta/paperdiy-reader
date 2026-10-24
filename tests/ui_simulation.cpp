@@ -19,11 +19,14 @@
 
 std::vector<String> sdBooks;
 bool sdOK = true;
+bool simulatedBackground=false;
+bool sdBackgroundPending(){return simulatedBackground;}
 bool drawStoredShutdownArt(){return false;}
 size_t selectedBook = 0;
 String sdError;
 
 const lgfx::IFont* readerFont() { static lgfx::IFont font; return &font; }
+const reader_font::Font& bodyNativeFont(){return reader_settings::geometry().pixels==24?reader_font::FONT_24:reader_font::FONT_28;}
 const lgfx::IFont* bodyFont() { static lgfx::IFont font; return &font; }
 
 uint32_t readerCodepoint(const char* text, size_t bytes) {
@@ -54,7 +57,9 @@ bool bodyFontHasGlyph(uint32_t codepoint) {
 struct CodeGlyph { uint32_t cp; int x,y; };
 bool captureCodeGlyphs=false;
 std::vector<CodeGlyph> capturedCodeGlyphs;
-void drawReaderGlyph(const char* text, size_t bytes, int x, int y, uint32_t foreground) {
+bool captureBodyGlyphs=false;
+std::vector<CodeGlyph> capturedBodyGlyphs;
+void drawReaderGlyph(const char* text, size_t bytes, int x, int y, uint16_t foreground) {
   if(captureCodeGlyphs)capturedCodeGlyphs.push_back({readerCodepoint(text,bytes),x,y});
   reader_font::drawGlyphRuns(reader_font::FONT_24, readerCodepoint(text, bytes), x, y,
     [&](int left, int top, int count) {
@@ -62,7 +67,8 @@ void drawReaderGlyph(const char* text, size_t bytes, int x, int y, uint32_t fore
     });
 }
 
-void drawBodyGlyph(const char* text, size_t bytes, int x, int y, uint32_t foreground) {
+void drawBodyGlyph(const char* text, size_t bytes, int x, int y, uint16_t foreground) {
+  if(captureBodyGlyphs)capturedBodyGlyphs.push_back({readerCodepoint(text,bytes),x,y});
   reader_font::drawGlyphRuns(reader_font::FONT_28, readerCodepoint(text, bytes), x, y,
     [&](int left, int top, int count) {
       M5.Display.drawFastHLine(left, top, count, foreground);
@@ -236,6 +242,38 @@ void expectPartialNetworkChange(bool connected, bool rotated) {
                  "WIFI:T:WPA;S:PaperDIY-TEST;P:ABCDEFGHJKLM;H:false;;", rotated);
   expectControls(NetworkMode::Ap, rotated);
 }
+void lanPanelTransitions(){
+  const String payload="{\"v\":1,\"deviceId\":\"0123456789abcdef\",\"host\":\"192.168.255.254\",\"port\":8443,\"certSha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"secret\":\"0123456789abcdef0123456789abcdef\"}";
+  uint8_t matrix[64*64];const int modules=qrMatrix(payload.c_str(),matrix,10);
+  assert(modules==57); // Longest IPv4 payload must fit, without truncation.
+  for(bool rotated:{false,true}){
+    rotateSettings(rotated);networkMode=NetworkMode::Sta;
+    settingsLanPairing=payload;settingsLanType="";settingsLanName="";settingsLanState="Ready";
+    showSettings(true);const int dy=rotated?336:0;
+    constexpr int scale=3,size=195,left=34;
+    for(int y=0;y<size;++y)for(int x=0;x<size;++x){
+      const int row=y/scale-4,col=x/scale-4;
+      const bool ink=row>=0&&row<modules&&col>=0&&col<modules&&matrix[row*modules+col];
+      assert(black(left+x,290+dy+y)==ink);
+    }
+    const auto before=M5.Display.panel;
+    settingsLanPairing="";settingsLanType="Push · Markdown";
+    settingsLanName="Daily mathematics";settingsLanState="Receiving 42%";
+    updateSettingsDelivery();assert(!M5.Display.lastFull);
+    assert(M5.Display.lastRefreshY==268+dy&&M5.Display.lastRefreshH==244);
+    for(int y=0;y<960;++y)for(int x=0;x<540;++x){
+      if(before[y*540+x]==M5.Display.panel[y*540+x])continue;
+      assert(y>=(rotated?112:268)&&y<(rotated?356:512));
+    }
+    assert(countBlack(32,280+dy,500,308+dy)>0);
+    assert(countBlack(32,320+dy,500,348+dy)>0);
+    assert(countBlack(32,360+dy,500,388+dy)>0);
+    assert(countBlack(24,400+dy,240,496+dy)==0); // Old QR removed.
+    expectControls(NetworkMode::Sta,rotated);
+    writePGM(rotated?"ui-simulation-lan-rotated.pgm":"ui-simulation-lan.pgm",true);
+  }
+  settingsLanPairing="";settingsLanType="";settingsLanName="";settingsLanState="";
+}
 }  // namespace
 
 
@@ -293,9 +331,26 @@ void batteryPixelUpdates() {
 }
 
 int interfaceGlyphAdvance(uint32_t cp){return reader_font::glyphAdvance(reader_font::FONT_28,cp);}
-void drawInterfaceGlyph(const char* text,size_t bytes,int x,int y,uint32_t color){drawBodyGlyph(text,bytes,x,y,color);}
+void drawInterfaceGlyph(const char* text,size_t bytes,int x,int y,uint16_t color){drawBodyGlyph(text,bytes,x,y,color);}
 int main() {
   displayInit();
+  {
+    std::string longText;for(unsigned i=0;i<600;++i)longText+="A saved reading position must remain visible while the background builds the complete index.\n";
+    loadBook(longText);const auto expected=pageOffsets;
+    const uint32_t anchor=uint32_t(longText.size()*3/4);
+    prefs.values[bookmarkKey.c_str()]=anchor;
+    assert(indexBook(false,false,nullptr,false,true));
+    assert(readerHasProvisionalPages()&&readerTotalPages()==0&&currentReadingOffset()==anchor);
+    simulatedBackground=true;showBook(true);const auto before=M5.Display.fb;
+    while(readerIndexPending())advanceReaderIndex(2,12);
+    assert(*canonicalReaderPages()==expected&&currentReadingOffset()==anchor);
+    simulatedBackground=false;updateBookFooter();
+    assert(std::equal(before.begin(),before.begin()+916*540,M5.Display.fb.begin()));
+    assert(M5.Display.lastRefreshY==923&&M5.Display.lastRefreshH==37);
+    assert(readerPageNumber()==0&&readerTotalPages()==expected.size());
+    assert(turnReaderPage(1));assert(!readerHasProvisionalPages());
+    cancelReaderIndex();pageOffsets.clear();bookLength=0;
+  }
   batteryPixelUpdates();
   M5.Power.battery = 87;
   for (int i = 1; i <= 25; ++i) {
@@ -423,6 +478,8 @@ int main() {
       writePGM("ui-simulation-settings-ap-rotated.pgm", true);
   }
 
+  lanPanelTransitions();
+
   // A station association replaces the join symbol with the web symbol. A
   // disconnect restores the join symbol. Each update preserves controls and
   // erases the previous QR, including when the framebuffer is rotated.
@@ -497,30 +554,39 @@ int main() {
   assert(M5.Display.panel[910 * 540 + 530] == 255);
   assert(M5.Display.panel[910 * 540 + 538] == 255);
 
-  // Protect prose, italic and formula pixels while code deliberately uses its
-  // actual native advance rather than a padded 24 px cell. An independent
-  // old-width render reproduced 0x5d7e6107fc773c9a; its only changed pixels were
-  // this fixture's second-page code area (y >= 529), with offsets still 0/807.
+  // Reviewed native Latin spacing, italic and formula pixels, plus native
+  // 24 px code advances. Also protect the page boundary: widow avoidance must
+  // not move a line after its first word has already begun on the prior page.
   std::string asciiSource="## ASCII typography\n\n";
   for(unsigned pass=0;pass<6;++pass)asciiSource+="A quiet observer checks 0123456789, **bold words**, *italic words*, and a link [label](https://example.invalid). Mixed 中文 and Ελληνικά remain unchanged. Inline $x_1+2$ shares the baseline.\n\n";
   asciiSource+="```\n";for(unsigned cp=32;cp<=126;++cp)asciiSource+=char(cp);asciiSource+="\n```\n";
   loadBook(asciiSource,true);
   assert(bookMarkdown && !bookMarkupFallback);
-  assert(pageOffsets==std::vector<uint32_t>({0,807}));
+  assert((pageOffsets==std::vector<uint32_t>{0,807}));
   uint64_t asciiRasterHash=1469598103934665603ULL,proseRasterHash=asciiRasterHash;
-  capturedCodeGlyphs.clear();captureCodeGlyphs=true;
+  capturedCodeGlyphs.clear();captureCodeGlyphs=true;captureBodyGlyphs=true;
   for(size_t i=0;i<pageOffsets.size();++i){
+    capturedBodyGlyphs.clear();
     M5.Display.fillScreen(TFT_WHITE);
     assert(layoutPage(pageOffsets[i],true)==(i+1<pageOffsets.size()?pageOffsets[i+1]:bookLength));
+    if(i+1<pageOffsets.size()){
+      // This fixture has no literal prose hyphens. A trailing drawn '-' would
+      // be an automatic split; the old widow rule left "re-" / "main" here.
+      assert(!capturedBodyGlyphs.empty()&&capturedBodyGlyphs.back().cp!='-');
+      const size_t boundary=pageOffsets[i+1];
+      auto letter=[](char ch){return (ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z');};
+      assert(boundary>0&&boundary<asciiSource.size());
+      assert(!(letter(asciiSource[boundary-1])&&letter(asciiSource[boundary])));
+    }
+    char output[80];snprintf(output,sizeof(output),"ui-simulation-ascii-%u.pgm",unsigned(i));writePGM(output);
     for(size_t pixel=0;pixel<M5.Display.fb.size();++pixel){
       asciiRasterHash=(asciiRasterHash^M5.Display.fb[pixel])*1099511628211ULL;
       const uint8_t prose=i==1&&pixel/540>=529?255:M5.Display.fb[pixel];
       proseRasterHash=(proseRasterHash^prose)*1099511628211ULL;
     }
   }
-  captureCodeGlyphs=false;
-  // This protected hash also matched the old padded-width renderer exactly.
-  assert(proseRasterHash==0xbf395a2a06ddf2caULL);
+  captureCodeGlyphs=false;captureBodyGlyphs=false;
+  assert(proseRasterHash==0xeac0e649a851def4ULL);
   assert(capturedCodeGlyphs.size()==95);
   std::vector<uint8_t> codePixels(540*960,255);
   unsigned codeLines=0;
@@ -540,7 +606,7 @@ int main() {
   assert(codeLines==4); // Removing artificial padding saves one code line.
   for(size_t pixel=529*540;pixel<codePixels.size();++pixel)
     assert(M5.Display.fb[pixel]==codePixels[pixel]);
-  assert(asciiRasterHash==0xe54177027cb05b10ULL);
+  assert(asciiRasterHash==0x982b0cd3d4bfc53aULL);
 
   // Render the production Markdown adapter with native glyphs and real math
   // commands, including a second page after source-offset pagination.

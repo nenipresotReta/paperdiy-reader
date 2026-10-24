@@ -1,3 +1,4 @@
+#include "console.h"
 #include <M5Unified.h>
 #include <algorithm>
 #include <cstring>
@@ -11,6 +12,7 @@
 #include "power.h"
 #include "ui.h"
 #include "shutdown_art.h"
+#include "managed_progress.h"
 #ifdef PAPERDIY_SHUTDOWN_HEADER
 #include PAPERDIY_SHUTDOWN_HEADER
 #endif
@@ -21,6 +23,8 @@ String settingsApSsid,settingsApPassword,settingsApUrl;
 bool settingsApClientConnected=false;
 String settingsStaSsid,settingsStaIp,settingsStaError;
 bool settingsStaConfigured=false,settingsStaConnected=false;
+String settingsUsbStatus="Connect USB";
+String settingsLanType,settingsLanName,settingsLanState,settingsLanPairing;
 namespace {
 constexpr int TOP=56,ROW=39;
 constexpr int BATTERY_CELL_X=504,BATTERY_CELL_Y=8,BATTERY_CELL_W=28,BATTERY_CELL_H=28;
@@ -59,7 +63,7 @@ String fitName(const String& input,int width){
   return out;
 }
 void font(){M5.Display.setFont(readerFont());M5.Display.setTextSize(1);M5.Display.setTextColor(TFT_BLACK,TFT_WHITE);}
-void bookName(const String& name,int x,int y,int width,uint32_t foreground){
+void bookName(const String& name,int x,int y,int width,uint16_t foreground){
   size_t pos=0;int used=0;
   while(pos<name.length()){
     char ch[5];size_t n=utf8Char(name.c_str()+pos,name.length()-pos,ch);
@@ -100,9 +104,9 @@ void smallLine(const String& text,int x,int y){
   M5.Display.setCursor(x,y);
   M5.Display.print(fitName(text,540-x-24));
 }
-void qrCode(const String& data,int x,int y,int size){
+void qrCode(const String& data,int x,int y,int size,int version=6){
   uint8_t matrix[64*64];
-  const int count=qrMatrix(data.c_str(),matrix,6);
+  const int count=qrMatrix(data.c_str(),matrix,version);
   if(count<=0)return;
   const int scale=size/(count+8);
   if(scale<1)return;
@@ -131,6 +135,19 @@ void apPanel(){
   smallLine(String("SSID: ")+settingsApSsid,24,448+dy);
   smallLine(String("PASS: ")+settingsApPassword,24,480+dy);
 }
+void deliveryPanel(){
+  if(!settingsStaConnected)return;
+  const int dy=settingsContentDy();
+  if(settingsLanPairing.length()&&settingsLanType.length()==0){
+    qrCode(settingsLanPairing,24,280+dy,216,10);
+    smallLine("Pair",264,292+dy);
+    smallLine(settingsLanState,264,336+dy);
+  }else{
+    if(settingsLanType.length())smallLine(settingsLanType,32,280+dy);
+    if(settingsLanName.length())smallLine(settingsLanName,32,320+dy);
+    smallLine(settingsLanState,32,360+dy);
+  }
+}
 void staPanel(){
   const int dy=settingsContentDy();
   bodyText("STA",32,112+dy);
@@ -153,11 +170,12 @@ void staPanel(){
     M5.Display.setCursor(32,y);
     M5.Display.print("Configure in A mode");
   }
+  deliveryPanel();
 }
 void usbPanel(){
   const int dy=settingsContentDy();
   bodyText("USB Storage",32,112+dy);
-  smallLine("Not enabled in this build",32,160+dy);
+  smallLine(settingsUsbStatus,32,160+dy);
 }
 void statusIcon(bool busy=false){
   M5.Display.fillRect(504,928,28,28,TFT_WHITE);
@@ -187,7 +205,8 @@ void row(size_t index,int rowIndex,bool chosen){
   int y=TOP+rowIndex*ROW;
   M5.Display.fillRect(16,y,508,ROW,chosen?TFT_BLACK:TFT_WHITE);
   M5.Display.setTextColor(chosen?TFT_WHITE:TFT_BLACK,chosen?TFT_BLACK:TFT_WHITE);
-  String name=sdBooks[index].substring(sdBooks[index].lastIndexOf('/')+1);int dot=name.lastIndexOf('.');if(dot>0)name=name.substring(0,dot);
+  String name=managed_progress::isPushPath(sdBooks[index].c_str())?String("Push"):sdBooks[index].substring(sdBooks[index].lastIndexOf('/')+1);
+  int dot=name.lastIndexOf('.');if(dot>0)name=name.substring(0,dot);
   M5.Display.setClipRect(16,y,508,ROW);
   bookName(name,24,y+2,488,chosen?TFT_WHITE:TFT_BLACK);
   M5.Display.clearClipRect();
@@ -215,7 +234,7 @@ void showLibrary(bool sceneChange){
   }
   if(!sdOK){font();String text="sd card mount failed";M5.Display.setCursor((540-M5.Display.textWidth(text))/2,450);M5.Display.print(text);}
   statusIcon();endRefresh("library",0,0,540,960);
-  Serial.printf("LIBRARY books=%u selected=%u settings=%d first=%u rows=%u mounted=%d\n",(unsigned)sdBooks.size(),(unsigned)selectedBook,settingsSelected?1:0,(unsigned)firstBook,controls::LIBRARY_ROWS,sdOK);
+  Console.printf("LIBRARY books=%u selected=%u settings=%d first=%u rows=%u mounted=%d\n",(unsigned)sdBooks.size(),(unsigned)selectedBook,settingsSelected?1:0,(unsigned)firstBook,controls::LIBRARY_ROWS,sdOK);
 }
 void updateLibrarySelection(size_t oldSelection,bool oldSettings,SettingsId oldId){
   size_t oldCursor=settings_registry::libraryCursor(oldSelection,oldSettings,oldId);
@@ -236,7 +255,7 @@ void updateLibrarySelection(size_t oldSelection,bool oldSettings,SettingsId oldI
   int top=TOP+std::min(oldRow,newRow)*ROW;
   int height=(std::max(oldRow,newRow)-std::min(oldRow,newRow)+1)*ROW;
   endRefresh("selection",16,top,508,height);
-  Serial.printf("SELECTION selected=%u settings=%d\n",(unsigned)selectedBook,settingsSelected?1:0);
+  Console.printf("SELECTION selected=%u settings=%d\n",(unsigned)selectedBook,settingsSelected?1:0);
 }
 void showBook(bool sceneChange){
   if(pageOffsets.empty())return;
@@ -244,21 +263,32 @@ void showBook(bool sceneChange){
   const int edge=std::min(20,reader_settings::geometry().left-4);
   if(sceneChange){M5.Display.fillScreen(TFT_WHITE);}
   else {M5.Display.fillRect(20,20,520,896,TFT_WHITE);M5.Display.fillRect(120,923,300,37,TFT_WHITE);}
-  statusIcon();
+  statusIcon(sdBackgroundPending());
   font();prepareReaderFont();
   // The 30 px right margin is also the hang zone; clip and refresh it too.
   M5.Display.setClipRect(edge,20,540-edge,896);layoutPage(pageOffsets[pageNumber],true);M5.Display.clearClipRect();
   font();
-  String number=String(pageNumber+1)+" / "+String(pageOffsets.size());M5.Display.setCursor((540-M5.Display.textWidth(number))/2,960-READER_FONT_HEIGHT);M5.Display.print(number);
+  const uint32_t current=readerPageNumber(),total=readerTotalPages();
+  String number=(current?String(current):String("…"))+" / "+(total?String(total):String("…"));
+  M5.Display.setCursor((540-M5.Display.textWidth(number))/2,960-READER_FONT_HEIGHT);M5.Display.print(number);
   endRefresh("page",edge,20,540-edge,940);
   uint32_t offset=pageOffsets[pageNumber];
-  uint32_t end=pageNumber+1<pageOffsets.size()?pageOffsets[pageNumber+1]:bookLength;
-  Serial.printf("BOOK_PAGE page=%u total=%u key=%s offset=%u end=%u font_px=%d line_height=%d\n",(unsigned)pageNumber+1,(unsigned)pageOffsets.size(),bookmarkKey.c_str(),offset,end,reader_settings::geometry().pixels,reader_settings::geometry().lineHeight);
+  uint32_t end=currentPageEnd();
+  Console.printf("BOOK_PAGE page=%u total=%u key=%s offset=%u end=%u font_px=%d line_height=%d provisional=%u\n",current,total,bookmarkKey.c_str(),offset,end,reader_settings::geometry().pixels,reader_settings::geometry().lineHeight,unsigned(readerHasProvisionalPages()));
+}
+void updateBookFooter(){
+  if(pageOffsets.empty())return;
+  beginRefresh();font();M5.Display.fillRect(120,923,420,37,TFT_WHITE);
+  statusIcon(sdBackgroundPending());
+  const uint32_t current=readerPageNumber(),total=readerTotalPages();
+  const String label=(current?String(current):String("…"))+" / "+(total?String(total):String("…"));
+  M5.Display.setCursor((540-M5.Display.textWidth(label))/2,960-READER_FONT_HEIGHT);M5.Display.print(label);
+  endRefresh("pagination",120,923,420,37);
 }
 void showLoading(){
   beginRefresh();font();
   statusIcon(true);endRefresh("loading",504,928,28,28);
-  Serial.println("LOADING_VISIBLE input=discard");
+  Console.println("LOADING_VISIBLE input=discard");
 }
 void showError(const String& message){
   beginRefresh();font();M5.Display.fillRect(20,416,500,100,TFT_WHITE);M5.Display.drawRect(20,416,500,100,TFT_BLACK);
@@ -297,6 +327,12 @@ void updateSettingsNetwork(){
   else if(networkMode==NetworkMode::Sta)staPanel();
   else if(networkMode==NetworkMode::Usb)usbPanel();
   endRefresh("settings-network",0,y,540,SETTINGS_CONTENT_H);
+}
+void updateSettingsDelivery(){
+  if(settingsId!=SettingsId::Network||networkMode!=NetworkMode::Sta)return;
+  const int y=268+settingsContentDy();
+  beginRefresh();M5.Display.fillRect(0,y,540,244,TFT_WHITE);deliveryPanel();
+  endRefresh("delivery",0,y,540,244);
 }
 
 void updateLibraryBattery(){

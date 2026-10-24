@@ -18,3 +18,8 @@ uint8_t rawPowerKeys();
 void idlePower(bool stableScene, bool inputIdle, int stableCardLevel, bool radioActive=false);
 const IdlePowerStats& idlePowerStats();
 void logIdlePowerStatus();
+#ifdef PAPERDIY_DIAGNOSTICS
+// Explicit diagnostic only: exercise the production sleep/restore guard while
+// USB is attached. Normal idlePower() continues to block all USB-host sleep.
+bool powerDiagnosticSleep(uint32_t durationMs);
+#endif
