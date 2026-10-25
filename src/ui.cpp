@@ -278,7 +278,7 @@ void showBook(bool sceneChange){
   const uint32_t current=readerPageNumber(),total=readerTotalPages();
   if(contentPrefetchFailed()){
     M5.Display.setCursor(24,960-READER_FONT_HEIGHT);
-    M5.Display.print("缓存读取中断，请重新打开");
+    M5.Display.print("Cache read interrupted; reopen");
   }else{
     String number=(current?String(current):String("…"))+" / "+(total?String(total):String("…"));
     M5.Display.setCursor((540-M5.Display.textWidth(number))/2,960-READER_FONT_HEIGHT);M5.Display.print(number);
@@ -300,7 +300,7 @@ void updateBookFooter(){
   const uint32_t current=readerPageNumber(),total=readerTotalPages();
   if(failed){
     M5.Display.setCursor(24,960-READER_FONT_HEIGHT);
-    M5.Display.print("缓存读取中断，请重新打开");
+    M5.Display.print("Cache read interrupted; reopen");
   }else{
     const String label=(current?String(current):String("…"))+" / "+(total?String(total):String("…"));
     M5.Display.setCursor((540-M5.Display.textWidth(label))/2,960-READER_FONT_HEIGHT);M5.Display.print(label);
@@ -313,7 +313,7 @@ void showPrefetchFailureBanner(){
   M5.Display.fillRect(20,8,500,40,TFT_WHITE);
   M5.Display.drawRect(20,8,500,40,TFT_BLACK);
   M5.Display.setCursor(28,14);
-  M5.Display.print("缓存读取中断，请重新打开");
+  M5.Display.print("Cache read interrupted; reopen");
   endRefresh("prefetch-failure",20,8,500,40);
 }
 void showLoading(){
