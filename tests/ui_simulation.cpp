@@ -1,3 +1,4 @@
+#include "lan_service.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -24,6 +25,12 @@ bool simulatedPrefetchFailed=false;
 bool sdBackgroundPending(){return simulatedBackground;}
 bool contentPrefetchPending(){return false;}
 bool contentPrefetchFailed(){return simulatedPrefetchFailed;}
+namespace lan_service {
+Prompt simulatedPromptValue;
+bool promptPending(){return simulatedPromptValue.active;}
+const Prompt& prompt(){return simulatedPromptValue;}
+}
+auto& simulatedPrompt=lan_service::simulatedPromptValue;
 void contentPrefetchFirstPaint(){}
 bool drawStoredShutdownArt(){return false;}
 size_t selectedBook = 0;
@@ -249,23 +256,39 @@ void expectPartialNetworkChange(bool connected, bool rotated) {
   expectControls(NetworkMode::Ap, rotated);
 }
 void lanPanelTransitions(){
-  const String payload="{\"v\":1,\"deviceId\":\"0123456789abcdef\",\"host\":\"192.168.255.254\",\"port\":8443,\"certSha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"secret\":\"0123456789abcdef0123456789abcdef\"}";
-  uint8_t matrix[64*64];const int modules=qrMatrix(payload.c_str(),matrix,10);
-  assert(modules==57); // Longest IPv4 payload must fit, without truncation.
   for(bool rotated:{false,true}){
-    rotateSettings(rotated);networkMode=NetworkMode::Sta;
-    settingsLanPairing=payload;settingsLanType="";settingsLanName="";settingsLanState="Ready";
-    showSettings(true);const int dy=rotated?336:0;
-    constexpr int scale=3,size=195,left=34;
-    for(int y=0;y<size;++y)for(int x=0;x<size;++x){
-      const int row=y/scale-4,col=x/scale-4;
-      const bool ink=row>=0&&row<modules&&col>=0&&col<modules&&matrix[row*modules+col];
-      assert(black(left+x,290+dy+y)==ink);
+    rotateSettings(rotated);networkMode=NetworkMode::Sta;const int dy=rotated?336:0;
+    simulatedPrompt=lan_service::Prompt{};
+    settingsLanType="";settingsLanName="";settingsLanState="Ready";
+    showSettings(true);
+    assert(countBlack(24,400+dy,240,496+dy)==0); // no pairing QR on the N panel
+    // A first-contact prompt takes over the content area below the title.
+    auto before=M5.Display.panel;
+    simulatedPrompt.active=true;simulatedPrompt.firstContact=true;simulatedPrompt.label="Hermes";simulatedPrompt.sas="482 913";
+    simulatedPrompt.names={"notes.md","ch1.md","ch2.md","ch3.md","ch4.md"};simulatedPrompt.total=7;simulatedPrompt.replacesPush="Weekly";
+    updateSettingsDelivery();
+    assert(M5.Display.lastRefreshY==112+dy&&M5.Display.lastRefreshH==400);
+    for(int y=0;y<960;++y)for(int x=0;x<540;++x){
+      if(before[y*540+x]==M5.Display.panel[y*540+x])continue;
+      assert(y>=112&&y<512); // physical rows: the content area in both rotations
     }
-    const auto before=M5.Display.panel;
-    settingsLanPairing="";settingsLanType="Push · Markdown";
-    settingsLanName="Daily mathematics";settingsLanState="Receiving 42%";
-    updateSettingsDelivery();assert(!M5.Display.lastFull);
+    // Header, SAS, five names, "+2 more", the Push line and the footer each
+    // occupy their own 34 px band.
+    for(int line=0;line<9;++line)assert(countBlack(32,160+dy+34*line+4,508,160+dy+34*line+30)>0);
+    assert(countBlack(32,470+dy+4,508,470+dy+30)>0);
+    writePGM(rotated?"ui-simulation-prompt-rotated.pgm":"ui-simulation-prompt.pgm",true);
+    // A paired sender has no SAS line; the list starts one band higher.
+    simulatedPrompt.firstContact=false;simulatedPrompt.sas="";simulatedPrompt.names={"notes.md"};simulatedPrompt.total=1;simulatedPrompt.replacesPush="";
+    updateSettingsDelivery();
+    assert(countBlack(32,160+dy+4,508,160+dy+30)>0&&countBlack(32,194+dy+4,508,194+dy+30)>0);
+    assert(countBlack(32,228+dy+4,508,228+dy+30)==0);
+    // Accepting or cancelling restores the ordinary STA panel in one full redraw,
+    // then progress updates return to the partial delivery band.
+    simulatedPrompt=lan_service::Prompt{};
+    settingsLanType="2/3 · Push · Markdown";settingsLanName="Daily mathematics";settingsLanState="Receiving 42%";
+    updateSettingsDelivery();assert(M5.Display.lastRefreshY==112+dy&&M5.Display.lastRefreshH==400);
+    before=M5.Display.panel;
+    settingsLanState="Receiving 43%";updateSettingsDelivery();assert(!M5.Display.lastFull);
     assert(M5.Display.lastRefreshY==268+dy&&M5.Display.lastRefreshH==244);
     for(int y=0;y<960;++y)for(int x=0;x<540;++x){
       if(before[y*540+x]==M5.Display.panel[y*540+x])continue;
@@ -274,11 +297,10 @@ void lanPanelTransitions(){
     assert(countBlack(32,280+dy,500,308+dy)>0);
     assert(countBlack(32,320+dy,500,348+dy)>0);
     assert(countBlack(32,360+dy,500,388+dy)>0);
-    assert(countBlack(24,400+dy,240,496+dy)==0); // Old QR removed.
     expectControls(NetworkMode::Sta,rotated);
     writePGM(rotated?"ui-simulation-lan-rotated.pgm":"ui-simulation-lan.pgm",true);
   }
-  settingsLanPairing="";settingsLanType="";settingsLanName="";settingsLanState="";
+  settingsLanType="";settingsLanName="";settingsLanState="";
 }
 }  // namespace
 

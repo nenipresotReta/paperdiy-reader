@@ -284,7 +284,7 @@ zeroization on the target.
 
 N exists only while explicitly selected. Device-specific P-256 TLS 1.2 uses
 ECDHE-ECDSA/AES-128-GCM; the sender verifies exact certificate-DER SHA-256 before
-any HTTP, token or pairing secret. Bearer authorization is separate from AP
+any HTTP, token or pairing proof; only the credential-free identity probe is unpinned. Bearer authorization is separate from AP
 cookies/Wi-Fi. Two 16 KiB record capacities allocate 33,434 internal buffer bytes
 on the pinned SDK, plus TLS/crypto contexts. PSRAM cannot supply that internal
 heap. Handshake, idle and absolute deadlines are cooperative, not crypto preemption.

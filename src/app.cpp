@@ -207,6 +207,11 @@ void dispatch(controls::Action action){
   powerActivity();
   if(action==Action::Shutdown){Console.println("SHUTDOWN_TRIGGER keys=A+B");shutdown();return;}
   if(screen==Screen::Settings){
+    // While a delivery prompt is shown, short A+B accepts it instead of leaving
+    // Settings. A (next mode) and leaving Settings stop N, which cancels it.
+    if(action==Action::Confirm&&lan_service::promptPending()){
+      lan_service::acceptPrompt();updateSettingsNetwork();return;
+    }
     if(action==Action::Confirm){library();return;}
     if(action==Action::Previous){
       NetworkMode next=nextNetworkMode(networkMode);
@@ -280,7 +285,7 @@ void diagnosticCommand(const String& line){
       unsigned(storage_validation::cardEventPending()),unsigned(digitalRead(48)==LOW));
     logUsbDiagnostics();return;
   }
-  if(line=="LAN_STATUS"||line=="LAN_PAIRING"){lan_service::printStatus(line=="LAN_PAIRING");return;}
+  if(line=="LAN_STATUS"){lan_service::printStatus();return;}
   if(line=="USB_ENTER"){
     if(!usb_storage::available()){Console.println("USB_DISABLED experimental=0");return;}
     if(!leaveReading())return;

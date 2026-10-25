@@ -266,6 +266,8 @@ CPU 活动工作 240 MHz、普通空闲 80 MHz；USB 所有权到 raw 驱动释�
 
 STA 仅显式选择时开服务。设备 P-256 证书、TLS 1.2 ECDHE-ECDSA/AES-128-GCM，发送凭据/HTTP 前精确 pin 证书 DER 的 SHA-256。Bearer 独立；AP cookie/配网路由不适用于 LAN。
 
+接收端只在设置页且 N 激活时存在。每次投递是 1–8 项的批次，用户短按一次 A+B 接受；不在已接受批次中的上传被拒绝，已接受集合随 N 会话结束。未知发送端的第一批通过阅读器上显示的承诺/揭示短验证码完成配对，因此配对不需要二维码、摄像头或剪贴板。有界的打包条目解析器（[lan_batch.h](../src/lan_batch.h)）在认证前运行并经过模糊测试。N 期间阅读器应答 `paperdiy-<deviceId>.local` 与 `_paperdiy._tcp` 的 mDNS 查询；设备 ID 是证书指纹前缀。已配对发送端在热点网页中列出、移除或全部遗忘。
+
 独立 `paperlan` 保存身份及最多四个客户端 verifier；只有明确缺失才允许创建，读取/类型/提交错误关闭准入。不确定写使 RAM registry 失效，直到验证重载。标签有界 UTF-8，不含控制字符。
 
 store 同时一个事务、块最多 4 KiB、验证每 poll 最多 8 KiB、十六个客户端隔离回执。普通传输新建书；Push 最多 16 KiB Markdown，用两个自有槽覆盖版本而不累计。只有两个固定摘要进度记录，绕过普通逐版本缓存；历史由发送端保留。模糊发布报告 Uncertain，以字节核验恢复。协议/skill 见 [LAN 协议](lan-protocol.zh-CN.md)。

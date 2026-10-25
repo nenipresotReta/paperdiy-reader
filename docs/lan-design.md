@@ -6,9 +6,11 @@ Status: historical proposal, 2026-10-23. Retained as design context, not the
 current protocol or an implementation checklist. The development implementation
 is specified in [LAN protocol](lan-protocol.md) and the
 [architecture report](architecture-and-implementation.md). It uses explicit
-N sessions, certificate pinning, a bounded sender queue, one overwritten Push
-book and ordinary file delivery. mDNS, a multi-message inbox and receiving while
-reading remain outside the implemented scope. The proposals below may differ
+N sessions on Settings, on-device consent per batch (short A+B), first-contact
+pairing with a short authentication string instead of a QR payload, mDNS
+discovery, certificate pinning, a bounded sender queue, one overwritten Push book
+and ordinary file delivery. A multi-message inbox and receiving while reading
+remain outside the implemented scope. The proposals below may differ
 from the final limits and lifecycle; use the protocol document for integration.
 
 ## Scope and recommendation
