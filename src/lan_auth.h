@@ -121,6 +121,13 @@ class Registry {
     if(!next.save(prefs)){valid_=false;return false;}
     *this=next;id=encode(slot->id,8);token=encode(secret.bytes,32);return true;
   }
+  // Explicit physical repair from the AP WebUI: replaces any record, even an
+  // unreadable one, with a verified empty registry. Device identity is kept.
+  template<class Preferences> bool reset(Preferences& prefs){
+    Registry next;next.valid_=true;
+    if(!next.save(prefs)){valid_=false;return false;}
+    *this=next;return true;
+  }
   template<class Preferences> bool revoke(Preferences& prefs,const std::string& id){
     uint8_t raw[8];if(!valid_||!decode(id,raw,8))return false;
     Registry next=*this;bool found=false;
