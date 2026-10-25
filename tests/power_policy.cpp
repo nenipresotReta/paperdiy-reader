@@ -192,6 +192,18 @@ void loadingReleaseGuard() {
   assert(buttons.update(0, 99, true) == Action::None);
   assert(buttons.idle());
 }
+
+void backgroundSleepRule() {
+  // Existing background index/write keeps its Settings exception, but an
+  // authenticated content prefetch blocks sleep on every scene, including
+  // Settings. This is deliberately a separate rule from sdBackgroundPending().
+  assert(idle_power::backgroundAllowsSleep(false, false, false));
+  assert(idle_power::backgroundAllowsSleep(true, false, true));
+  assert(!idle_power::backgroundAllowsSleep(true, false, false));
+  assert(!idle_power::backgroundAllowsSleep(false, true, false));
+  assert(!idle_power::backgroundAllowsSleep(false, true, true));
+  assert(!idle_power::backgroundAllowsSleep(true, true, true));
+}
 } // namespace
 
 int main() {
@@ -201,5 +213,6 @@ int main() {
   firstPressAfterSleep();
   holdAndChordAfterSleep();
   loadingReleaseGuard();
-  puts("idle/USB/backoff/rollover/wake input/hold/chord/release guard: PASS");
+  backgroundSleepRule();
+  puts("idle/USB/backoff/rollover/wake input/hold/chord/release guard/background sleep: PASS");
 }

@@ -116,6 +116,24 @@ void seed(BookCache& c){bookDocument.clear();bookLanguage=text_language::Languag
 void corrupt(const std::string& path,size_t pos){
  std::fstream f(root+path,std::ios::binary|std::ios::in|std::ios::out);f.seekg(pos);char v;f.get(v);v^=1;f.seekp(pos);f.put(v);
 }
+void refreshCacheDigests(std::string& cache,std::string& manifest){
+ reader_cache::Header h;assert(cache.size()>=sizeof(h));memcpy(&h,cache.data(),sizeof(h));
+ SHA256_CTX sha;SHA256_Init(&sha);SHA256_Update(&sha,&h,offsetof(reader_cache::Header,digest));
+ SHA256_Update(&sha,cache.data()+sizeof(h),cache.size()-sizeof(h));SHA256_Final(h.digest,&sha);
+ memcpy(cache.data(),&h,sizeof(h));
+ content_manifest::Header m;assert(manifest.size()>=sizeof(m));memcpy(&m,manifest.data(),sizeof(m));
+ memcpy(m.cacheDigest,h.digest,32);
+ assert(cache.size()==m.prefixBytes+m.textBytes);
+ for(size_t block=0;block<m.blocks;++block){
+  const size_t at=m.prefixBytes+block*content_manifest::BLOCK_BYTES;
+  const size_t count=std::min(size_t(content_manifest::BLOCK_BYTES),size_t(m.textBytes)-block*content_manifest::BLOCK_BYTES);
+  SHA256((const uint8_t*)cache.data()+at,count,(uint8_t*)manifest.data()+sizeof(m)+block*32);
+ }
+ SHA256((const uint8_t*)cache.data(),m.prefixBytes,m.prefixDigest);
+ SHA256_Init(&sha);SHA256_Update(&sha,&m,offsetof(content_manifest::Header,digest));
+ SHA256_Update(&sha,manifest.data()+sizeof(m),manifest.size()-sizeof(m));SHA256_Final(m.digest,&sha);
+ memcpy(manifest.data(),&m,sizeof(m));
+}
 
 void finish(DeferredCacheWrite& writer,BookCache& cache){
  for(unsigned i=0;!writer.done()&&!writer.failed();++i){
@@ -124,6 +142,28 @@ void finish(DeferredCacheWrite& writer,BookCache& cache){
  }
  assert(writer.done());
 }
+struct CancelProbe final:public reader_content::Source {
+ static bool canceled;
+ bool pin(size_t,size_t)override{return true;}
+ size_t begin()const override{return 0;}
+ size_t end()const override{return 0;}
+ size_t length()const override{return 0;}
+ void restoreSpan(size_t,size_t)override{}
+ void cancelPrefetch()override{canceled=true;}
+};
+bool CancelProbe::canceled=false;
+void cancelHookRegression(){
+ CancelProbe::canceled=false;
+ reader_content::install(std::unique_ptr<reader_content::Source>(new CancelProbe()));
+ CancelProbe::canceled=false;
+ reader_content::install(std::unique_ptr<reader_content::Source>(new CancelProbe()));
+ assert(CancelProbe::canceled);
+ CancelProbe::canceled=false;
+ reader_content::clear();
+ assert(CancelProbe::canceled);
+ assert(!reader_content::active());
+}
+
 int main(){
  root=(std::filesystem::temp_directory_path()/("paperdiy-content-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))).string();
  std::filesystem::create_directory(root);SD.mkdir("/.paperdiy-cache");
@@ -198,6 +238,101 @@ int main(){
  // Same-size, same-time source replacement still rejects the fast path.
  reader_content::clear();replaceKeepingTimestamp("/content.epub",std::string(text.size(),'x'));storage_validation::invalidate();storage_validation::beginExclusive();
  BookCache replaced("/content.epub",false);assert(!replaced.load()&&!reader_content::active()&&prefs.data==saved);
+ // ---- authenticated background fill ---------------------------------
+ replaceKeepingTimestamp("/content.epub",text);
+ writeSource(cache.path,complete);
+ writeSource(cache.path+".chunks",manifest);
+ openFresh();BookCache prefetch("/content.epub",false);assert(prefetch.load()&&reader_content::active());
+ auto* prefetchSource=static_cast<SdContentSource*>(reader_content::source().get());
+ assert(prefetchSource->prefetchSupported());
+ const size_t prefetchFirst=reader_content::begin(),prefetchLast=reader_content::limit();
+ const uint32_t prefetchPage=pageNumber,prefetchAnchor=retainedOffset;
+ prefetchSource->beginPrefetch();assert(prefetchSource->prefetchPending());
+ size_t prefetchSteps=0;
+ while(prefetchSource->prefetchPending()){
+  const auto before=prefetchSource->prefetchReadBytes();
+  assert(prefetchSource->prefetchStep());
+  assert(prefetchSource->prefetchReadBytes()-before<=8192);
+  assert(reader_content::begin()==prefetchFirst&&reader_content::limit()==prefetchLast);
+  assert(pageNumber==prefetchPage&&retainedOffset==prefetchAnchor);
+  assert(++prefetchSteps<600);
+ }
+ assert(prefetchSource->prefetchComplete()&&!prefetchSource->prefetchFailed());
+ assert(bookDocument.ready()&&bookDocument.validateSpan(0,text.size()));
+ assert(reader_content::begin()==prefetchFirst&&reader_content::limit()==prefetchLast);
+ reader_content::clear();
+ assert(!reader_content::active()&&!memcmp(book,text.data(),text.size()));
+ assert(pageNumber==prefetchPage&&retainedOffset==prefetchAnchor);
+
+ // A mismatched block hash stops the fill without touching the visible span.
+ writeSource(cache.path,complete);writeSource(cache.path+".chunks",manifest);
+ openFresh();BookCache hashFail("/content.epub",false);assert(hashFail.load()&&reader_content::active());
+ prefetchSource=static_cast<SdContentSource*>(reader_content::source().get());
+ const size_t hashFirst=reader_content::begin(),hashLast=reader_content::limit();
+ content_manifest::Header mh;memcpy(&mh,manifest.data(),sizeof(mh));
+ corrupt(cache.path,mh.prefixBytes+size_t(mh.blocks-1)*content_manifest::BLOCK_BYTES+1);
+ prefetchSource->beginPrefetch();
+ while(prefetchSource->prefetchPending())prefetchSource->prefetchStep();
+ assert(prefetchSource->prefetchFailed()&&prefetchSource->prefetchFailure()==reader_content::PrefetchFailure::Hash);
+ assert(!prefetchSource->prefetchPending());
+ assert(reader_content::begin()==hashFirst&&reader_content::limit()==hashLast);
+ assert(reader_content::pin(hashFirst,hashLast));
+ assert(!reader_content::pin(0,text.size()));
+ reader_content::clear();writeSource(cache.path,complete);
+
+ // Lease loss never falls back to a new lease for the remaining blocks.
+ writeSource(cache.path,complete);writeSource(cache.path+".chunks",manifest);
+ openFresh();BookCache leaseFail("/content.epub",false);assert(leaseFail.load()&&reader_content::active());
+ prefetchSource=static_cast<SdContentSource*>(reader_content::source().get());
+ const size_t leaseFirst=reader_content::begin(),leaseLast=reader_content::limit();
+ prefetchSource->beginPrefetch();storage_validation::invalidate();
+ assert(!prefetchSource->prefetchStep());
+ assert(prefetchSource->prefetchFailed()&&prefetchSource->prefetchFailure()==reader_content::PrefetchFailure::Lease);
+ assert(!prefetchSource->prefetchPending());
+ assert(reader_content::begin()==leaseFirst&&reader_content::limit()==leaseLast);
+ reader_content::clear();
+
+ // Full UTF-8 is checked after every block is authenticated. The invalid byte
+ // is deliberately in the final block, outside the visible page, with all
+ // cache/manifest digests recomputed so only the UTF-8 stage can reject it.
+ writeSource(cache.path,complete);writeSource(cache.path+".chunks",manifest);
+ std::string badFill=complete,badFillManifest=manifest;
+ memcpy(&mh,manifest.data(),sizeof(mh));
+ badFill[mh.prefixBytes+mh.textBytes-2]=0xff;
+ refreshCacheDigests(badFill,badFillManifest);
+ writeSource(cache.path,badFill);writeSource(cache.path+".chunks",badFillManifest);
+ openFresh();BookCache utf8Fail("/content.epub",false);assert(utf8Fail.load()&&reader_content::active());
+ prefetchSource=static_cast<SdContentSource*>(reader_content::source().get());
+ const size_t utf8First=reader_content::begin(),utf8Last=reader_content::limit();
+ prefetchSource->beginPrefetch();
+ while(prefetchSource->prefetchPending())prefetchSource->prefetchStep();
+ assert(prefetchSource->prefetchFailed()&&prefetchSource->prefetchFailure()==reader_content::PrefetchFailure::Utf8);
+ assert(!prefetchSource->prefetchPending());
+ assert(reader_content::begin()==utf8First&&reader_content::limit()==utf8Last);
+ reader_content::clear();
+ writeSource(cache.path,complete);writeSource(cache.path+".chunks",manifest);
+
+ // Injected semantic failure: all blocks are authenticated, but the document
+ // cannot validate the complete semantic span. The visible page must not move.
+ openFresh();BookCache semanticFail("/content.epub",false);assert(semanticFail.load()&&reader_content::active());
+ prefetchSource=static_cast<SdContentSource*>(reader_content::source().get());
+ const size_t semanticFirst=reader_content::begin(),semanticLast=reader_content::limit();
+ prefetchSource->beginPrefetch();bookDocument.clear();
+ while(prefetchSource->prefetchPending())prefetchSource->prefetchStep();
+ assert(prefetchSource->prefetchFailed()&&prefetchSource->prefetchFailure()==reader_content::PrefetchFailure::Semantic);
+ assert(!prefetchSource->prefetchPending());
+ assert(reader_content::begin()==semanticFirst&&reader_content::limit()==semanticLast);
+ reader_content::clear();
+
+ // .bak has no separate block manifest, so it deliberately uses the complete
+ // independently authenticated cache path rather than a partial prefetch.
+ writeSource(cache.path,complete);writeSource(cache.path+".chunks",manifest);
+ writeSource(cache.path+".bak",complete);assert(SD.remove(cache.path));
+ openFresh();BookCache backup("/content.epub",false);assert(backup.load());
+ assert(!reader_content::active()&&!memcmp(book,text.data(),text.size()));
+ assert(SD.remove(cache.path+".bak"));writeSource(cache.path,complete);
+ puts("authenticated background fill: one-block cursor, visible-span stability, hash/lease/UTF-8/semantic failure, .bak full-cache fallback: PASS");
  reader_content::clear();bookDocument.clear();std::filesystem::remove_all(root);
  puts("authenticated content blocks: cold source validation, deep-page read reduction, metadata/manifest integrity, failed pin and lease retention, complete-cache fallback: PASS");
+ cancelHookRegression();
 }
