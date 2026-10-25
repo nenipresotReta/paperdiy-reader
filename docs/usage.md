@@ -21,6 +21,7 @@ Extensions are case-insensitive. Each book retains its reading position. For EPU
 | Library | Previous book; double-click previous screen; hold to repeat | Next book; double-click next screen; hold to repeat | Open selection |
 | Reading | Previous page; hold to repeat | Next page; hold to repeat | Return to library |
 | Network settings | Cycle N → A → Off | Toggle R (180°) | Return to library |
+| Network settings, delivery prompt shown | Next mode (turns N off, which cancels) | Toggle R (180°) | Accept the batch |
 
 The library detects a double-click when releases of the same button are at most 200 ms apart by default; otherwise they are two single clicks. A single click waits up to the configured double-click interval (default 200 ms). Holding starts repeat after about 600 ms. Navigation during loading or refresh is discarded; release the buttons before a new action. The bottom icon indicates busy work.
 
@@ -49,7 +50,7 @@ A closes after five idle minutes. Background library polling does not extend the
 
 ## N / A / Off
 
-- **N** connects to saved home Wi-Fi and enables paired LAN delivery. Below the SSID, status and IP, the screen shows a pairing QR or transfer type/name/progress. A dropped connection gets a fresh 20-second connection window; timeout turns the radio off until N is selected again.
+- **N** connects to saved home Wi-Fi and receives LAN deliveries while Settings stays open. Below the SSID, status and IP, the screen shows a delivery prompt or transfer type/name/progress. A dropped connection gets a fresh 20-second connection window; timeout turns the radio off until N is selected again.
 - **A** provides a temporary AP, web uploads and home Wi-Fi setup.
 - **Off** closes networking.
 
@@ -57,7 +58,20 @@ USB book transfer is paused and disabled by default because actual-SD USB failur
 
 Inactive entries carry `¬`. Leaving settings closes networking. After reboot, restored settings start with N/A inactive. USB attachment enables neither book transfer nor networking. Reading settings and shutdown-image management are available only through A.
 
-N uses the [LAN client](lan-protocol.md); an AI agent can use the [delivery skill](skills/paperdiy-delivery/SKILL.md). Initial pairing requires the five-minute, single-use on-screen payload; subsequent connections pin that device certificate. Ordinary files enter SD `Books` without overwriting names. Push is one fixed library entry containing at most 16 KiB UTF-8 Markdown with supported formulas. New content replaces it; bounded history stays on the sender instead of accumulating books on the reader. With N off, the device receives nothing. A bounded sender queue can sync after N is enabled again. Delivery never automatically opens a book or changes the current reading position.
+N uses the [LAN client](lan-protocol.md) on macOS, Linux or Windows; an AI agent can use the [delivery skill](skills/paperdiy-delivery/SKILL.md). Each delivery asks first:
+
+```
+Hermes · Receive 3 files?
+notes.md
+ch1.md
+Push: Weekly
+Replaces Push: Last week
+A+B accept · A to cancel
+```
+
+Short-press A+B to accept the whole batch, then stay on Settings until the panel shows `Done · 3 files`. Press A (N turns off) or leave Settings to cancel; after 60 seconds the prompt expires. Holding A+B still shuts down and never accepts. A computer that has never sent to this reader shows `New sender · 482 913` on the first line: accept only if the number matches the one the sender (or your agent) reports; that one A+B pairs it and accepts its files. Later connections pin the reader's certificate. While N is active the reader announces itself on the local network, so senders usually need no IP address; give the reader a DHCP reservation for networks where that does not work.
+
+Paired senders are listed in the AP page under Senders, where you can remove one or forget all of them; a removed sender must pair again. Ordinary files enter SD `Books` without overwriting names. Push is one fixed library entry containing at most 16 KiB UTF-8 Markdown with supported formulas. New content replaces it; bounded history stays on the sender instead of accumulating books on the reader. With N off, the device receives nothing. A bounded sender queue can sync after N is enabled again. Delivery never automatically opens a book or changes the current reading position.
 
 ## Japanese and EPUB objects
 
