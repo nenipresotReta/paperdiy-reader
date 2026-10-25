@@ -256,6 +256,7 @@ void updateLibrarySelection(size_t oldSelection,bool oldSettings,SettingsId oldI
   int top=TOP+std::min(oldRow,newRow)*ROW;
   int height=(std::max(oldRow,newRow)-std::min(oldRow,newRow)+1)*ROW;
   endRefresh("selection",16,top,508,height);
+  if(contentPrefetchFailed())showPrefetchFailureBanner();
   Console.printf("SELECTION selected=%u settings=%d\n",(unsigned)selectedBook,settingsSelected?1:0);
 }
 void showBook(bool sceneChange){
@@ -263,7 +264,12 @@ void showBook(bool sceneChange){
   beginRefresh(sceneChange,true);
   const int edge=std::min(20,reader_settings::geometry().left-4);
   if(sceneChange){M5.Display.fillScreen(TFT_WHITE);}
-  else {M5.Display.fillRect(20,20,520,896,TFT_WHITE);M5.Display.fillRect(120,923,300,37,TFT_WHITE);}
+  else {
+    M5.Display.fillRect(20,20,520,896,TFT_WHITE);
+    // The failure message starts at x=24, not in the normal pagination band.
+    if(contentPrefetchFailed())M5.Display.fillRect(24,923,516,37,TFT_WHITE);
+    else M5.Display.fillRect(120,923,300,37,TFT_WHITE);
+  }
   statusIcon(sdBackgroundPending()||contentPrefetchPending());
   font();prepareReaderFont();
   // The 30 px right margin is also the hang zone; clip and refresh it too.
@@ -285,17 +291,21 @@ void showBook(bool sceneChange){
 }
 void updateBookFooter(){
   if(pageOffsets.empty())return;
-  beginRefresh();font();M5.Display.fillRect(120,923,420,37,TFT_WHITE);
+  const bool failed=contentPrefetchFailed();
+  // The failure message starts at x=24; the normal pagination band starts at 120.
+  const int left=failed?24:120;
+  const int width=540-left;
+  beginRefresh();font();M5.Display.fillRect(left,923,width,37,TFT_WHITE);
   statusIcon(sdBackgroundPending()||contentPrefetchPending());
   const uint32_t current=readerPageNumber(),total=readerTotalPages();
-  if(contentPrefetchFailed()){
+  if(failed){
     M5.Display.setCursor(24,960-READER_FONT_HEIGHT);
     M5.Display.print("缓存读取中断，请重新打开");
   }else{
     const String label=(current?String(current):String("…"))+" / "+(total?String(total):String("…"));
     M5.Display.setCursor((540-M5.Display.textWidth(label))/2,960-READER_FONT_HEIGHT);M5.Display.print(label);
   }
-  endRefresh("pagination",120,923,420,37);
+  endRefresh("pagination",left,923,width,37);
 }
 void showPrefetchFailureBanner(){
   if(!contentPrefetchFailed())return;

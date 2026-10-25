@@ -20,9 +20,10 @@
 std::vector<String> sdBooks;
 bool sdOK = true;
 bool simulatedBackground=false;
+bool simulatedPrefetchFailed=false;
 bool sdBackgroundPending(){return simulatedBackground;}
 bool contentPrefetchPending(){return false;}
-bool contentPrefetchFailed(){return false;}
+bool contentPrefetchFailed(){return simulatedPrefetchFailed;}
 void contentPrefetchFirstPaint(){}
 bool drawStoredShutdownArt(){return false;}
 size_t selectedBook = 0;
@@ -353,6 +354,13 @@ int main() {
     assert(std::equal(before.begin(),before.begin()+916*540,M5.Display.fb.begin()));
     assert(M5.Display.lastRefreshY==923&&M5.Display.lastRefreshH==37);
     assert(readerPageNumber()==0&&readerTotalPages()==expected.size());
+    simulatedPrefetchFailed=true;
+    updateBookFooter();
+    assert(M5.Display.lastRefreshX==24&&M5.Display.lastRefreshW==516);
+    assert(M5.Display.lastRefreshY==923&&M5.Display.lastRefreshH==37);
+    simulatedPrefetchFailed=false;
+    updateBookFooter();
+    assert(M5.Display.lastRefreshX==120&&M5.Display.lastRefreshW==420);
     assert(turnReaderPage(1));assert(!readerHasProvisionalPages());
     cancelReaderIndex();pageOffsets.clear();bookLength=0;
   }
