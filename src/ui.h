@@ -33,6 +33,7 @@ void updateSettingsMode();
 void updateSettingsNetwork();
 void showLoading();
 void showError(const String& message);
+void showPrefetchFailureBanner();
 void updateLibraryBattery();
 void saveBatteryHistory();
 void showShutdownOverlay();

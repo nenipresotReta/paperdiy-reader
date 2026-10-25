@@ -19,6 +19,18 @@ void setSDOpenCancelProbe(bool (*probe)());
 bool sdBackgroundPending();
 void pollSDBackground();
 void cancelSDBackground();
+
+// Authenticated background fill of the current EPUB content source. It is
+// armed when a cache window installs, starts only after the first reading
+// paint, performs at most one 8 KiB block per application-loop step, and is
+// bound to the book generation, buffer, length and original storage lease.
+void contentPrefetchArm();
+void contentPrefetchFirstPaint();
+bool contentPrefetchPending();
+bool contentPrefetchStep();
+void cancelContentPrefetch();
+bool contentPrefetchFailed();
+const char* contentPrefetchStateName();
 #ifdef PAPERDIY_DIAGNOSTICS
 void logSDCacheInfo();
 #endif

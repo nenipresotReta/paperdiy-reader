@@ -9,6 +9,7 @@
 #include "input.h"
 #include "display_driver.h"
 #include "power.h"
+#include "idle_policy.h"
 #include "ui.h"
 #include "network.h"
 #include "resume_store.h"
@@ -211,6 +212,7 @@ void dispatch(controls::Action action){
       NetworkMode next=nextNetworkMode(networkMode);
       if(networkMode==NetworkMode::Usb&&!releaseUsb())return;
       networkStop();
+      cancelContentPrefetch();
       networkMode=next;
       if(next==NetworkMode::Usb){
         usbWaiting=usb_storage::available();
@@ -338,6 +340,10 @@ void diagnosticCommand(const String& line){
       unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
     Console.printf("INDEX_STATUS pending=%u complete=%u provisional=%u failed=%u background=%u\n",
       unsigned(readerIndexPending()),unsigned(readerIndexComplete()),unsigned(readerHasProvisionalPages()),unsigned(readerIndexFailed()),unsigned(sdBackgroundPending()));
+    Console.printf("PREFETCH_STATUS state=%s pending=%u failed=%u loaded=%u/%u read=%llu\n",
+      contentPrefetchStateName(),unsigned(contentPrefetchPending()),unsigned(contentPrefetchFailed()),
+      unsigned(reader_content::prefetchLoadedBlocks()),unsigned(reader_content::prefetchTotalBlocks()),
+      (unsigned long long)reader_content::prefetchReadBytes());
     Console.printf("OPEN_STATUS pending=%u closing=%u\n",unsigned(openSDPending()),unsigned(sdOpenClosePending()));
   }else if(line=="SCREEN"){
     M5.Display.waitDisplay();
@@ -522,6 +528,7 @@ void appLoop(){
   }
   device_loop_trace::mark(Stage::BeforeUsb);pollUsb();device_loop_trace::mark(Stage::AfterUsb);
   device_loop_trace::mark(Stage::BeforeStorage);lan_service::storagePoll();device_loop_trace::mark(Stage::AfterStorage);
+  if(contentPrefetchPending()&&(networkActive()||lan_service::storageBusy()))cancelContentPrefetch();
   if(lan_service::takeLibraryChanged()&&screen==Screen::Library)showLibrary(false);
   if(screen==Screen::Settings&&settingsId==SettingsId::Network){
     if(networkMode==NetworkMode::Ap){
@@ -577,8 +584,22 @@ void appLoop(){
     powerActivity();pollSDBackground();
     if(screen==Screen::Reading&&(total!=readerTotalPages()||busy!=sdBackgroundPending()))updateBookFooter();
   }
+  if((screen==Screen::Reading||screen==Screen::Library||screen==Screen::Settings)&&
+      contentPrefetchPending()&&!sdBackgroundPending()&&!lan_service::storageBusy()&&
+      buttons.idle()&&!rawPowerKeys()){
+    powerActivity();
+    const bool failedBefore=contentPrefetchFailed();
+    contentPrefetchStep();
+    if(failedBefore!=contentPrefetchFailed()||!contentPrefetchPending()){
+      if(screen==Screen::Reading)updateBookFooter();
+      else if(contentPrefetchFailed())showPrefetchFailureBanner();
+    }
+  }
+  if(screen==Screen::Error)cancelContentPrefetch();
   device_loop_trace::mark(Stage::BeforeIdle);
   idlePower((screen==Screen::Library||screen==Screen::Reading||screen==Screen::Settings)&&
-      pendingCardLevel==cardLevel&&(!sdBackgroundPending()||screen==Screen::Settings)&&!lan_service::storageBusy(),buttons.idle(),cardLevel,networkActive()||usb_transport::blocksSleep());
+      pendingCardLevel==cardLevel&&
+      idle_power::backgroundAllowsSleep(sdBackgroundPending(),contentPrefetchPending(),screen==Screen::Settings)&&
+      !lan_service::storageBusy(),buttons.idle(),cardLevel,networkActive()||usb_transport::blocksSleep());
   device_loop_trace::mark(Stage::AfterIdle);
 }

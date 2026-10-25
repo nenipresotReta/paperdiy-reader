@@ -62,4 +62,11 @@ public:
   }
 };
 
+// The existing cache-index/write background may sleep on the settings screen;
+// the content-prefetch task may not. Keeping this rule separate prevents a
+// prefetch from being hidden behind the settings exception.
+inline bool backgroundAllowsSleep(bool sdBackground, bool contentPrefetch, bool settings) {
+  return (!sdBackground || settings) && !contentPrefetch;
+}
+
 } // namespace idle_power

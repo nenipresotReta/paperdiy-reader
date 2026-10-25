@@ -21,6 +21,9 @@ std::vector<String> sdBooks;
 bool sdOK = true;
 bool simulatedBackground=false;
 bool sdBackgroundPending(){return simulatedBackground;}
+bool contentPrefetchPending(){return false;}
+bool contentPrefetchFailed(){return false;}
+void contentPrefetchFirstPaint(){}
 bool drawStoredShutdownArt(){return false;}
 size_t selectedBook = 0;
 String sdError;

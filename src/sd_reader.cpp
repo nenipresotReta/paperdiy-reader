@@ -32,12 +32,158 @@ static uint64_t backgroundLease=0;
 static uint32_t backgroundLayout=0;
 static bool backgroundIndex=false;
 bool sdReadFailure();
+void cancelContentPrefetch();
 void cancelSDBackground(){
+  cancelContentPrefetch();
   // Writer owns a reference to the cache; release it first.
   backgroundWrite.reset();backgroundCheckpoint.reset();backgroundCache.reset();backgroundIndex=false;checkpointAttempted=false;
 }
 bool sdBackgroundPending(){return backgroundIndex||bool(backgroundCache);}
 uint32_t activeLayout(){return reader_cache::layoutFor(bookEnglishHyphens,bookMarkdown,reader_typography::currentStyle().flags(),bookLanguage==text_language::Language::EnglishGB,bookDocument.ready());}
+namespace {
+struct ContentPrefetchTask {
+  bool armed=false,firstPaint=false,done=true,failed=false;
+  const reader_content::Source* source=nullptr;
+  uint64_t token=0,lease=0;
+  size_t bookLength=0;
+  String identity;
+  uint32_t layout=0,armMs=0,firstPaintMs=0,maxStepMs=0,verifyMs=0;
+};
+ContentPrefetchTask prefetchTask;
+const char* prefetchStateName(reader_content::PrefetchState state){
+  switch(state){
+  case reader_content::PrefetchState::Pending:return "pending";
+  case reader_content::PrefetchState::Reading:return "reading";
+  case reader_content::PrefetchState::VerifyingUtf8:return "verifying_utf8";
+  case reader_content::PrefetchState::VerifyingSemantics:return "verifying_semantics";
+  case reader_content::PrefetchState::Complete:return "complete";
+  case reader_content::PrefetchState::Failed:return "failed";
+  case reader_content::PrefetchState::Cancelled:return "cancelled";
+  default:return "not_needed";
+  }
+}
+const char* prefetchFailureName(reader_content::PrefetchFailure failure){
+  switch(failure){
+  case reader_content::PrefetchFailure::Lease:return "lease";
+  case reader_content::PrefetchFailure::Read:return "read";
+  case reader_content::PrefetchFailure::Hash:return "hash";
+  case reader_content::PrefetchFailure::Utf8:return "utf8";
+  case reader_content::PrefetchFailure::Semantic:return "semantic";
+  default:return "none";
+  }
+}
+void failContentPrefetch(reader_content::PrefetchFailure failure){
+  if(prefetchTask.done)return;
+  auto* source=reader_content::active()?reader_content::source().get():nullptr;
+  if(source&&source==prefetchTask.source&&source->prefetchToken()==prefetchTask.token)
+    source->abortPrefetch(failure);
+  prefetchTask.failed=true;prefetchTask.armed=false;prefetchTask.done=true;
+  // A failed fill must not remain a fast-reuse candidate. Reopening the same
+  // book then takes the normal source/dependency validation path.
+  resident.clear();
+  const unsigned aux=unsigned(prefetchTask.source?
+    (prefetchTask.source->prefetchTotalBlocks()*32+8192+64):0);
+  Console.printf("CACHE_PREFETCH failed reason=%s loaded=%u/%u read=%llu max_step_ms=%u verify_ms=%u aux_bytes=%u\n",
+    prefetchFailureName(failure),unsigned(prefetchTask.source?prefetchTask.source->prefetchLoadedBlocks():0),
+    unsigned(prefetchTask.source?prefetchTask.source->prefetchTotalBlocks():0),
+    (unsigned long long)(prefetchTask.source?prefetchTask.source->prefetchReadBytes():0),
+    unsigned(prefetchTask.maxStepMs),unsigned(prefetchTask.verifyMs),aux);
+}
+void completeContentPrefetch(){
+  auto* source=prefetchTask.source;
+  const size_t loaded=source?source->prefetchLoadedBlocks():0;
+  const uint64_t bytes=source?source->prefetchReadBytes():0;
+  const unsigned aux=unsigned(source?source->prefetchTotalBlocks()*32+8192+64:0);
+  Console.printf("CACHE_PREFETCH done blocks=%u read=%llu total_ms=%u first_paint_ms=%u verify_ms=%u max_step_ms=%u aux_bytes=%u\n",
+    unsigned(loaded),(unsigned long long)bytes,unsigned(millis()-prefetchTask.armMs),
+    unsigned(prefetchTask.firstPaintMs-prefetchTask.armMs),unsigned(prefetchTask.verifyMs),
+    unsigned(prefetchTask.maxStepMs),aux);
+  prefetchTask.armed=false;prefetchTask.done=true;prefetchTask.failed=false;
+  // All bytes and semantic boundaries have been authenticated. The on-demand
+  // source can now be released; the book buffer is complete in RAM.
+  reader_content::clear();
+  prefetchTask.source=nullptr;prefetchTask.token=0;
+}
+}
+void contentPrefetchArm(){
+  cancelContentPrefetch();
+  if(!reader_content::active()||!bookLength||!bookDocument.ready())return;
+  auto* source=reader_content::source().get();
+  if(!source->prefetchSupported())return;
+  const uint64_t lease=storage_validation::lease();
+  if(!lease)return;
+  source->beginPrefetch();
+  if(!source->prefetchPending()){
+    if(source->prefetchFailed())resident.clear();
+    return;
+  }
+  prefetchTask.armed=true;prefetchTask.firstPaint=false;prefetchTask.done=false;prefetchTask.failed=false;
+  prefetchTask.source=source;prefetchTask.token=source->prefetchToken();
+  prefetchTask.lease=lease;prefetchTask.bookLength=bookLength;prefetchTask.identity=bookIdentity;
+  prefetchTask.layout=activeLayout();prefetchTask.armMs=millis();
+  prefetchTask.maxStepMs=0;prefetchTask.verifyMs=0;
+  Console.printf("CACHE_PREFETCH arm blocks=%u bytes=%u loaded=%u aux_bytes=%u\n",
+    unsigned(source->prefetchTotalBlocks()),unsigned(bookLength),unsigned(source->prefetchLoadedBlocks()),
+    unsigned(source->prefetchTotalBlocks()*32+8192+64));
+}
+void contentPrefetchFirstPaint(){
+  if(!prefetchTask.armed||prefetchTask.firstPaint)return;
+  prefetchTask.firstPaint=true;prefetchTask.firstPaintMs=millis();
+  Console.printf("CACHE_PREFETCH first_paint_ms=%u blocks=%u\n",
+    unsigned(prefetchTask.firstPaintMs-prefetchTask.armMs),
+    unsigned(prefetchTask.source?prefetchTask.source->prefetchTotalBlocks():0));
+}
+bool contentPrefetchPending(){
+  if(!prefetchTask.armed||prefetchTask.done)return false;
+  if(!reader_content::active()){cancelContentPrefetch();return false;}
+  auto* source=reader_content::source().get();
+  if(source!=prefetchTask.source||source->prefetchToken()!=prefetchTask.token||
+     bookLength!=prefetchTask.bookLength||bookIdentity!=prefetchTask.identity||
+     activeLayout()!=prefetchTask.layout){
+    cancelContentPrefetch();return false;
+  }
+  // A missing first paint must not hold sleep indefinitely if a caller never
+  // reaches the reading scene. Normal reading arms and paints synchronously.
+  if(!prefetchTask.firstPaint&&uint32_t(millis()-prefetchTask.armMs)>10000){
+    cancelContentPrefetch();return false;
+  }
+  return true;
+}
+bool contentPrefetchStep(){
+  if(!contentPrefetchPending()||!prefetchTask.firstPaint)return false;
+  auto* source=reader_content::source().get();
+  if(storage_validation::lease()!=prefetchTask.lease){
+    failContentPrefetch(reader_content::PrefetchFailure::Lease);return false;
+  }
+  const auto beforeState=source->prefetchState();
+  const uint32_t started=millis();
+  const bool ok=source->prefetchStep();
+  const uint32_t elapsed=uint32_t(millis()-started);
+  if(elapsed>prefetchTask.maxStepMs)prefetchTask.maxStepMs=elapsed;
+  if(beforeState==reader_content::PrefetchState::VerifyingUtf8||
+     beforeState==reader_content::PrefetchState::VerifyingSemantics)
+    prefetchTask.verifyMs+=elapsed;
+  if(source->prefetchFailed()){
+    failContentPrefetch(source->prefetchFailure());return false;
+  }
+  if(source->prefetchComplete()){completeContentPrefetch();return true;}
+  if(!source->prefetchPending()){cancelContentPrefetch();return false;}
+  return ok;
+}
+void cancelContentPrefetch(){
+  if(prefetchTask.armed&&reader_content::active()){
+    auto* source=reader_content::source().get();
+    if(source==prefetchTask.source&&source->prefetchToken()==prefetchTask.token)source->cancelPrefetch();
+  }
+  prefetchTask=ContentPrefetchTask{};
+}
+bool contentPrefetchFailed(){return prefetchTask.failed;}
+const char* contentPrefetchStateName(){
+  if(prefetchTask.failed)return "failed";
+  if(!prefetchTask.armed)return "none";
+  if(!prefetchTask.firstPaint)return "pending_first_paint";
+  return prefetchStateName(reader_content::prefetchState());
+}
 void queueBackground(BookCache& cache,bool restoreCheckpoint=true){
   cancelSDBackground();backgroundLease=storage_validation::lease();backgroundLayout=activeLayout();
   backgroundIndex=readerIndexPending();checkpointRestore=restoreCheckpoint;
@@ -294,6 +440,7 @@ static bool openSDImmediate(size_t index,bool paginate,bool forceReflow){
     }
     timing.result="pages";
     rememberResident();
+    if(paginate)contentPrefetchArm();
     selectedBook=index;Console.printf("SD_OPENED %s ms=%u cached=1\n",sdBooks[index].c_str(),(unsigned)(millis()-started));return true;
   }
   if(textHit){

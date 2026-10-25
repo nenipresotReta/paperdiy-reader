@@ -234,6 +234,7 @@ void showLibrary(bool sceneChange){
   }
   if(!sdOK){font();String text="sd card mount failed";M5.Display.setCursor((540-M5.Display.textWidth(text))/2,450);M5.Display.print(text);}
   statusIcon();endRefresh("library",0,0,540,960);
+  if(contentPrefetchFailed())showPrefetchFailureBanner();
   Console.printf("LIBRARY books=%u selected=%u settings=%d first=%u rows=%u mounted=%d\n",(unsigned)sdBooks.size(),(unsigned)selectedBook,settingsSelected?1:0,(unsigned)firstBook,controls::LIBRARY_ROWS,sdOK);
 }
 void updateLibrarySelection(size_t oldSelection,bool oldSettings,SettingsId oldId){
@@ -263,15 +264,21 @@ void showBook(bool sceneChange){
   const int edge=std::min(20,reader_settings::geometry().left-4);
   if(sceneChange){M5.Display.fillScreen(TFT_WHITE);}
   else {M5.Display.fillRect(20,20,520,896,TFT_WHITE);M5.Display.fillRect(120,923,300,37,TFT_WHITE);}
-  statusIcon(sdBackgroundPending());
+  statusIcon(sdBackgroundPending()||contentPrefetchPending());
   font();prepareReaderFont();
   // The 30 px right margin is also the hang zone; clip and refresh it too.
   M5.Display.setClipRect(edge,20,540-edge,896);layoutPage(pageOffsets[pageNumber],true);M5.Display.clearClipRect();
   font();
   const uint32_t current=readerPageNumber(),total=readerTotalPages();
-  String number=(current?String(current):String("…"))+" / "+(total?String(total):String("…"));
-  M5.Display.setCursor((540-M5.Display.textWidth(number))/2,960-READER_FONT_HEIGHT);M5.Display.print(number);
+  if(contentPrefetchFailed()){
+    M5.Display.setCursor(24,960-READER_FONT_HEIGHT);
+    M5.Display.print("缓存读取中断，请重新打开");
+  }else{
+    String number=(current?String(current):String("…"))+" / "+(total?String(total):String("…"));
+    M5.Display.setCursor((540-M5.Display.textWidth(number))/2,960-READER_FONT_HEIGHT);M5.Display.print(number);
+  }
   endRefresh("page",edge,20,540-edge,940);
+  contentPrefetchFirstPaint();
   uint32_t offset=pageOffsets[pageNumber];
   uint32_t end=currentPageEnd();
   Console.printf("BOOK_PAGE page=%u total=%u key=%s offset=%u end=%u font_px=%d line_height=%d provisional=%u\n",current,total,bookmarkKey.c_str(),offset,end,reader_settings::geometry().pixels,reader_settings::geometry().lineHeight,unsigned(readerHasProvisionalPages()));
@@ -279,11 +286,25 @@ void showBook(bool sceneChange){
 void updateBookFooter(){
   if(pageOffsets.empty())return;
   beginRefresh();font();M5.Display.fillRect(120,923,420,37,TFT_WHITE);
-  statusIcon(sdBackgroundPending());
+  statusIcon(sdBackgroundPending()||contentPrefetchPending());
   const uint32_t current=readerPageNumber(),total=readerTotalPages();
-  const String label=(current?String(current):String("…"))+" / "+(total?String(total):String("…"));
-  M5.Display.setCursor((540-M5.Display.textWidth(label))/2,960-READER_FONT_HEIGHT);M5.Display.print(label);
+  if(contentPrefetchFailed()){
+    M5.Display.setCursor(24,960-READER_FONT_HEIGHT);
+    M5.Display.print("缓存读取中断，请重新打开");
+  }else{
+    const String label=(current?String(current):String("…"))+" / "+(total?String(total):String("…"));
+    M5.Display.setCursor((540-M5.Display.textWidth(label))/2,960-READER_FONT_HEIGHT);M5.Display.print(label);
+  }
   endRefresh("pagination",120,923,420,37);
+}
+void showPrefetchFailureBanner(){
+  if(!contentPrefetchFailed())return;
+  beginRefresh();font();
+  M5.Display.fillRect(20,8,500,40,TFT_WHITE);
+  M5.Display.drawRect(20,8,500,40,TFT_BLACK);
+  M5.Display.setCursor(28,14);
+  M5.Display.print("缓存读取中断，请重新打开");
+  endRefresh("prefetch-failure",20,8,500,40);
 }
 void showLoading(){
   beginRefresh();font();
@@ -308,6 +329,7 @@ void showSettings(bool sceneChange){
   const int rotationX=MODE_LETTER_X[settingsRotated?2:0]+dx;
   drawInterfaceGlyph("R",1,rotationX,settingsRotationY(),TFT_BLACK);
   endRefresh("settings",0,0,540,960);
+  if(contentPrefetchFailed())showPrefetchFailureBanner();
 }
 void updateSettingsMode(){
   if(settingsId!=SettingsId::Network)return;
