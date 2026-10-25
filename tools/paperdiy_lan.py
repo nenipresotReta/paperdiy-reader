@@ -537,8 +537,9 @@ class WindowsFiles:
             raise Failure("state_dir_permissions")
         if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
             raise Failure("state_dir_permissions")
-        if os.path.normcase(os.path.realpath(path)) != os.path.normcase(os.path.abspath(path)):
-            raise Failure("state_dir_permissions")
+        # Only the final component is checked. Legitimate parent aliases such
+        # as macOS /var -> /private/var or Windows RUNNER~1 short paths must not
+        # be rejected; the per-user profile ACL is the privacy boundary.
         return info
 
     @classmethod
