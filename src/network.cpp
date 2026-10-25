@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <vector>
 #include "bounded_web_server.h"
 #include "network.h"
 #include "document_format.h"
@@ -273,6 +274,37 @@ void sendSettings(){
     ",\"justify\":"+String(unsigned(c.justify))+",\"refresh\":"+String(c.refresh)+",\"ink\":"+String(c.ink)+",\"art\":"+String(c.art)+"}");
 }
 void handleSettingsGet(){if(requireAuth())sendSettings();}
+// Paired LAN senders. AP and N are exclusive, so the receiver is stopped here;
+// lan_service refuses with Busy otherwise. No token or verifier ever leaves.
+void sendSenders(){
+  std::vector<lan_service::ClientInfo> list;
+  const auto status=lan_service::listClients(list);
+  if(status==lan_service::RegistryStatus::Unreadable){sendJson("{\"state\":\"unreadable\",\"senders\":[]}");return;}
+  if(status!=lan_service::RegistryStatus::Ok){sendError(503,"Sender list unavailable. Please retry.");return;}
+  String body="{\"state\":\"ok\",\"senders\":[";
+  for(size_t i=0;i<list.size();++i){
+    if(i)body+=",";
+    body+="{\"clientId\":\""+jsonEscape(String(list[i].clientId.c_str()))+"\",\"label\":\""+jsonEscape(String(list[i].label.c_str()))+"\"}";
+  }
+  sendJson(body+"]}");
+}
+void handleSendersGet(){if(!requireAuth())return;touchAp();sendSenders();}
+void handleSenderRevoke(){
+  if(!requireAuth())return;
+  if(upload.active){sendError(409,"Wait for the upload to finish.");return;}
+  const auto status=lan_service::revokeClient(web->arg("clientId").c_str());
+  if(status==lan_service::RegistryStatus::Invalid){sendError(400,"Unknown sender.");return;}
+  if(status==lan_service::RegistryStatus::Unreadable){sendError(409,"The sender list cannot be read. Forget all senders to repair it.");return;}
+  if(status!=lan_service::RegistryStatus::Ok){sendError(500,"Could not remove the sender. Please retry.");return;}
+  touchAp();sendSenders();
+}
+void handleSendersForget(){
+  if(!requireAuth())return;
+  if(upload.active){sendError(409,"Wait for the upload to finish.");return;}
+  if(lan_service::forgetClients()!=lan_service::RegistryStatus::Ok){sendError(500,"Could not forget senders. Please retry.");return;}
+  touchAp();sendSenders();
+}
+
 void handleSettingsSave(){
   if(!requireAuth())return;
   if(upload.active){sendError(409,"Wait for the upload to finish.");return;}
@@ -535,6 +567,9 @@ void startAp(){
   web->on("/api/settings",HTTP_GET,handleSettingsGet);
   web->on("/api/settings",HTTP_POST,handleSettingsSave);
   web->on("/api/artwork",HTTP_POST,handleArtwork);
+  web->on("/api/lan/clients",HTTP_GET,handleSendersGet);
+  web->on("/api/lan/clients/revoke",HTTP_POST,handleSenderRevoke);
+  web->on("/api/lan/clients/forget",HTTP_POST,handleSendersForget);
   web->on("/api/upload/start",HTTP_POST,handleUploadStart);
   web->on("/api/upload/status",HTTP_GET,handleUploadStatus);
   web->on("/api/upload/chunk",HTTP_POST,handleUploadChunk);

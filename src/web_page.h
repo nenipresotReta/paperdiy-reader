@@ -20,6 +20,8 @@ body{font-family:system-ui,sans-serif;max-width:640px;margin:auto;padding:24px;c
 <form id="wifiForm"><label>SSID<input id="ssid" maxlength="32" autocomplete="off" required></label>
 <label>Password<input id="pass" type="password" minlength="8" maxlength="63" autocomplete="new-password" required></label>
 <button id="wifiButton" type="submit">Save</button></form><p id="wifiMsg"></p>
+<h2>Senders</h2><p>Computers paired over home Wi-Fi (N). A removed sender must pair again before it can send.</p>
+<ul id="senders"></ul><button id="forgetSenders" type="button">Forget all senders</button><p id="sendersMsg" role="status"></p>
 <h2>Reader settings</h2>
 <form id="settingsForm"><fieldset id="settingsFields" disabled>
 <label>Reading preset<select id="preset"><option value="0">Compact · 24 px</option><option value="1">Standard · 28 px</option><option value="2">Relaxed · 28 px</option></select></label>
@@ -177,6 +179,19 @@ async function prepareImage(f,sequence){
 let preparedArt=null,artSequence=0;
 $('artFile').addEventListener('change',async()=>{const seq=++artSequence;preparedArt=null;$('artUpload').disabled=true;try{const data=await prepareImage($('artFile').files[0],seq);if(seq===artSequence){preparedArt=data;$('artMsg').textContent='Preview ready.'}}catch(e){if(seq===artSequence)$('artMsg').textContent=e.message}finally{if(seq===artSequence)$('artUpload').disabled=false}});
 $('artForm').addEventListener('submit',async e=>{e.preventDefault();if(!preparedArt){$('artMsg').textContent='Choose an image and wait for the preview.';return}await uploadFile(preparedArt,true);});
+function renderSenders(r){const list=$('senders');list.textContent='';const senders=Array.isArray(r&&r.senders)?r.senders:[];
+ if(r&&r.state==='unreadable'){$('sendersMsg').textContent='The sender list cannot be read. Forget all senders to repair it.';return}
+ if(!senders.length){const li=document.createElement('li');li.textContent='No paired senders';list.appendChild(li);return}
+ for(const s of senders){const li=document.createElement('li');li.textContent=s.label+' ';const b=document.createElement('button');b.type='button';b.textContent='Remove';
+  b.addEventListener('click',async()=>{b.disabled=true;try{renderSenders(await post('/api/lan/clients/revoke',{clientId:s.clientId}));$('sendersMsg').textContent='Removed '+s.label+'.'}catch(e){$('sendersMsg').textContent=e.message;b.disabled=false}});
+  li.appendChild(b);list.appendChild(li)}}
+async function loadSenders(){try{renderSenders(await json('/api/lan/clients'))}catch(e){$('sendersMsg').textContent=e.message}}
+let forgetArmed=0;
+$('forgetSenders').addEventListener('click',async()=>{const b=$('forgetSenders');
+ if(!forgetArmed){forgetArmed=setTimeout(()=>{forgetArmed=0;b.textContent='Forget all senders'},5000);b.textContent='Tap again to forget all senders';return}
+ clearTimeout(forgetArmed);forgetArmed=0;b.textContent='Forget all senders';b.disabled=true;
+ try{renderSenders(await post('/api/lan/clients/forget',{}));$('sendersMsg').textContent='All senders forgotten. Each computer must pair again.'}catch(e){$('sendersMsg').textContent=e.message}finally{b.disabled=false}});
 loadSettings();
+loadSenders();
 refresh();setInterval(refresh,3000);
 </script></body></html>)HTML";

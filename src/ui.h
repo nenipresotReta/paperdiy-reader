@@ -22,7 +22,7 @@ extern bool settingsApClientConnected;
 extern String settingsStaSsid,settingsStaIp,settingsStaError;
 extern bool settingsStaConfigured,settingsStaConnected;
 extern String settingsUsbStatus;
-extern String settingsLanType,settingsLanName,settingsLanState,settingsLanPairing;
+extern String settingsLanType,settingsLanName,settingsLanState;
 void updateSettingsDelivery();
 void showLibrary(bool sceneChange=true);
 void updateLibrarySelection(size_t oldSelection,bool oldSettings=false,SettingsId oldId=SettingsId::Network);

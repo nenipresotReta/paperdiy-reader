@@ -42,6 +42,17 @@ bool start(const char* address){++starts;lastAddress=address;return canStart;}
 void stop(){++stops;}
 bool poll(){return false;}
 void storageChanged(){}
+// Sender registry seen by the AP WebUI: list order, revoke/forget outcomes.
+std::vector<ClientInfo> senders;RegistryStatus listStatus=RegistryStatus::Ok,writeStatus=RegistryStatus::Ok;
+unsigned revokes=0,forgets=0;std::string lastRevoked;
+RegistryStatus listClients(std::vector<ClientInfo>& out){out.clear();if(listStatus==RegistryStatus::Ok)out=senders;return listStatus;}
+RegistryStatus revokeClient(const std::string& clientId){
+  ++revokes;lastRevoked=clientId;
+  if(writeStatus!=RegistryStatus::Ok)return writeStatus;
+  for(auto i=senders.begin();i!=senders.end();++i)if(i->clientId==clientId){senders.erase(i);return RegistryStatus::Ok;}
+  return RegistryStatus::Invalid;
+}
+RegistryStatus forgetClients(){++forgets;if(writeStatus!=RegistryStatus::Ok)return writeStatus;senders.clear();listStatus=RegistryStatus::Ok;return RegistryStatus::Ok;}
 }
 
 namespace {
@@ -621,6 +632,39 @@ void stationReconnectWindow(){
   }
   std::cout<<"network: fresh reconnect grace period, repeated outages and clock rollover\n";
 }
+void senderManagement(){
+  reset();using lan_service::RegistryStatus;
+  lan_service::senders={{"0123456789abcdef","Hermes \"LXC\"\n"},{"fedcba9876543210","DSH"}};
+  lan_service::listStatus=lan_service::writeStatus=RegistryStatus::Ok;lan_service::revokes=lan_service::forgets=0;
+  assert(request("/api/lan/clients","bad").code==401);
+  assert(request("/api/lan/clients/revoke","bad",HTTP_POST,{{"clientId","0123456789abcdef"}}).code==401);
+  assert(request("/api/lan/clients/forget","bad",HTTP_POST).code==401&&lan_service::revokes==0&&lan_service::forgets==0);
+  auto list=request("/api/lan/clients",cookie());
+  assert(list.code==200&&list.body.indexOf("\"state\":\"ok\"")>=0&&list.body.indexOf("fedcba9876543210")>=0);
+  assert(list.body.indexOf("\\\"LXC\\\"")>=0&&list.body.indexOf('\n')<0);
+  assert(list.body.indexOf("token")<0&&list.body.indexOf("verifier")<0);
+  auto removed=request("/api/lan/clients/revoke",cookie(),HTTP_POST,{{"clientId","0123456789abcdef"}});
+  assert(removed.code==200&&removed.body.indexOf("0123456789abcdef")<0&&removed.body.indexOf("DSH")>=0);
+  assert(request("/api/lan/clients/revoke",cookie(),HTTP_POST,{{"clientId","0123456789abcdef"}}).code==400);
+  lan_service::writeStatus=RegistryStatus::Unavailable;
+  assert(request("/api/lan/clients/revoke",cookie(),HTTP_POST,{{"clientId","fedcba9876543210"}}).code==500);
+  assert(request("/api/lan/clients/forget",cookie(),HTTP_POST).code==500&&lan_service::senders.size()==1);
+  lan_service::writeStatus=RegistryStatus::Unreadable;
+  assert(request("/api/lan/clients/revoke",cookie(),HTTP_POST,{{"clientId","fedcba9876543210"}}).code==409);
+  lan_service::writeStatus=RegistryStatus::Ok;lan_service::listStatus=RegistryStatus::Unreadable;
+  list=request("/api/lan/clients",cookie());assert(list.code==200&&list.body.indexOf("\"unreadable\"")>=0);
+  lan_service::listStatus=RegistryStatus::Busy;assert(request("/api/lan/clients",cookie()).code==503);
+  lan_service::listStatus=RegistryStatus::Unreadable;
+  auto forgot=request("/api/lan/clients/forget",cookie(),HTTP_POST);
+  assert(forgot.code==200&&forgot.body.indexOf("\"senders\":[]")>=0&&lan_service::forgets==2);
+  // A browser upload in flight blocks registry writes (the commit owns the card).
+  lan_service::senders={{"fedcba9876543210","DSH"}};
+  prepareUpload();startUpload("held.txt",3);assert(!attempt.failed);
+  assert(request("/api/lan/clients/revoke",cookie(),HTTP_POST,{{"clientId","fedcba9876543210"}}).code==409);
+  assert(request("/api/lan/clients/forget",cookie(),HTTP_POST).code==409&&lan_service::senders.size()==1);
+  cancelUpload();
+  assert(request("/api/lan/clients/forget",cookie(),HTTP_POST).code==200&&lan_service::senders.empty());
+}
 void statusAndCleanup(){
   reset();auto result=request("/api/status",cookie());
   assert(result.body.indexOf("68719476736")>=0);
@@ -655,7 +699,7 @@ void stationStorageRecovery(){
 
 int main(){
  readerSettingsAndArtwork();preparedUploads();authenticationAndRandomness();browserPrepareAssets();qrAndTimeout();uploadsAndFilenames();uploadFailures();ownershipAndCatalog();
- credentialsAndStation();uploadRecovery();stationReconnectWindow();stationStorageRecovery();statusAndCleanup();networkStop();
+ credentialsAndStation();uploadRecovery();stationReconnectWindow();stationStorageRecovery();senderManagement();statusAndCleanup();networkStop();
  assert(WebServer::constructions==WebServer::destructions);
  std::cout<<"network integration passed\n";
 }

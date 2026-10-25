@@ -30,11 +30,14 @@ class Element {
     this.disabled = false;
     this.hidden = false;
     this.value = '';
-    this.textContent = '';
     this.files = [];
     this.handlers = new Map();
     this.children = [];
+    this.text = '';
   }
+  // As in the DOM, assigning textContent replaces all children.
+  get textContent() { return this.text; }
+  set textContent(value) { this.text = String(value); this.children = []; }
   addEventListener(event, handler) { this.handlers.set(event, handler); }
   appendChild(child) { this.children.push(child); }
   removeAttribute(name) { if (name === 'value') this.value = 0; }
@@ -74,6 +77,7 @@ class ProtocolFixture {
     assert.ok(count <= 20, `${route}: retries must be bounded`);
     assert.ok(options.signal instanceof AbortSignal, 'every fetch needs a deadline signal');
 
+    if (route === '/api/lan/clients') return jsonResponse(200,{state:'ok',senders:[]});
     if (route === '/api/settings') return jsonResponse(200,{punctuation:1,spacing:4,doubleMs:200,preset:1,hyphenation:1,justify:1,refresh:1,ink:50,art:0});
     if (route === '/api/status') {
       return jsonResponse(200, { uploadGeneration: this.generation, busy: !!this.active, sd: true, free: 1048576 });
@@ -281,6 +285,52 @@ test('settings use saved values, retain edits on failure, and image actions are 
   await el('artDefault').handlers.get('click')();assert.equal(config.art,0);
 });
 
+test('paired senders are listed as text, removed one at a time, and forgotten only after a second tap', async()=>{
+  const elements=new Map();const el=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id)};
+  let senders=[{clientId:'0123456789abcdef',label:'<b>Hermes</b>'},{clientId:'fedcba9876543210',label:'DSH'}];
+  let state='ok',fail=0;const posts=[],timers=new Map();let timerId=0;
+  const context={document:{getElementById:el,createElement:()=>new Element()},history:{replaceState(){}},URLSearchParams,AbortController,crypto:webcrypto,Uint8Array,
+    setTimeout(callback,delay){const id=++timerId;timers.set(id,{callback,delay});return id},clearTimeout(id){timers.delete(id)},setInterval(){},
+    fetch:async(url,opt={})=>{
+      if(url==='/api/status')return jsonResponse(200,{sd:true,free:10000,uploadGeneration:0});
+      if(url.startsWith('/api/files'))return jsonResponse(200,{files:[],next:null});
+      if(url==='/api/settings')return jsonResponse(200,{punctuation:1,spacing:4,doubleMs:200,preset:1,hyphenation:1,justify:1,refresh:1,ink:50,art:0});
+      if(opt.method==='POST'){
+        const data=Object.fromEntries(opt.body);posts.push({url,data});
+        if(fail)return jsonResponse(fail,{error:'Could not remove the sender. Please retry.'});
+        if(url==='/api/lan/clients/revoke')senders=senders.filter(s=>s.clientId!==data.clientId);
+        else if(url==='/api/lan/clients/forget'){senders=[];state='ok';}
+        else assert.fail('Unexpected POST '+url);
+      }else assert.equal(url,'/api/lan/clients');
+      return jsonResponse(200,{state,senders});
+    }};
+  vm.createContext(context);vm.runInContext(productionScript,context);await new Promise(setImmediate);
+  const rows=()=>el('senders').children;
+  assert.equal(rows().length,2);assert.equal(rows()[0].textContent,'<b>Hermes</b> ','labels are text, never markup');
+  const remove=rows()[0].children[0];assert.equal(remove.textContent,'Remove');
+  fail=500;await remove.handlers.get('click')();
+  assert.equal(el('sendersMsg').textContent,'Could not remove the sender. Please retry.');assert.equal(remove.disabled,false);assert.equal(rows().length,2);
+  fail=0;await remove.handlers.get('click')();
+  assert.deepEqual(posts.at(-1),{url:'/api/lan/clients/revoke',data:{clientId:'0123456789abcdef'}});
+  assert.equal(rows().length,1);assert.equal(rows()[0].textContent,'DSH ');assert.equal(el('sendersMsg').textContent,'Removed <b>Hermes</b>.');
+  // First tap only arms; the arm expires after five seconds without a request.
+  const forget=el('forgetSenders').handlers.get('click');const before=posts.length;
+  await forget();assert.equal(posts.length,before);assert.equal(el('forgetSenders').textContent,'Tap again to forget all senders');
+  const [[armId,arm]]=[...timers.entries()].filter(([,t])=>t.delay===5000);assert.ok(arm);
+  timers.delete(armId);arm.callback();assert.equal(el('forgetSenders').textContent,'Forget all senders');
+  await forget();assert.equal(posts.length,before);
+  await forget();assert.equal(posts.at(-1).url,'/api/lan/clients/forget');
+  assert.equal(rows().length,1);assert.equal(rows()[0].textContent,'No paired senders');
+  assert.equal(el('sendersMsg').textContent,'All senders forgotten. Each computer must pair again.');assert.equal(el('forgetSenders').disabled,false);
+  // An unreadable registry is not shown as empty; the page points at the repair.
+  state='unreadable';senders=[];
+  const context2={...context};const elements2=new Map();const el2=id=>{if(!elements2.has(id))elements2.set(id,new Element());return elements2.get(id)};
+  context2.document={getElementById:el2,createElement:()=>new Element()};
+  vm.createContext(context2);vm.runInContext(productionScript,context2);await new Promise(setImmediate);
+  assert.equal(el2('senders').children.length,0);
+  assert.equal(el2('sendersMsg').textContent,'The sender list cannot be read. Forget all senders to repair it.');
+});
+
 test('image conversion packs black bits, authenticates payload, and aligns preview bottom right', async()=>{
   const elements=new Map(),paint=[];let closed=false;
   const el=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id)};
@@ -343,6 +393,7 @@ async function phoneScenario(options = {}) {
     const parsed = new URL(url, 'http://paperdiy.test');
     const route = parsed.pathname; requests.push(route);
     assert.ok(opt.signal instanceof AbortSignal);
+    if (route === '/api/lan/clients') return jsonResponse(200, {state:'ok',senders:[]});
     if (route === '/api/settings') return jsonResponse(200, {punctuation:1,spacing:4,doubleMs:200,preset:1,hyphenation:1,justify:1,refresh:1,ink:50,art:0});
     if (route === '/api/status') return jsonResponse(200, {sd:true,free:1e7,busy:!!active,uploadGeneration:generation,preprocessing:true});
     if (route === '/api/files') return jsonResponse(200, {files:[...published.keys()],next:null});

@@ -11,6 +11,7 @@
 #include "display_driver.h"
 #include "power.h"
 #include "ui.h"
+#include "lan_service.h"
 #include "shutdown_art.h"
 #include "managed_progress.h"
 #ifdef PAPERDIY_SHUTDOWN_HEADER
@@ -24,7 +25,7 @@ bool settingsApClientConnected=false;
 String settingsStaSsid,settingsStaIp,settingsStaError;
 bool settingsStaConfigured=false,settingsStaConnected=false;
 String settingsUsbStatus="Connect USB";
-String settingsLanType,settingsLanName,settingsLanState,settingsLanPairing;
+String settingsLanType,settingsLanName,settingsLanState;
 namespace {
 constexpr int TOP=56,ROW=39;
 constexpr int BATTERY_CELL_X=504,BATTERY_CELL_Y=8,BATTERY_CELL_W=28,BATTERY_CELL_H=28;
@@ -138,20 +139,30 @@ void apPanel(){
 void deliveryPanel(){
   if(!settingsStaConnected)return;
   const int dy=settingsContentDy();
-  if(settingsLanPairing.length()&&settingsLanType.length()==0){
-    qrCode(settingsLanPairing,24,280+dy,216,10);
-    smallLine("Pair",264,292+dy);
-    smallLine(settingsLanState,264,336+dy);
-  }else{
-    if(settingsLanType.length())smallLine(settingsLanType,32,280+dy);
-    if(settingsLanName.length())smallLine(settingsLanName,32,320+dy);
-    smallLine(settingsLanState,32,360+dy);
-  }
+  if(settingsLanType.length())smallLine(settingsLanType,32,280+dy);
+  if(settingsLanName.length())smallLine(settingsLanName,32,320+dy);
+  smallLine(settingsLanState,32,360+dy);
+}
+// The consent prompt replaces the SSID/status/IP lines while it is pending; at
+// most ten 34 px lines fit between the panel title and the content bottom.
+void promptPanel(){
+  const auto& p=lan_service::prompt();
+  const int dy=settingsContentDy();
+  int y=160+dy;
+  const auto line=[&](const std::string& text){smallLine(String(text.c_str()),32,y);y+=34;};
+  if(p.firstContact)line("New sender · "+p.sas);
+  const std::string files=p.total==1?"1 file":std::to_string(p.total)+" files";
+  line(p.label+(p.total?" · Receive "+files+"?":" · Pair?"));
+  for(const auto& name:p.names)line(name);
+  if(p.total>p.names.size())line("+"+std::to_string(p.total-p.names.size())+" more");
+  if(!p.replacesPush.empty())line("Replaces Push: "+p.replacesPush);
+  smallLine("A+B accept · A to cancel",32,470+dy);
 }
 void staPanel(){
   const int dy=settingsContentDy();
   bodyText("STA",32,112+dy);
   font();
+  if(lan_service::promptPending()){promptPanel();return;}
   int y=160+dy;
   String ssidLine=settingsStaConfigured?String("SSID: ")+settingsStaSsid:String("No WiFi config");
   M5.Display.setCursor(32,y);
@@ -362,6 +373,10 @@ void updateSettingsNetwork(){
 }
 void updateSettingsDelivery(){
   if(settingsId!=SettingsId::Network||networkMode!=NetworkMode::Sta)return;
+  // A prompt appearing or leaving changes the whole content area.
+  static bool promptShown=false;
+  const bool pending=lan_service::promptPending();
+  if(pending||promptShown){promptShown=pending;updateSettingsNetwork();return;}
   const int y=268+settingsContentDy();
   beginRefresh();M5.Display.fillRect(0,y,540,244,TFT_WHITE);deliveryPanel();
   endRefresh("delivery",0,y,540,244);
