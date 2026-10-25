@@ -178,6 +178,46 @@ class Document {
     for(size_t i=0;i<rowCount_;++i){const auto& r=rows_[i];if(r.end<=begin)continue;if(r.begin>=end)break;if(r.begin<begin||r.end>end||(r.end==end&&end<bytes_)||!boundary(r.begin)||!boundary(r.end))return false;for(size_t j=r.firstCell;j<r.firstCell+r.cells;++j)if(!boundary(cells_[j].begin)||!boundary(cells_[j].end))return false;}
     return true;
   }
+  // Bounded equivalent of validateSpan(0,size()) for the completed background
+  // fill. Each call inspects at most maxItems records; the caller owns the cursor
+  // and can yield between calls. It never changes the document.
+  struct FullValidation {uint8_t stage=0;size_t index=0;bool done=false;};
+  bool validateFullStep(FullValidation& v,size_t maxItems=1024)const{
+    if(!ready())return false;
+    if(!maxItems)maxItems=1;
+    size_t work=0;
+    while(work<maxItems&&!v.done){
+      switch(v.stage){
+      case 0:
+        if(v.index>=count_){v.stage=1;v.index=0;continue;}
+        {const auto& r=runs_[v.index++];
+         if(r.begin>r.end||r.end>bytes_||continuation(source_[r.begin])||
+            (r.end<bytes_&&continuation(source_[r.end])))return false;}
+        break;
+      case 1:
+        if(v.index>=rubyCount_){v.stage=2;v.index=0;continue;}
+        {const auto& r=rubies_[v.index++];
+         if(r.begin>r.end||r.end>bytes_||!validRuby(r))return false;}
+        break;
+      case 2:
+        if(v.index>=mathCount_){v.stage=3;v.index=0;continue;}
+        {const auto& m=maths_[v.index++];
+         if(m.begin>m.end||m.end>bytes_||!boundary(m.begin)||!boundary(m.end))return false;}
+        break;
+      case 3:
+        if(v.index>=rowCount_){v.stage=4;v.done=true;continue;}
+        {const auto& r=rows_[v.index++];
+         if(r.begin>r.end||r.end>bytes_||r.firstCell>cellCount_||r.cells>cellCount_-r.firstCell||
+            !boundary(r.begin)||!boundary(r.end))return false;
+         for(size_t j=r.firstCell;j<r.firstCell+r.cells;++j)
+           if(cells_[j].begin>cells_[j].end||cells_[j].end>bytes_||!boundary(cells_[j].begin)||!boundary(cells_[j].end))return false;}
+        break;
+      default:v.done=true;break;
+      }
+      ++work;
+    }
+    return true;
+  }
   static bool validText(const char* text,size_t bytes){
     if(!text||!bytes||bytes>4u*1024*1024)return false;
     for(size_t at=0;at<bytes;){uint8_t c=uint8_t(text[at++]);if(c<128){if(!c)return false;continue;}

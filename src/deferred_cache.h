@@ -68,6 +68,7 @@ class DeferredCacheWrite {
        cache.dependencies.size()>reader_cache::MAX_DEPS||!bookLength||bookLength>MAX_BOOK||
        pages.size()>reader_cache::MAX_PAGES||!reader_cache::validOffsets(pages.data(),pages.size(),bookLength))return false;
     if(reader_content::active()){
+      reader_content::cancelPrefetch();
       if(!reader_content::pin(0,bookLength)||(bookDocument.ready()&&!bookDocument.validateSpan(0,bookLength)))return false;
       reader_content::clear();
     }

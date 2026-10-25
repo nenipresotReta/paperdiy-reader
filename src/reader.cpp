@@ -204,6 +204,7 @@ size_t layoutPage(size_t from,bool draw,int top,reader_work::Budget* sharedBudge
 bool indexBook(bool reset,bool migrateLegacy,const bookmarks::Anchor* anchor,bool requireRecovery,bool progressive){
   cancelReaderIndex();
   if(reader_content::active()){
+    reader_content::cancelPrefetch();
     if(!reader_content::pin(0,bookLength)||(bookDocument.ready()&&!bookDocument.validateSpan(0,bookLength)))return false;
     reader_content::clear();
   }

@@ -203,6 +203,7 @@ struct BookCache {
   bool save(){
     if(!enabled||bookEpubTransientFallback)return false;
     if(reader_content::active()){
+      reader_content::cancelPrefetch();
       if(!reader_content::pin(0,bookLength)||(bookDocument.ready()&&!bookDocument.validateSpan(0,bookLength)))return false;
       reader_content::clear();
     }
