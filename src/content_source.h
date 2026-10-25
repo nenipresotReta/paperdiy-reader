@@ -41,6 +41,10 @@ struct Source {
   virtual size_t prefetchLoadedBlocks()const{return 0;}
   virtual size_t prefetchTotalBlocks()const{return 0;}
   virtual uint64_t prefetchReadBytes()const{return 0;}
+  // True when a pin failed because the storage lease changed underneath it.
+  // The reader uses this to reopen at the saved anchor instead of silently
+  // leaving a page turn stuck.
+  virtual bool leaseInvalidated()const{return false;}
 };
 inline std::unique_ptr<Source>& source(){static std::unique_ptr<Source> value;return value;}
 inline bool active(){return bool(source());}
@@ -67,6 +71,7 @@ inline PrefetchFailure prefetchFailure(){return active()?source()->prefetchFailu
 inline size_t prefetchLoadedBlocks(){return active()?source()->prefetchLoadedBlocks():0;}
 inline size_t prefetchTotalBlocks(){return active()?source()->prefetchTotalBlocks():0;}
 inline uint64_t prefetchReadBytes(){return active()?source()->prefetchReadBytes():0;}
+inline bool leaseInvalidated(){return active()&&source()->leaseInvalidated();}
 inline std::pair<size_t,size_t> pageRange(const std::vector<uint32_t>& pages,size_t page,size_t length){
   if(page>=pages.size()||pages[page]>=length)return {0,0};
   const size_t first=pages[page]>256?pages[page]-256:0;

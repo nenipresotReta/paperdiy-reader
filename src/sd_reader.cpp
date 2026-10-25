@@ -373,6 +373,7 @@ bool inspectCachedLanguage(const String& source,bool directory,BookCache& cache)
 static bool startExtraction(BookCache&& cache,size_t index,bool paginate,bool forceReflow,const bookmarks::Anchor& anchor,uint32_t started);
 static bool openSDImmediate(size_t index,bool paginate,bool forceReflow){
   if(usbStorageHandoff){sdError="SD card is owned by USB";return false;}
+  bool staleResident=false;
   if(!forceReflow&&index<sdBooks.size()&&!managed_progress::isPushPath(sdBooks[index].c_str())&&book&&sdOK&&!bookMarkupFallback&&!bookEpubTransientFallback&&!progressSaveFailed&&bookIdentity==sdBooks[index]&&
      resident.matches(sdBooks[index].c_str(),bookmarkKey.c_str(),storage_validation::lease(),activeLayout(),bookLength)&&
      (readerHasProvisionalPages()||reader_cache::validOffsets(pageOffsets.data(),pageOffsets.size(),bookLength))){
@@ -382,12 +383,20 @@ static bool openSDImmediate(size_t index,bool paginate,bool forceReflow){
       if(!readerHasProvisionalPages()){
         auto page=std::upper_bound(pageOffsets.begin(),pageOffsets.end(),offset);
         const uint32_t selected=page==pageOffsets.begin()?0:page-pageOffsets.begin()-1;
-        if(!pinReaderPage(selected)){resident.clear();sdError="Cannot read cached page";return false;}
-        pageNumber=selected;
+        if(!pinReaderPage(selected)){
+          staleResident=reader_content::leaseInvalidated();
+          resident.clear();
+          if(!staleResident){sdError="Cannot read cached page";return false;}
+        }else pageNumber=selected;
       }
-      retainReadingAnchor(offset);prepareReaderFont();selectedBook=index;sdError="";
-      Console.println("BOOK_TIMING result=resident cache_ms=0 import_ms=0 index_ms=0 save_ms=0 source_bytes=0 cache_read_bytes=0");
-      return true;
+      if(!staleResident){
+        retainReadingAnchor(offset);prepareReaderFont();
+        if(paginate)contentPrefetchArm();
+        selectedBook=index;sdError="";
+        Console.println("BOOK_TIMING result=resident cache_ms=0 import_ms=0 index_ms=0 save_ms=0 source_bytes=0 cache_read_bytes=0");
+        return true;
+      }
+      sdError="";
     }
   }
   cancelSDBackground();cancelReaderIndex();reader_content::clear();

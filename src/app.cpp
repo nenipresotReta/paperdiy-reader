@@ -247,6 +247,13 @@ void dispatch(controls::Action action){
     updateLibrarySelection(old,oldSettings,oldId);
   }else if(screen==Screen::Reading&&!pageOffsets.empty()){
     if(turnReaderPage(direction)){saveReadingProgress();showBook();}
+    else if(reader_content::leaseInvalidated()){
+      // A page-window source whose lease expired after sleep or a storage
+      // change cannot read the next block. Reopen at the saved anchor rather
+      // than leaving the page turn silently stuck.
+      Console.println("READER_REOPEN reason=stale_lease");
+      openSelected();
+    }
   }
 }
 #ifdef PAPERDIY_DIAGNOSTICS

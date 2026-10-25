@@ -17,6 +17,7 @@ class SdContentSource:public reader_content::Source {
   uint64_t leaseId=0;
   size_t first_=0,last_=0;
   bool ioFailed_=false;
+  bool leaseInvalidated_=false;
   uint64_t readBytes_=0;
 
   Stage stage_=Stage::None;
@@ -37,15 +38,21 @@ class SdContentSource:public reader_content::Source {
     for(size_t block=0;block<header.blocks;++block)if(has(block))++count;
     return count;
   }
-  bool failIO(){ioFailed_=true;stage_=Stage::Failed;
-    failure_=reader_content::PrefetchFailure::Read;prefetchFile.close();
+  void closePrefetch(){prefetchFile.close();prefetchFile=File();}
+  bool failIO(){ioFailed_=true;leaseInvalidated_=true;stage_=Stage::Failed;
+    failure_=reader_content::PrefetchFailure::Read;closePrefetch();
     storage_validation::invalidate();return false;}
   bool failPrefetch(reader_content::PrefetchFailure failure){
     if(stage_==Stage::Complete)return false;
-    failure_=failure;stage_=Stage::Failed;prefetchFile.close();
+    failure_=failure;stage_=Stage::Failed;closePrefetch();
     if(failure==reader_content::PrefetchFailure::Read||
-       failure==reader_content::PrefetchFailure::Hash)ioFailed_=true;
-    storage_validation::invalidate();
+       failure==reader_content::PrefetchFailure::Hash){
+      ioFailed_=true;leaseInvalidated_=true;storage_validation::invalidate();
+    }else if(failure==reader_content::PrefetchFailure::Lease){
+      leaseInvalidated_=true;
+    }
+    // UTF-8/semantic failures are content errors, not storage errors. Keep
+    // the lease so a read-only diagnostic can still inspect the source.
     return false;
   }
   bool stepRead();
@@ -60,7 +67,8 @@ class SdContentSource:public reader_content::Source {
   bool load(const reader_cache::Header& cache){
     stage_=Stage::None;failure_=reader_content::PrefetchFailure::None;
     cursor_=0;loadedCount_=0;utf8At_=0;utf8Need_=0;
-    prefetchReadBytes_=0;prefetchFile.close();memset(loaded,0,sizeof(loaded));
+    prefetchReadBytes_=0;closePrefetch();memset(loaded,0,sizeof(loaded));
+    leaseInvalidated_=false;
     semanticValidation_=epub_document::Document::FullValidation{};
     File file=SD.open(path+".chunks","r");
     if(!file||file.size()<sizeof(header)||file.size()>content_manifest::MAX_BYTES)return false;
@@ -98,12 +106,17 @@ class SdContentSource:public reader_content::Source {
     // A failed background fill may still redraw the already authenticated
     // visible span, but it must not perform another on-demand read.
     if(stage_==Stage::Failed){
-      for(size_t block=firstBlock;block<=lastBlock;++block)if(!has(block))return false;
+      for(size_t block=firstBlock;block<=lastBlock;++block)if(!has(block)){
+        if(failure_==reader_content::PrefetchFailure::Lease||
+           leaseId!=storage_validation::lease())leaseInvalidated_=true;
+        return false;
+      }
     }
     File file;size_t work=0;uint32_t yielded=millis();
     for(size_t block=firstBlock;block<=lastBlock;++block){
       if(has(block))continue;
-      if(!leaseId||leaseId!=storage_validation::lease())return false;
+      const uint64_t lease=storage_validation::lease();
+      if(!leaseId||leaseId!=lease){leaseInvalidated_=true;return false;}
       if(!file){file=SD.open(path,"r");if(!file)return failIO();}
       const size_t at=block*content_manifest::BLOCK_BYTES;
       const size_t count=std::min(size_t(content_manifest::BLOCK_BYTES),size_t(header.textBytes)-at);
@@ -111,7 +124,8 @@ class SdContentSource:public reader_content::Source {
       const size_t got=file.read(scratch.get(),count);readBytes_+=got;
       if(got!=count)return failIO();
       uint8_t digest[32];mbedtls_sha256_ret(scratch.get(),count,digest,0);
-      if(memcmp(digest,hashes.get()+block*32,32)||leaseId!=storage_validation::lease())return false;
+      if(memcmp(digest,hashes.get()+block*32,32))return false;
+      if(leaseId!=storage_validation::lease()){leaseInvalidated_=true;return false;}
       // Never overwrite a visible byte with an unverified read.
       memcpy(text+at,scratch.get(),count);loaded[block/8]|=uint8_t(1u<<(block%8));++loadedCount_;work+=count;
       if(work>=128u*1024||uint32_t(millis()-yielded)>=50){delay(1);work=0;yielded=millis();}
@@ -140,9 +154,13 @@ class SdContentSource:public reader_content::Source {
     return header.blocks&&header.textBytes&&text&&hashes&&scratch;
   }
   void beginPrefetch()override{
-    if(stage_!=Stage::None)return;
-    if(!prefetchSupported()||!leaseId||leaseId!=storage_validation::lease()){
-      failure_=reader_content::PrefetchFailure::Lease;stage_=Stage::Failed;return;
+    if(stage_!=Stage::None&&stage_!=Stage::Cancelled)return;
+    leaseInvalidated_=false;
+    const bool leaseBad=!leaseId||leaseId!=storage_validation::lease();
+    if(!prefetchSupported()||leaseBad){
+      failure_=reader_content::PrefetchFailure::Lease;stage_=Stage::Failed;
+      if(leaseBad)leaseInvalidated_=true;
+      return;
     }
     failure_=reader_content::PrefetchFailure::None;stage_=Stage::Pending;
     cursor_=0;loadedCount_=countLoaded();utf8At_=0;utf8Need_=0;
@@ -153,8 +171,8 @@ class SdContentSource:public reader_content::Source {
     failPrefetch(failure);
   }
   void cancelPrefetch()override{
-    if(stage_==Stage::Complete)return;
-    prefetchFile.close();stage_=Stage::Cancelled;
+    if(stage_==Stage::Complete||stage_==Stage::Failed)return;
+    closePrefetch();stage_=Stage::Cancelled;
   }
   bool prefetchStep()override{
     if(stage_==Stage::Pending)stage_=Stage::Reading;
@@ -169,6 +187,7 @@ class SdContentSource:public reader_content::Source {
   }
   bool prefetchFailed()const override{return stage_==Stage::Failed;}
   bool prefetchComplete()const override{return stage_==Stage::Complete;}
+  bool leaseInvalidated()const override{return leaseInvalidated_;}
   reader_content::PrefetchState prefetchState()const override{
     switch(stage_){
     case Stage::Pending:return reader_content::PrefetchState::Pending;
@@ -191,7 +210,7 @@ class SdContentSource:public reader_content::Source {
 
 inline bool SdContentSource::stepRead(){
   if(loadedCount_>=header.blocks){
-    prefetchFile.close();stage_=Stage::Utf8;utf8At_=0;utf8Need_=0;return true;
+    closePrefetch();stage_=Stage::Utf8;utf8At_=0;utf8Need_=0;return true;
   }
   if(!leaseId||leaseId!=storage_validation::lease())
     return failPrefetch(reader_content::PrefetchFailure::Lease);
@@ -203,7 +222,7 @@ inline bool SdContentSource::stepRead(){
   if(block<header.blocks&&has(block)){cursor_=block;return true;}
   if(block>=header.blocks){
     if(loadedCount_>=header.blocks){
-      prefetchFile.close();stage_=Stage::Utf8;utf8At_=0;utf8Need_=0;return true;
+      closePrefetch();stage_=Stage::Utf8;utf8At_=0;utf8Need_=0;return true;
     }
     return failPrefetch(reader_content::PrefetchFailure::Hash);
   }
@@ -222,13 +241,15 @@ inline bool SdContentSource::stepRead(){
   readBytes_+=got;prefetchReadBytes_+=got;
   if(got!=count)return failPrefetch(reader_content::PrefetchFailure::Read);
   uint8_t digest[32];mbedtls_sha256_ret(scratch.get(),count,digest,0);
-  if(memcmp(digest,hashes.get()+block*32,32)||leaseId!=storage_validation::lease())
+  if(memcmp(digest,hashes.get()+block*32,32))
     return failPrefetch(reader_content::PrefetchFailure::Hash);
+  if(leaseId!=storage_validation::lease())
+    return failPrefetch(reader_content::PrefetchFailure::Lease);
   // Only verified bytes are published; the visible begin/end span is untouched.
   memcpy(text+at,scratch.get(),count);
   loaded[block/8]|=uint8_t(1u<<(block%8));++loadedCount_;cursor_=block+1;
   if(loadedCount_>=header.blocks){
-    prefetchFile.close();stage_=Stage::Utf8;utf8At_=0;utf8Need_=0;
+    closePrefetch();stage_=Stage::Utf8;utf8At_=0;utf8Need_=0;
   }
   return true;
 }
@@ -268,5 +289,5 @@ inline bool SdContentSource::stepSemantic(){
   if(!bookDocument.validateFullStep(semanticValidation_,1024))
     return failPrefetch(reader_content::PrefetchFailure::Semantic);
   if(!semanticValidation_.done)return true;
-  prefetchFile.close();stage_=Stage::Complete;return true;
+  closePrefetch();stage_=Stage::Complete;return true;
 }

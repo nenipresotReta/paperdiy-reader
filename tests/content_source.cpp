@@ -264,6 +264,32 @@ int main(){
  assert(!reader_content::active()&&!memcmp(book,text.data(),text.size()));
  assert(pageNumber==prefetchPage&&retainedOffset==prefetchAnchor);
 
+ // A cancelled fill can resume from its loaded-block bitmap when the resident
+ // path re-arms it; cancellation must not permanently poison the source.
+ openFresh();BookCache resume("/content.epub",false);assert(resume.load()&&reader_content::active());
+ auto* resumeSource=static_cast<SdContentSource*>(reader_content::source().get());
+ resumeSource->beginPrefetch();assert(resumeSource->prefetchPending());
+ assert(resumeSource->prefetchStep());
+ resumeSource->cancelPrefetch();
+ assert(resumeSource->prefetchState()==reader_content::PrefetchState::Cancelled);
+ assert(!resumeSource->prefetchPending());
+ resumeSource->beginPrefetch();assert(resumeSource->prefetchPending());
+ while(resumeSource->prefetchPending())resumeSource->prefetchStep();
+ assert(resumeSource->prefetchComplete()&&!resumeSource->prefetchFailed());
+ assert(bookDocument.ready()&&bookDocument.validateSpan(0,text.size()));
+ assert(!memcmp(book,text.data(),text.size()));
+ reader_content::clear();
+
+ // A pin that sees a changed lease reports it so the app can reopen instead of
+ // leaving the page turn silently stuck.
+ openFresh();BookCache stalePin("/content.epub",false);assert(stalePin.load()&&reader_content::active());
+ auto* staleSource=static_cast<SdContentSource*>(reader_content::source().get());
+ storage_validation::invalidate();
+ assert(!reader_content::pin(0,text.size()));
+ assert(staleSource->leaseInvalidated());
+ assert(reader_content::leaseInvalidated());
+ reader_content::clear();
+
  // A mismatched block hash stops the fill without touching the visible span.
  writeSource(cache.path,complete);writeSource(cache.path+".chunks",manifest);
  openFresh();BookCache hashFail("/content.epub",false);assert(hashFail.load()&&reader_content::active());
@@ -275,6 +301,8 @@ int main(){
  while(prefetchSource->prefetchPending())prefetchSource->prefetchStep();
  assert(prefetchSource->prefetchFailed()&&prefetchSource->prefetchFailure()==reader_content::PrefetchFailure::Hash);
  assert(!prefetchSource->prefetchPending());
+ prefetchSource->cancelPrefetch();
+ assert(prefetchSource->prefetchFailed()); // cancellation does not turn a failure into a retry.
  assert(reader_content::begin()==hashFirst&&reader_content::limit()==hashLast);
  assert(reader_content::pin(hashFirst,hashLast));
  assert(!reader_content::pin(0,text.size()));
@@ -289,6 +317,8 @@ int main(){
  assert(!prefetchSource->prefetchStep());
  assert(prefetchSource->prefetchFailed()&&prefetchSource->prefetchFailure()==reader_content::PrefetchFailure::Lease);
  assert(!prefetchSource->prefetchPending());
+ assert(prefetchSource->leaseInvalidated());
+ assert(reader_content::leaseInvalidated());
  assert(reader_content::begin()==leaseFirst&&reader_content::limit()==leaseLast);
  reader_content::clear();
 
@@ -304,10 +334,13 @@ int main(){
  openFresh();BookCache utf8Fail("/content.epub",false);assert(utf8Fail.load()&&reader_content::active());
  prefetchSource=static_cast<SdContentSource*>(reader_content::source().get());
  const size_t utf8First=reader_content::begin(),utf8Last=reader_content::limit();
+ const uint64_t utf8Lease=storage_validation::lease();
  prefetchSource->beginPrefetch();
  while(prefetchSource->prefetchPending())prefetchSource->prefetchStep();
  assert(prefetchSource->prefetchFailed()&&prefetchSource->prefetchFailure()==reader_content::PrefetchFailure::Utf8);
  assert(!prefetchSource->prefetchPending());
+ assert(!prefetchSource->leaseInvalidated());
+ assert(storage_validation::lease()==utf8Lease);
  assert(reader_content::begin()==utf8First&&reader_content::limit()==utf8Last);
  reader_content::clear();
  writeSource(cache.path,complete);writeSource(cache.path+".chunks",manifest);
@@ -317,10 +350,13 @@ int main(){
  openFresh();BookCache semanticFail("/content.epub",false);assert(semanticFail.load()&&reader_content::active());
  prefetchSource=static_cast<SdContentSource*>(reader_content::source().get());
  const size_t semanticFirst=reader_content::begin(),semanticLast=reader_content::limit();
+ const uint64_t semanticLease=storage_validation::lease();
  prefetchSource->beginPrefetch();bookDocument.clear();
  while(prefetchSource->prefetchPending())prefetchSource->prefetchStep();
  assert(prefetchSource->prefetchFailed()&&prefetchSource->prefetchFailure()==reader_content::PrefetchFailure::Semantic);
  assert(!prefetchSource->prefetchPending());
+ assert(!prefetchSource->leaseInvalidated());
+ assert(storage_validation::lease()==semanticLease);
  assert(reader_content::begin()==semanticFirst&&reader_content::limit()==semanticLast);
  reader_content::clear();
 
