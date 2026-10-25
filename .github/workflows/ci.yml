@@ -36,3 +36,23 @@ jobs:
       - run: cmake --build build --parallel 2
       - run: ctest --test-dir build --output-on-failure
       - run: git diff --exit-code
+  sender:
+    # The LAN sender is stdlib-only and must run on every desktop platform.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, python: '3.9'}
+          - {os: windows-2022, python: '3.9'}
+          - {os: windows-2022, python: '3.12'}
+          - {os: macos-14, python: '3.12'}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python tests/lan_client.py
