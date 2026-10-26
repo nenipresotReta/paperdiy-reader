@@ -16,7 +16,7 @@ namespace sd_audit_device {
 struct Context {uint64_t lease;uint32_t started;};
 inline bool allowed(void* p){
   const auto& c=*static_cast<Context*>(p);
-  return sdOK&&!sdOwnedByUsb()&&!networkActive()&&!openSDPending()&&!sdBackgroundPending()&&
+  return sdOK&&!networkActive()&&!openSDPending()&&!sdBackgroundPending()&&
     !lan_service::storageBusy()&&digitalRead(48)==LOW&&!rawPowerKeys()&&
     c.lease&&c.lease==storage_validation::lease()&&uint32_t(millis()-c.started)<300000;
 }

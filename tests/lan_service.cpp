@@ -23,7 +23,7 @@ size_t selectedBook=0;
 String sdError,settingsLanType,settingsLanName,settingsLanState;
 namespace {
 using delivery_store::Code;using delivery_store::State;using delivery_store::Kind;
-bool usbOwned=false,enabled=false,tlsLive=false,tlsWriting=false,tlsDraining=false,tlsAccepting=false;
+bool enabled=false,tlsLive=false,tlsWriting=false,tlsDraining=false,tlsAccepting=false;
 uint64_t lease=0;
 lan_tls::Handler captured=nullptr;
 delivery_store::SDHooks hooks;
@@ -35,7 +35,7 @@ unsigned nvsOpenHandles=0;
 bool failReceiptWrite=false;
 bool failReadbackAfterCommit=false;
 SHA256_CTX streaming;
-bool accessible(){return enabled&&sdOK&&!usbOwned&&lease&&lease==storage_validation::lease();}
+bool accessible(){return enabled&&sdOK&&lease&&lease==storage_validation::lease();}
 delivery_store::Hash hashAdapter(){delivery_store::Hash h;
   h.begin=[](void*){return SHA256_Init(&streaming)==1;};
   h.update=[](void*,const uint8_t* b,size_t n){return SHA256_Update(&streaming,b,n)==1;};
@@ -78,7 +78,7 @@ void tick(uint32_t elapsed=0){testClock+=elapsed;lan_service::storagePoll();lan_
 void settle(){for(unsigned i=0;i<100&&!delivery_store_sd::store().recovered();++i)tick();assert(delivery_store_sd::store().recovered());}
 void reset(){
   lan_service::stop();lan_service::storageChanged();instance.reset();files.clear();nvsCommitted.clear();nvsPending.clear();
-  usbOwned=false;enabled=false;reads=writes=polls=0;nvsGetError=nvsCommitError=nvsOpenError=ESP_OK;
+  enabled=false;reads=writes=polls=0;nvsGetError=nvsCommitError=nvsOpenError=ESP_OK;
   assert(nvsOpenHandles==0);failReceiptWrite=failReadbackAfterCommit=false;
   testClock=100;sdOK=true;sdBooks.clear();selectedBook=0;storage_validation::beginExclusive();
   lan_service::takeLibraryChanged();
@@ -140,11 +140,10 @@ void deliver(const Client& client,const delivery_store::Metadata& m,const std::s
 }
 }
 
-bool sdOwnedByUsb(){return usbOwned;}
 namespace delivery_store_sd {
 delivery_store::Store& store(){if(!instance)instance.reset(new delivery_store::Store(ioAdapter(),hashAdapter()));return *instance;}
 void setHooks(delivery_store::SDHooks value){hooks=value;}
-bool mount(){lease=storage_validation::lease();enabled=sdOK&&!usbOwned&&lease;store().beginRecovery();return enabled;}
+bool mount(){lease=storage_validation::lease();enabled=sdOK&&lease;store().beginRecovery();return enabled;}
 void unmount(){store().stop();enabled=false;lease=0;}
 bool mounted(){return accessible();}
 void poll(){if(enabled)store().poll();}
@@ -189,9 +188,10 @@ void stopAndStorageOwnership(){
   assert(!lan_service::active()&&!lan_service::promptPending());
   assert(lan_service::start("127.0.0.1"));settle();
   const auto second=metadata(client,4,"Card loss");assert(begin(client,second).code==200);
-  const auto beforeReads=reads,beforeWrites=writes;usbOwned=true;
+  // A removed card refuses the transfer without touching storage.
+  const auto beforeReads=reads,beforeWrites=writes;sdOK=false;
   assert(chunk(client,second,0,"Card loss").code!=200);tick();
-  assert(reads==beforeReads&&writes==beforeWrites);usbOwned=false;
+  assert(reads==beforeReads&&writes==beforeWrites);sdOK=true;
   lan_service::storageChanged();storage_validation::invalidate();
   const auto r=reads,w=writes;tick();assert(reads==r&&writes==w);
   lan_service::stop();assert(reads==r&&writes==w);

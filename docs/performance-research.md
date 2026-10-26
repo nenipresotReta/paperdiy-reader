@@ -400,7 +400,7 @@ The first two stages provide an engineering prototype. They must not be called p
 
 Use public synthetic fixtures with fixed source hashes and documented generation parameters. Native/WASM byte parity and host fault injection test correctness; they do not establish physical SD throughput, wireless performance or power consumption. Keep first-page, canonical-index and cache-publication boundaries separate.
 
-USB book transfer is disabled by default. The retained MSC implementation requires an explicit private experimental build; its source-level corrections do not establish raw SD reliability.
+USB book transfer was removed; the experimental MSC implementation never established raw SD reliability.
 
 ### Continuing regression matrix
 

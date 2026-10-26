@@ -13,10 +13,9 @@ struct Inputs {
   bool rawPressed;
   bool usbConnected;
   bool radioActive;
-  bool storageOwned;
-  constexpr Inputs(bool stable, bool idle, bool pressed, bool usb, bool radio=false,bool storage=false)
+  constexpr Inputs(bool stable, bool idle, bool pressed, bool usb, bool radio=false)
       : stableScene(stable), inputIdle(idle), rawPressed(pressed),
-        usbConnected(usb), radioActive(radio),storageOwned(storage) {}
+        usbConnected(usb), radioActive(radio) {}
 };
 
 struct Plan {
@@ -48,10 +47,7 @@ public:
     if (failurePending && uint32_t(now - lastSleepFailure) >= FAILURE_BACKOFF_MS)
       failurePending = false;
 
-    // Raw MSC callbacks run in the USB task, outside application activity
-    // accounting. Hold full speed for the complete ownership interval rather
-    // than downclocking during a callback or before the first burst is noticed.
-    if (inputs.storageOwned || !inputs.stableScene || !inputs.inputIdle || inputs.rawPressed ||
+    if (!inputs.stableScene || !inputs.inputIdle || inputs.rawPressed ||
         uint32_t(now - lastActivity) < IDLE_DELAY_MS)
       return {};
 

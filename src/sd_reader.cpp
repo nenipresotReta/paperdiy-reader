@@ -27,7 +27,6 @@ static std::unique_ptr<BookCache> backgroundCache;
 static std::unique_ptr<DeferredCacheWrite> backgroundWrite;
 static std::unique_ptr<PaginationCheckpoint> backgroundCheckpoint;
 static bool checkpointAttempted=false,checkpointRestore=true;
-static bool usbStorageHandoff=false;
 static uint64_t backgroundLease=0;
 static uint32_t backgroundLayout=0;
 static bool backgroundIndex=false;
@@ -262,26 +261,6 @@ bool sdReadFailure() {
   sdOK=false;SD.end();
   return false;
 }
-uint32_t sdStorageFrequency(){return sdSpeed.active?sdSpeed.active:4000000u;}
-bool beginUsbStorageHandoff(){
-  if(usbStorageHandoff)return true;
-  // Saving an unchanged exact anchor is harmless; failure must leave the book
-  // and local SD ownership available for retry, before any handle is closed.
-  if(!pageOffsets.empty()&&!saveReadingProgress())return false;
-  cancelOpenSD();while(openSDPending())pollOpenSD();
-  cancelSDBackground();cancelReaderIndex();reader_content::clear();resident.clear();
-  storage_validation::invalidate();usbStorageHandoff=true;sdOK=false;SD.end();
-  return true;
-}
-bool endUsbStorageHandoff(){
-  if(!usbStorageHandoff)return sdOK;
-  // Caller has already synchronized/uninitialized raw USB access. Clear RAM
-  // content because host writes can invalidate text, semantics and anchors.
-  usbStorageHandoff=false;bookLength=0;pageOffsets.clear();bookDocument.clear();
-  clearMarkdown();bookIdentity="";resident.clear();storage_validation::invalidate();
-  return scanSD();
-}
-bool sdOwnedByUsb(){return usbStorageHandoff;}
 uint32_t crcUpdate(uint32_t c,const uint8_t* p,size_t n){
   while(n--){c^=*p++;for(int i=0;i<8;i++)c=(c>>1)^((c&1)?0xedb88320:0);}
   return c;
@@ -303,7 +282,6 @@ void scanDirectory(const String& path,unsigned depth){
   }
 }
 bool scanSD(){
-  if(usbStorageHandoff){sdError="SD card is owned by USB";return false;}
   cancelOpenSD();while(openSDPending())pollOpenSD();
   cancelSDBackground();
   storage_validation::invalidate();
@@ -372,7 +350,6 @@ bool inspectCachedLanguage(const String& source,bool directory,BookCache& cache)
 }
 static bool startExtraction(BookCache&& cache,size_t index,bool paginate,bool forceReflow,const bookmarks::Anchor& anchor,uint32_t started);
 static bool openSDImmediate(size_t index,bool paginate,bool forceReflow){
-  if(usbStorageHandoff){sdError="SD card is owned by USB";return false;}
   bool staleResident=false;
   if(!forceReflow&&index<sdBooks.size()&&!managed_progress::isPushPath(sdBooks[index].c_str())&&book&&sdOK&&!bookMarkupFallback&&!bookEpubTransientFallback&&!progressSaveFailed&&bookIdentity==sdBooks[index]&&
      resident.matches(sdBooks[index].c_str(),bookmarkKey.c_str(),storage_validation::lease(),activeLayout(),bookLength)&&
@@ -567,7 +544,6 @@ bool openSD(size_t index,bool paginate,bool forceReflow){
 
 #ifdef PAPERDIY_DIAGNOSTICS
 void logSDCacheInfo(){
-  if(usbStorageHandoff){Console.println("CACHE_INFO_UNAVAILABLE usb_owner=1");return;}
   for(size_t i=0;i<sdBooks.size();++i){
     File source=SD.open(sdBooks[i]);if(!source)continue;
     BookCache cache(sdBooks[i],source.isDirectory());source.close();

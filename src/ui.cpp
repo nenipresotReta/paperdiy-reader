@@ -24,7 +24,6 @@ String settingsApSsid,settingsApPassword,settingsApUrl;
 bool settingsApClientConnected=false;
 String settingsStaSsid,settingsStaIp,settingsStaError;
 bool settingsStaConfigured=false,settingsStaConnected=false;
-String settingsUsbStatus="Connect USB";
 String settingsLanType,settingsLanName,settingsLanState;
 String settingsLiveStatus;
 LiveIcon liveIcon=LiveIcon::None;
@@ -212,11 +211,6 @@ void liveIconCell(){
   for(int r=0;r<LIVE_ICON_ROWS;++r)for(int c=0;c<LIVE_ICON_SIZE;++c)
     if(rows[r]&(1u<<(LIVE_ICON_SIZE-1-c)))M5.Display.drawPixel(LIVE_ICON_X+c,LIVE_ICON_Y+LIVE_ICON_TOP+r,TFT_BLACK);
 }
-void usbPanel(){
-  const int dy=settingsContentDy();
-  bodyText("USB Storage",32,112+dy);
-  smallLine(settingsUsbStatus,32,160+dy);
-}
 void statusIcon(bool busy=false){
   M5.Display.fillRect(504,928,28,28,TFT_WHITE);
   if(busy){
@@ -382,7 +376,6 @@ void showSettings(bool sceneChange){
   if(networkMode==NetworkMode::Ap)apPanel();
   else if(networkMode==NetworkMode::Sta)staPanel();
   else if(networkMode==NetworkMode::Live)livePanel();
-  else if(PAPERDIY_EXPERIMENTAL_USB_MSC&&networkMode==NetworkMode::Usb)usbPanel();
   int dx=settingsDx();
   modeRow(dx,settingsModeY());
   if(!settingsRotated)drawInterfaceGlyph("\xc2\xac",2,SETTINGS_LEFT+dx,settingsRotationY(),TFT_BLACK);
@@ -409,7 +402,6 @@ void updateSettingsNetwork(){
   if(networkMode==NetworkMode::Ap)apPanel();
   else if(networkMode==NetworkMode::Sta)staPanel();
   else if(networkMode==NetworkMode::Live)livePanel();
-  else if(PAPERDIY_EXPERIMENTAL_USB_MSC&&networkMode==NetworkMode::Usb)usbPanel();
   endRefresh("settings-network",0,y,540,SETTINGS_CONTENT_H);
 }
 void updateSettingsDelivery(){

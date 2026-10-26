@@ -42,11 +42,9 @@ existing pinned copy. On Homebrew macOS, CMake may need
 miniz byte-read path; they do not silently modify the pinned dependency.
 Use a separate `-DSANITIZE=OFF` build for timing.
 
-The public default is native USB MODE0 with CDC enabled at boot. `src/usb_features.h` defaults `PAPERDIY_EXPERIMENTAL_USB_MSC` to 0, disabling
-MSC book transfer; ordinary builds hide U, cycle N → A → Off and reject
-`USB_ENTER`. Explicit value 1 is for private experimental builds only and is
-excluded from the shipped public configuration. `ARDUINO_USB_MSC_ON_BOOT=0`
-alone is not this compile gate. Public builds exclude
+The public default is native USB MODE0 with CDC enabled at boot. USB carries
+only the serial console and flashing; there is no mass-storage mode, and
+`ARDUINO_USB_MSC_ON_BOOT=0` keeps the SDK's own one off. Public builds exclude
 `PAPERDIY_DIAGNOSTICS`, `PAPERDIY_EPUB_TESTS`, `PAPERDIY_DEVICE_TESTS`,
 `PAPERDIY_NETWORK_TESTS` and external private artwork. Private configurations
 must remain outside public source; never rename a private image into a public
@@ -57,8 +55,7 @@ release binary. Build sizes and hashes must be recorded for the specific artifac
 `app` owns scenes/lifecycle, `input` owns button timing, `ui` draws scenes and
 `reader` owns the active document, exact anchor and page state. SD, catalogue,
 settings, NVS and delivery mutations are serialized on the application task.
-Cooperative jobs do not authorize concurrent FAT access. TinyUSB MSC callbacks
-run on the SDK task and use their own bounded ownership/mutex boundary.
+Cooperative jobs do not authorize concurrent FAT access.
 
 `document_format.h` owns shared admission: TXT 4 MiB, EPUB source 64 MiB,
 Markdown 1 MiB, all case-insensitive. Extracted EPUB text is at most 4 MiB.
@@ -232,7 +229,7 @@ P/S changes use native ink and preserve explicit spaces. Code/pre/math/rule
 boundaries stop contextual prose adjustments. Code is native 24 px proportional
 text, not synthesized monospace; it preserves indentation and disables normal
 justification/hyphenation. Panel completion precedes clock lowering or shutdown.
-Power evidence and experimental MSC's 240 MHz ownership gate are in [power](power.md).
+Power evidence is in [power](power.md).
 
 Sleep artwork is optional `PDI1`: 16-byte header, LE dimensions, reserved zero
 bytes, payload CRC32 and row-aligned MSB-first pixels, at most 540×960. The
@@ -319,30 +316,19 @@ network download. Verify final link-map provenance as well as the portable
 to include the installed-archive check. This correction has separate hardware
 acceptance and does not identify the cause of a particular disconnect.
 
-## USB ownership and firmware recovery
+## Firmware recovery over USB
 
-USB book transfer is paused while actual-SD failures remain unresolved. The
-default MODE0 build retains CDC and disables MSC. Only an explicit
-private `PAPERDIY_EXPERIMENTAL_USB_MSC=1` build enables the retained experimental
-U path.
-When enabled, U first saves progress, stops storage/network jobs, closes handles, revokes leases and
-unmounts FAT. HostOwned, ExitRequested and Fault keep exclusive host ownership;
-only accepted host eject and successful raw-driver release permit local FAT.
-PREVENT/ALLOW, synchronization and START STOP UNIT govern that transition.
-Disconnect, suspend, USB reset and idle time are not safe eject.
+USB is the serial console and the flashing path; the reader never exposes the
+card as USB storage. An earlier experimental mass-storage mode was removed
+because actual-SD disconnects stayed unresolved.
 
-Callbacks transfer at most 4 KiB. The latest source holds 240 MHz throughout
-ownership and retains first media/driver error plus backend/card-detect details.
-A Fault cannot be treated as owned=0. Shutdown/reset/1200 touch are guarded while
-the host owns the medium. A disposable RAM-disk test never accesses the SD card.
-Actual-SD disconnects remain unresolved; the default build keeps MSC disabled.
-
-
-Only after safe ownership release, native CDC recovery may use 1200 baud with DTR and RTS both asserted, followed by a newly enumerated ROM port.
-Confirm the exact reader,
-partition layout and selected application binary before writing only app0.
-Do not erase NVS, flash bootloader/partition data or change book paths when
-preserving progress. Never reset or flash while the host owns the medium.
+Opening the TinyUSB CDC console at 1200 baud reboots into the ROM downloader,
+which enumerates as a new USB-Serial/JTAG port, so no BOOT key is needed. That
+reboot asks the next reset to enter the downloader again: after flashing, an
+esptool hard reset clears the request, and a plain reset may then be needed to
+start the application. Confirm the exact reader, partition layout and selected
+application binary before writing only app0. Do not erase NVS, flash
+bootloader/partition data or change book paths when preserving progress.
 
 ## Tests, diagnostics and publication
 
@@ -350,7 +336,7 @@ Run relevant regressions, then required full native/pinned-SDK checks. Native
 fixtures cover malformed XML/ZIP, UTF-8/source mappings, PDS/ECS/PDT bounds,
 chapter and page restart, torn writes, poisoned unpinned text, exact anchors,
 allocation failure, actual ink and formula primitive counts, geometry/footer/
-rotation, protocol replay, persistence errors and USB ownership. A draw/index
+rotation, protocol replay and persistence errors. A draw/index
 parity pass alone cannot establish that an object was painted only once.
 
 `PAPERDIY_DIAGNOSTICS` exposes bounded local commands including STATUS, SCREEN,

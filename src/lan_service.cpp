@@ -417,7 +417,7 @@ std::string batchProgress(){
 bool isPushPath(const char* path){return managed_progress::isPushPath(path);}
 const char* currentPushPath(){return pushPath.c_str();}
 bool refreshLibrary(){
-  if(sdOwnedByUsb()||!sdOK||!storageInitialized||!delivery_store_sd::store().pushRecovered())return false;
+  if(!sdOK||!storageInitialized||!delivery_store_sd::store().pushRecovered())return false;
   const auto next=delivery_store_sd::store().pushPath();
   const String selected=selectedBook<sdBooks.size()?sdBooks[selectedBook]:String();
   const auto old=sdBooks;
@@ -427,7 +427,7 @@ bool refreshLibrary(){
   pushPath=next;return old!=sdBooks;
 }
 void storagePoll(){
-  if(!sdOK||sdOwnedByUsb()||storage_validation::cardEventPending())return;
+  if(!sdOK||storage_validation::cardEventPending())return;
   if(!storageInitialized||!delivery_store_sd::mounted()){
     delivery_store::SDHooks hooks;hooks.admit=admission;hooks.published=published;delivery_store_sd::setHooks(hooks);
     if(!delivery_store_sd::mount())return;storageInitialized=true;
@@ -450,7 +450,7 @@ bool pushReady(){return storageInitialized&&delivery_store_sd::store().pushRecov
 void storageStop(){delivery_store_sd::unmount();storageInitialized=false;}
 void storageChanged(){delivery_store_sd::invalidate();storageInitialized=false;pushPath.clear();publishedPath.clear();}
 bool start(const char* ip,bool live){
-  stop();if(!ip||!sdOK||sdOwnedByUsb())return false;
+  stop();if(!ip||!sdOK)return false;
   // A publication/receipt I/O failure may have left a durable intent. Explicit
   // N restart replays bounded recovery against that same final target; it must
   // not strand the live Store in a non-polling Uncertain state indefinitely.

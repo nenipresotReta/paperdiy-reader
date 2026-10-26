@@ -7,16 +7,6 @@ This document describes the implemented idle policy and its technical limits. So
 ## Policy
 
 After one second without activity, lower the CPU from 240 MHz to 80 MHz.
-USB book transfer is disabled by default; `PAPERDIY_EXPERIMENTAL_USB_MSC=1` is
-reserved for private experimental builds. When enabled, exclusive MSC ownership
-is the exception: enter at 240 MHz and retain
-that clock until explicit host eject and successful raw-driver release,
-including exit-requested and fault states. Raw SD callbacks run in the USB task,
-so application byte-delta polling cannot safely decide when to downclock.
-This conservative choice avoids clock transitions during raw I/O and gives
-predictable first-burst latency at the cost of higher connected-idle CPU power.
-This clock policy alone does not establish USB reliability or quantify power
-cost.
 
 On battery power, also enter manual light sleep with a one-second timer fallback.
 On USB or other external power, only lower the CPU frequency; keep the processor
@@ -122,23 +112,18 @@ have not been measured.
 ## USB and power-source detection
 
 The USB build flag selects the transport. With `ARDUINO_USB_MODE=1`, `Serial`
-is the USB Serial/JTAG `HWCDC` implementation and USB storage is unavailable.
-With `ARDUINO_USB_MODE=0`, native TinyUSB provides CDC; MSC remains disabled
-unless the private experimental compile gate is explicitly enabled. Check the selected build configuration; these are distinct
-firmware variants. Power code uses `usb_transport` for both variants.
+is the USB Serial/JTAG `HWCDC` implementation. With `ARDUINO_USB_MODE=0` (the
+default), native TinyUSB provides CDC. Neither variant offers USB storage.
+Check the selected build configuration; these are distinct firmware variants.
+Power code uses `usb_transport` for both variants.
 
 In the HWCDC variant, `HWCDC::isPlugged()` detects host SOF packets, while
 `bool(Serial)`/`isCDC_Connected()` additionally depend on CDC activity. The latter
 cannot protect a connected computer whose serial terminal is closed. A suspended
 host or a charge-only supply may not produce SOF packets at all.
-The native variant blocks sleep while TinyUSB is configured or suspended,
-and throughout exclusive MSC ownership even if the bus resets or disconnects.
-Only an accepted explicit host eject and successful raw-driver removal permit
-local FAT remount. Idle time, cable removal and a USB bus reset do not grant
-that permission. CDC automatic reboot is disabled throughout host ownership;
-recovery and application shutdown must wait for safe eject. USB sector activity
-is not required to retain 240 MHz while MSC owns the card. Ordinary CDC without
-MSC ownership may still throttle to 80 MHz.
+The native variant blocks sleep while TinyUSB is configured or suspended. CDC
+may still throttle the CPU to 80 MHz. The SDK's 1200-baud CDC reboot into the
+ROM downloader stays enabled; it is the flashing path.
 
 Before sleeping, use a checked M5PM1 register read of `PWR_SRC` (`0x04`):
 bit 0 is 5VIN, bit 1 is 5VINOUT, and bit 2 is the powered battery node.
@@ -148,13 +133,10 @@ Recheck host connection immediately before entry. If USB is attached during
 sleep, the timer bounds the next power-source check to about one second.
 Enumeration after USB attachment during sleep still needs device acceptance.
 
-MSC read/write callbacks release the storage mutex and wait at least one RTOS
-tick on success, failure and lock contention, allowing other tasks to run
-between callbacks. This does not preempt one synchronous SD operation. A
-checksum-gated PlatformIO middleware compiles a build-local Arduino SD source
+A checksum-gated PlatformIO middleware compiles a build-local Arduino SD source
 copy whose `sdcard_uninit()` releases its SPI guard before freeing the card;
-the shared framework is not modified. These source fixes do not identify the
-cause of a particular hardware disconnect.
+the shared framework is not modified. It applies to every unmount, including
+card removal.
 
 Application console output is best effort. The native CDC adapter makes finite
 TinyUSB FIFO attempts rather than entering the pinned SDK's unbounded
@@ -165,9 +147,9 @@ diagnostic computations do not consume a frame deadline. A failed bulk frame
 stops waiting on subsequent rows;
 `SCREEN_DONE` is emitted only for a complete capture, with `SCREEN_ABORTED`
 attempted after an interrupted one. A host draining within those deadlines receives
-the full frame. Dropping logs does not eject storage or prove synchronization.
-RX, serial initialization and the ownership-dependent reboot guard keep their
-existing paths. CDC reopen behavior requires separate physical validation.
+the full frame. Dropping logs does not prove synchronization. RX and serial
+initialization keep their existing paths. CDC reopen behavior requires
+separate physical validation.
 
 Do not infer that USB is absent from `isCharging()`: charging can stop while
 the cable remains connected. Do not use a zero returned by `getPowerSource()`

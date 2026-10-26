@@ -24,11 +24,11 @@ ctest --test-dir build --output-on-failure
 
 主机测试需要 CMake、OpenSSL 开发头文件和 Node.js 18+。先由 PlatformIO 安装 M5GFX/miniz；已有锁定版本可通过 `-DM5GFX_DIR=/path/to/M5GFX` 指定。Homebrew macOS 可能还需要 `-DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"`。仅用于主机的测试使用可移植 miniz 字节读取路径，不会暗中修改锁定依赖。计时应另建 `-DSANITIZE=OFF` 目录。
 
-公开默认配置使用原生 USB MODE0，启动启用 CDC。`src/usb_features.h` 将 `PAPERDIY_EXPERIMENTAL_USB_MSC` 默认为 0，关闭 MSC 导书；普通构建隐藏 U，循环 N → A → 关闭，并拒绝 `USB_ENTER`。显式值 1 仅供私人实验构建，不包含在交付的公开配置中。仅有 `ARDUINO_USB_MSC_ON_BOOT=0` 不等于该编译门禁。公开构建不包含 `PAPERDIY_DIAGNOSTICS`、`PAPERDIY_EPUB_TESTS`、`PAPERDIY_DEVICE_TESTS`、`PAPERDIY_NETWORK_TESTS` 或外部私人图片。私人配置必须留在公开源码之外，不能将私人镜像改名冒充公开固件。构建大小与哈希应对应具体产物记录。
+公开默认配置使用原生 USB MODE0，启动启用 CDC。USB 只承载串口控制台和刷写，没有大容量存储模式，`ARDUINO_USB_MSC_ON_BOOT=0` 让 SDK 自带的大容量存储也保持关闭。公开构建不包含 `PAPERDIY_DIAGNOSTICS`、`PAPERDIY_EPUB_TESTS`、`PAPERDIY_DEVICE_TESTS`、`PAPERDIY_NETWORK_TESTS` 或外部私人图片。私人配置必须留在公开源码之外，不能将私人镜像改名冒充公开固件。构建大小与哈希应对应具体产物记录。
 
 ## 所有权与源码坐标
 
-`app` 管理场景和生命周期，`input` 管理按键时序，`ui` 绘制场景，`reader` 管理当前文档、精确锚点和页面状态。SD、目录、设置、NVS 和传输写入在应用任务上串行执行。协作式任务不允许并发访问 FAT。TinyUSB MSC 回调运行在 SDK 任务中，使用独立且有界的所有权/互斥边界。
+`app` 管理场景和生命周期，`input` 管理按键时序，`ui` 绘制场景，`reader` 管理当前文档、精确锚点和页面状态。SD、目录、设置、NVS 和传输写入在应用任务上串行执行。协作式任务不允许并发访问 FAT。
 
 `document_format.h` 统一限制：TXT 4 MiB、EPUB 源文件 64 MiB、Markdown 1 MiB；扩展名匹配不区分大小写。EPUB 提取文本最多 4 MiB。阅读渲染不会重写源文件或持久化偏好。
 
@@ -96,7 +96,7 @@ EPUB 首先测量精确保存锚点附近的页面。本地窗口最多 32 个�
 
 标点压缩和汉字/ASCII 间距默认开启，只通过 AP WebUI 配置。忽略但保留旧 `cnStyle`。当前样式读取经验证的 `readerCfgV1`，它是带边界、保留位和 CRC 的 20 字节版本化记录。保存/回读成功后才应用。几何设置影响缓存身份；点击时序、刷新频率和图片不影响。
 
-P/S 调整使用原生 ink，保留显式空格。code/pre/math/rule 边界阻断正文上下文调整。代码为原生 24 px 比例字体，不合成等宽；保留缩进，关闭普通两端对齐/断词。降低时钟或关机前等待面板完成。电源证据和实验 MSC 的 240 MHz 所有权门禁见[电源说明](power.zh-CN.md)。
+P/S 调整使用原生 ink，保留显式空格。code/pre/math/rule 边界阻断正文上下文调整。代码为原生 24 px 比例字体，不合成等宽；保留缩进，关闭普通两端对齐/断词。降低时钟或关机前等待面板完成。电源证据见[电源说明](power.zh-CN.md)。
 
 关机图片为可选 `PDI1`：16 字节头、小端尺寸、保留字节为零、payload CRC32、逐行对齐且高位优先的像素，最多 540×960。浏览器本地适配/转换并预览，不放大。设备写入并验证非活动 SD 槽后才修改选择。删除前先持久化“none”；“firmware default”恢复编译内置回退。自定义图片缺失/无效时使用回退，不影响书籍/进度。
 
@@ -124,18 +124,15 @@ N 只在显式选择期间存在。设备专属 P-256 TLS 1.2 使用 ECDHE-ECDSA
 
 POST hook `pio_usb_dcd.py` 核对源/archive/对象身份，编译构建目录副本，将恰好一个 SDK 库 token 替换为已校验 archive。已安装 framework 不变，固件构建无需网络下载。除 `tests/usb_dcd_patch.py` 可移植回归外，还应验证最终 link map 的来源；传入 `--framework`、`--ar` 可检查已安装 archive。该修正有独立硬件验收，不能据此确定某次断连的根因。
 
-## USB 所有权与固件恢复
+## 通过 USB 恢复固件
 
-实际 SD 故障仍未解决，因此 USB 导书暂停。默认 MODE0 构建保留 CDC、关闭 MSC；仅显式私人 `PAPERDIY_EXPERIMENTAL_USB_MSC=1` 构建启用保留的实验 U 路径。启用后，U 先保存进度、停止存储/网络任务、关闭句柄、撤销 lease 并卸载 FAT。HostOwned、ExitRequested、Fault 都保持主机独占；只有接受主机弹出且原始驱动成功释放后才允许本地 FAT。PREVENT/ALLOW、同步和 START STOP UNIT 控制转换。断开、挂起、USB reset 和空闲均不等于安全弹出。
+USB 只用作串口控制台和刷写通道，阅读器从不把卡作为 USB 存储暴露。早先的实验性大容量存储模式已经删除，因为实际 SD 断连问题一直没有解决。
 
-回调每次最多传输 4 KiB。最新源码在整个所有权期间保持 240 MHz，保留首次介质/驱动错误及 backend/卡检测细节。Fault 不能当成 owned=0。主机持有介质时，对关机/reset/1200 touch 均有门禁。一次性 RAM 盘测试不访问 SD。实际 SD 断连问题仍未解决，默认构建关闭 MSC。
-
-只有安全释放所有权后，才可使用原生 CDC 恢复路径：1200 baud，同时拉起 DTR 和 RTS，然后使用新枚举的 ROM 端口。
-仅写 app0 前，核实具体设备、分区布局和应用镜像。保留进度时，不擦 NVS、不写 bootloader/分区表、不改书籍路径。主机持有介质时禁止 reset 或刷写。
+以 1200 波特率打开 TinyUSB CDC 控制台，会重启进 ROM 下载器，下载器枚举为新的 USB-Serial/JTAG 端口，因此不需要 BOOT 键。这次重启会要求下一次复位继续进入下载器：刷写后先用 esptool 做一次 hard reset 清除这个请求，之后可能还要一次普通复位才能启动应用。仅写 app0 前，核实具体设备、分区布局和应用镜像。保留进度时，不擦 NVS、不写 bootloader/分区表、不改书籍路径。
 
 ## 测试、诊断与发布
 
-先运行相关回归，再执行要求的完整主机/锁定 SDK 检查。主机夹具覆盖损坏 XML/ZIP、UTF-8/源码映射、PDS/ECS/PDT 边界、章节/页面重启、撕裂写入、未固定文本投毒、精确锚点、分配失败、实际 ink 和公式 primitive 计数、几何/页脚/旋转、协议重放、持久化错误和 USB 所有权。draw/index 一致本身不能证明对象只绘制一次。
+先运行相关回归，再执行要求的完整主机/锁定 SDK 检查。主机夹具覆盖损坏 XML/ZIP、UTF-8/源码映射、PDS/ECS/PDT 边界、章节/页面重启、撕裂写入、未固定文本投毒、精确锚点、分配失败、实际 ink 和公式 primitive 计数、几何/页脚/旋转、协议重放和持久化错误。draw/index 一致本身不能证明对象只绘制一次。
 
 `PAPERDIY_DIAGNOSTICS` 提供有界本地命令，包括 STATUS、SCREEN、PAGE_TEXT、OPEN、导航和 CACHEINFO。偏移与精确锚点是独立字段。OPEN/NEXT/PREV 是写状态操作，不是只读探测。可选 EPUB/DEVICE/NETWORK 标志仅暴露合成验收助手，公开构建均不含。`SD_IO`、`SD_CACHE_IO` 用 8 KiB 块对最多 256 KiB 读取两遍，仅内部比较 SHA，不打印名称/内容/摘要；目录先于文件打开分类。前缀一致不等于全文件验证，`read_us` 也不是打开书籍耗时。截止时间为协作式，不能取消阻塞文件系统调用；探测不会修改挂载时钟。
 

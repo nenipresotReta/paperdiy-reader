@@ -6,7 +6,7 @@
 
 ## 策略
 
-无活动一秒后，将 CPU 从 240 MHz 降至 80 MHz。USB 导书默认关闭，`PAPERDIY_EXPERIMENTAL_USB_MSC=1` 仅供私人实验构建。启用后，MSC 独占存储例外：进入时升到 240 MHz，直到明确的主机弹出及原始驱动成功释放前始终保持，包含请求退出和 Fault 状态。原始 SD 回调运行在 USB 任务，应用字节计数轮询无法安全决定降频时机。这一保守策略避免原始 I/O 期间切换时钟，使首批请求延迟更可预测，代价是连接空闲时 CPU 功耗更高。仅凭时钟策略不能证明 USB 可靠性或量化功耗。
+无活动一秒后，将 CPU 从 240 MHz 降至 80 MHz。
 
 使用电池时，另进入带一秒定时器兜底的手动轻睡眠。USB 或其他外部供电下只降频，保持处理器清醒，以便枚举、串口和固件上传。活动 AP/STA 同样禁止会中断 Wi-Fi 的手动轻睡眠，但保留 CPU 空闲降频。离开设置关闭无线电，恢复普通电池睡眠策略；P 除外。
 
@@ -49,15 +49,15 @@ N 只在明确选择期间运行 TLS 监听。离开 N 关闭监听及连接、�
 
 ## USB 与供电来源检测
 
-USB 构建标志选择传输：`ARDUINO_USB_MODE=1` 时 `Serial` 是 USB Serial/JTAG `HWCDC`，无 USB 存储；`ARDUINO_USB_MODE=0` 时原生 TinyUSB 提供 CDC；MSC 默认关闭，须显式启用私人实验编译门禁。两者是不同固件，须核对构建配置；功耗代码通过 `usb_transport` 统一访问。
+USB 构建标志选择传输：`ARDUINO_USB_MODE=1` 时 `Serial` 是 USB Serial/JTAG `HWCDC`；`ARDUINO_USB_MODE=0`（默认）时原生 TinyUSB 提供 CDC。两种都不提供 USB 存储。两者是不同固件，须核对构建配置；功耗代码通过 `usb_transport` 统一访问。
 
-HWCDC 版本的 `HWCDC::isPlugged()` 检测主机 SOF，而 `bool(Serial)` / `isCDC_Connected()` 还依赖 CDC 活动，不能保护终端已关闭但仍连接的电脑。休眠主机或纯充电电源可能完全没有 SOF。原生版本在 TinyUSB 已配置或挂起时禁止睡眠；MSC 独占期间即使总线复位或断开也继续禁止。只有接受明确主机弹出且成功移除原始驱动后才允许本地 FAT 重挂。空闲、拔线和总线复位都不能授予该权限。主机持卡期间禁用 CDC 自动重启，恢复与应用关机须等待安全弹出。维持 240 MHz 不依赖扇区活动；没有 MSC 所有权的普通 CDC 仍可降至 80 MHz。
+HWCDC 版本的 `HWCDC::isPlugged()` 检测主机 SOF，而 `bool(Serial)` / `isCDC_Connected()` 还依赖 CDC 活动，不能保护终端已关闭但仍连接的电脑。休眠主机或纯充电电源可能完全没有 SOF。原生版本在 TinyUSB 已配置或挂起时禁止睡眠；CDC 仍可把 CPU 降到 80 MHz。SDK 的 1200 波特率 CDC 重启进 ROM 下载器保持开启，这是刷写通道。
 
 睡眠前对 M5PM1 `PWR_SRC`（`0x04`）执行检查成功与否的寄存器读取：bit 0 为 5VIN，bit 1 为 5VINOUT，bit 2 为已供电电池节点。必须读取成功、确定是电池、没有外部来源，且 USB 传输不阻止睡眠。失败或含糊结果都保持清醒；进入前再次检查主机连接。若睡眠中插入 USB，定时器使下一次供电检查约在一秒内发生。睡眠中插线后的枚举仍须实机验收。
 
-MSC 读写回调先释放存储互斥锁，再至少等待一个 RTOS tick，成功、失败、锁忙都如此，为其他任务提供调度机会；这不会抢占单次同步 SD 操作。带校验和门控的 PlatformIO 中间件编译构建目录内的 Arduino SD 源码副本，使 `sdcard_uninit()` 在释放 card 前结束 SPI 保护对象生命周期，不修改共享框架。这些源码修复不能确定某次实体掉线的原因。
+带校验和门控的 PlatformIO 中间件编译构建目录内的 Arduino SD 源码副本，使 `sdcard_uninit()` 在释放 card 前结束 SPI 保护对象生命周期，不修改共享框架。它作用于每次卸载，包括拔卡。
 
-应用控制台输出为尽力而为。原生 CDC 适配器有限次尝试 TinyUSB FIFO，避免固定 SDK `USBCDC::write()` 缓冲区满时无界循环。等待期间会让出调度：无进展上限 100 ms、单次写入上限两秒，`SCREEN` / `PAGE_TEXT` 批量帧总上限十秒。长导入等诊断计算不计入帧期限。帧失败后不再逐行等待；完整截图才发 `SCREEN_DONE`，中断后尝试发 `SCREEN_ABORTED`。主机在期限内持续读取可获得完整帧。丢日志不弹出存储，也不证明同步。RX、串口初始化和所有权相关的重启保护仍使用原路径；CDC 重开行为需要独立实体设备验证。
+应用控制台输出为尽力而为。原生 CDC 适配器有限次尝试 TinyUSB FIFO，避免固定 SDK `USBCDC::write()` 缓冲区满时无界循环。等待期间会让出调度：无进展上限 100 ms、单次写入上限两秒，`SCREEN` / `PAGE_TEXT` 批量帧总上限十秒。长导入等诊断计算不计入帧期限。帧失败后不再逐行等待；完整截图才发 `SCREEN_DONE`，中断后尝试发 `SCREEN_ABORTED`。主机在期限内持续读取可获得完整帧。丢日志不证明同步。RX 和串口初始化仍使用原路径；CDC 重开行为需要独立实体设备验证。
 
 不能从 `isCharging()` 推断 USB 不在：充满时可能不充电但线仍连接。也不能把 `getPowerSource()` / `getVBUSVoltage()` 返回零当成成功的缺席检查，这些便捷方法在通信失败时也返回零。
 

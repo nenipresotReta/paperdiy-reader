@@ -1,5 +1,4 @@
 #include "console_policy.h"
-#include "usb_storage_core.h"
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -40,7 +39,7 @@ void stalledFrameAndResumedHost(){
   for(unsigned i=0;i<960;++i)assert(writer.write(bytes.data(),68)==0);
   assert(fifo.clock==time&&writer.stats().abortedFrames==1&&fifo.yields==paperdiy_console::IDLE_MS);
   writer.endFrame();fifo.draining=true;fifo.consume();assert(writer.beginFrame());
-  const char status[]="USB_STATUS owned=1 state=1\r\n";
+  const char status[]="LAN_STATUS active=1 live=1\r\n";
   assert(writer.write(reinterpret_cast<const uint8_t*>(status),sizeof(status)-1)==sizeof(status)-1);
   assert(writer.good());writer.endFrame();fifo.consume();
   assert(std::memcmp(fifo.received.data()+64,status,sizeof(status)-1)==0);
@@ -74,14 +73,4 @@ void computationGapDoesNotExpireNormalOutput(){
   fifo.consume();fifo.clock+=paperdiy_console::FRAME_MS+5000;
   assert(writer.write(reinterpret_cast<const uint8_t*>(status),sizeof(status)-1)==sizeof(status)-1&&writer.stats().dropped==0);
 }
-void consoleFailureDoesNotReleaseStorage(){
-  struct Card {uint8_t sector[512]{};} card;
-  usb_storage::Backend backend;backend.context=&card;
-  backend.read=[](void* p,uint32_t sector,uint8_t* out){assert(sector==0);std::memcpy(out,static_cast<Card*>(p)->sector,512);return true;};
-  backend.write=[](void* p,uint32_t sector,const uint8_t* in){assert(sector==0);std::memcpy(static_cast<Card*>(p)->sector,in,512);return true;};backend.sync=[](void*){return true;};
-  usb_storage::Core storage;assert(storage.begin(backend,1));FIFO fifo;fifo.capacity=0;Writer console(fifo.io());uint8_t bytes[512];std::memset(bytes,0xab,sizeof(bytes));
-  assert(console.write(bytes,sizeof(bytes))==0&&storage.owns());
-  assert(storage.write(0,0,bytes,sizeof(bytes))==512);std::memset(bytes,0,sizeof(bytes));assert(storage.read(0,0,bytes,sizeof(bytes))==512&&bytes[0]==0xab);
-  assert(storage.owns()&&!storage.requestExit());assert(storage.startStop(0,false,true)&&!storage.owns());
-}
-int main(){drainedScreenAndStatus();stalledFrameAndResumedHost();totalAndIdleDeadlines();computationGapDoesNotExpireNormalOutput();consoleFailureDoesNotReleaseStorage();std::cout<<"Bounded FIFO deadlines, complete drained frames, stalled/reopened host, long computation gaps and storage independence passed\n";}
+int main(){drainedScreenAndStatus();stalledFrameAndResumedHost();totalAndIdleDeadlines();computationGapDoesNotExpireNormalOutput();std::cout<<"Bounded FIFO deadlines, complete drained frames, stalled/reopened host and long computation gaps passed\n";}

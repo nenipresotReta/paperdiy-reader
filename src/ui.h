@@ -1,11 +1,10 @@
 #pragma once
 #include <Arduino.h>
 #include "settings_registry.h"
-#include "usb_features.h"
 
-// Usb keeps its value for STATUS output; it is reachable only through the
-// USB_ENTER diagnostic, never through the A rotation.
-enum class NetworkMode : uint8_t {Off,Sta,Ap,Usb,Live};
+// Values appear in STATUS/LIVE_STATUS output. 3 was USB storage (removed);
+// Live keeps 4 so logs stay comparable across versions.
+enum class NetworkMode : uint8_t {Off,Sta,Ap,Live=4};
 
 inline NetworkMode nextNetworkMode(NetworkMode mode){
   switch(mode){
@@ -23,7 +22,6 @@ extern String settingsApSsid,settingsApPassword,settingsApUrl;
 extern bool settingsApClientConnected;
 extern String settingsStaSsid,settingsStaIp,settingsStaError;
 extern bool settingsStaConfigured,settingsStaConnected;
-extern String settingsUsbStatus;
 extern String settingsLanType,settingsLanName,settingsLanState;
 // P: Settings status line, and the icon at the bottom-left of the library and
 // the reader while P is selected: online, connecting/retrying, or paused/stopped.

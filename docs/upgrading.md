@@ -31,12 +31,12 @@ cache positions when text extraction or layout changes. A page number may change
 when pagination is corrected; the reader preserves the corresponding text location.
 The first open can rebuild caches. SD book contents are never rewritten.
 
-Native USB storage builds use a different runtime serial port
-from the ROM downloader. Safely eject the SD volume before entering download
-mode. SDK serial reset shortcuts are disabled while the computer owns the card.
-Reidentify the reader after reset; do not reuse an unrelated serial port or
-reset the host USB bus. Native CDC terminal access requires DTR and RTS asserted.
-See [development](development.md) for the tested native-USB recovery procedure.
+The runtime serial port (native USB CDC) is a different USB device from the ROM
+downloader. Opening the runtime port at 1200 baud enters the downloader without
+the BOOT key. Reidentify the reader after each reset; do not reuse an unrelated
+serial port or reset the host USB bus. Native CDC terminal access requires DTR
+and RTS asserted. See [development](development.md) for the tested
+native-USB recovery procedure.
 
 ## Rebuild
 
