@@ -306,7 +306,7 @@ void updateBookFooter(){
   // The failure message starts at x=24; the normal pagination band starts at 120.
   const int left=failed?24:120;
   const int width=540-left;
-  beginRefresh();font();M5.Display.fillRect(left,923,width,37,TFT_WHITE);
+  beginRefresh(false,true,true);font();M5.Display.fillRect(left,923,width,37,TFT_WHITE);
   statusIcon(sdBackgroundPending()||contentPrefetchPending());
   const uint32_t current=readerPageNumber(),total=readerTotalPages();
   if(failed){
@@ -328,7 +328,7 @@ void showPrefetchFailureBanner(){
   endRefresh("prefetch-failure",20,8,500,40);
 }
 void showLoading(){
-  beginRefresh();font();
+  beginRefresh(false,false,true);font();
   statusIcon(true);endRefresh("loading",504,928,28,28);
   Console.println("LOADING_VISIBLE input=discard");
 }
@@ -377,8 +377,10 @@ void updateSettingsDelivery(){
   static bool promptShown=false;
   const bool pending=lan_service::promptPending();
   if(pending||promptShown){promptShown=pending;updateSettingsNetwork();return;}
+  // Progress and receipt lines change often during a transfer; they are a
+  // status refresh, so a long upload never flashes the whole panel.
   const int y=268+settingsContentDy();
-  beginRefresh();M5.Display.fillRect(0,y,540,244,TFT_WHITE);deliveryPanel();
+  beginRefresh(false,false,true);M5.Display.fillRect(0,y,540,244,TFT_WHITE);deliveryPanel();
   endRefresh("delivery",0,y,540,244);
 }
 
@@ -388,7 +390,7 @@ void updateLibraryBattery(){
   // Only the quantized fill is visible; charging freezes the displayed level
   // but has no separate icon. Keep sampling/history even when no pixel changes.
   if(batteryFillWidth(level)==lastBatteryFill)return;
-  beginRefresh();battery(level);
+  beginRefresh(false,false,true);battery(level);
   endRefresh("battery",BATTERY_CELL_X,BATTERY_CELL_Y,BATTERY_CELL_W,BATTERY_CELL_H);
 }
 void saveBatteryHistory(){

@@ -299,6 +299,11 @@ void lanPanelTransitions(){
     assert(countBlack(32,360+dy,500,388+dy)>0);
     expectControls(NetworkMode::Sta,rotated);
     writePGM(rotated?"ui-simulation-lan-rotated.pgm":"ui-simulation-lan.pgm",true);
+    // A long transfer is many progress updates; none of them flashes the panel.
+    for(int percent=44;percent<=100;++percent){
+      settingsLanState=("Receiving "+std::to_string(percent)+"%").c_str();updateSettingsDelivery();
+      assert(!M5.Display.lastFull&&M5.Display.lastRefreshY==268+dy&&M5.Display.lastRefreshH==244);
+    }
   }
   settingsLanType="";settingsLanName="";settingsLanState="";
 }
@@ -570,6 +575,11 @@ int main() {
   assert(countBlack(200, 926, 340, 960) > 0);  // page number
   assert(countBlack(504, 928, 532, 956) > 0);  // status icon
   writePGM("ui-simulation-reading.pgm");
+
+  // Fifty footer updates (pagination/busy/P icon) after a full refresh must
+  // leave the reading partial budget untouched: the next page turn below is
+  // still a partial refresh.
+  for (int i = 0; i < 50; ++i) { updateBookFooter(); assert(!M5.Display.lastFull); }
 
   // Page-turn simulation: a partial refresh must clear and repaint the far
   // right of the hang zone. The pixels are deliberately placed outside the
