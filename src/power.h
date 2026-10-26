@@ -2,6 +2,9 @@
 #include <cstdint>
 void updatePowerIndicator(bool force=false);
 bool chargingNow();
+// M5PM1 PWR_SRC (0x04), read at most once per second: bit 0 5VIN, bit 1
+// 5VINOUT, bit 2 battery node. known=false after a failed read.
+uint8_t powerSourceBits(bool& known);
 
 struct IdlePowerStats {
   uint64_t sleepUs = 0;

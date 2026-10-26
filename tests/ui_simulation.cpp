@@ -155,16 +155,17 @@ void expectedGlyph(std::vector<uint8_t>& pixels, uint32_t cp, int x, int y) {
 
 void expectControls(NetworkMode mode, bool rotated) {
   // Check the full native glyph bitmaps, not merely whether each region has ink.
-  // N/A retain their original 108 px spacing; U is hidden by default.
+  // N/A/P keep the original 108 px spacing; P took the former U column.
   const int letters[3] = {rotated ? 264 : 48, rotated ? 372 : 156,
                           rotated ? 480 : 264};
   assert(letters[1] - letters[0] == 108 && letters[2] - letters[1] == 108);
   const int modeY = rotated ? 280 : 641, rY = rotated ? 168 : 753;
   const int rX = rotated ? 480 : 48;
-  const char labels[] = "NA";
-  const int active = mode == NetworkMode::Sta ? 0 : mode == NetworkMode::Ap ? 1 : -1;
+  const char labels[] = "NAP";
+  const int active = mode == NetworkMode::Sta ? 0 : mode == NetworkMode::Ap ? 1 :
+                     mode == NetworkMode::Live ? 2 : -1;
   std::vector<uint8_t> expected(540 * 960, 255);
-  for (int i = 0; i < 2; ++i) {
+  for (int i = 0; i < 3; ++i) {
     if (i != active) expectedGlyph(expected, 0xac, letters[i] - 16, modeY);
     expectedGlyph(expected, labels[i], letters[i], modeY);
   }
@@ -186,6 +187,35 @@ void expectControls(NetworkMode mode, bool rotated) {
   const int physicalRLeft = rotated ? 540 - rX - 28 : rX;
   assert(physicalRLeft >= 24 && physicalRLeft < 80);
   assert(countBlack(0, 0, 540, 112) == 0);  // no settings-page heading
+}
+
+// The P icon art, row by row inside its 28 px cell at (8, 928). Rows not
+// listed are blank. This is the specification; ui.cpp stores it as masks.
+void expectLiveIcon(LiveIcon icon) {
+  static const char* online[] = {
+    "............#####...........", "..........#########.........", "..........##.....##.........",
+    "............................", "............................", ".............###............",
+    "............#####...........", "............#####...........", "............#####...........",
+    ".............###............"};
+  static const char* connecting[] = {
+    "............................", "............................", "............................",
+    "............................", "............................", ".............###............",
+    "............#####...........", "............#####...........", "............#####...........",
+    ".............###............"};
+  static const char* off[] = {
+    "........##..................", ".........##.................", "..........##.####...........",
+    "...........##.#####.........", "..........#.##...##.........", ".............##.............",
+    "..............##............", ".............#.##...........", "............###.##..........",
+    "............####.##.........", "............#####.##........", ".............###...##.......",
+    "....................##......"};
+  const char** rows = icon == LiveIcon::Online ? online : icon == LiveIcon::Connecting ? connecting : off;
+  const int first = icon == LiveIcon::Off ? 8 : 10, count = icon == LiveIcon::Off ? 13 : 10;
+  for (int y = 0; y < 28; ++y)
+    for (int x = 0; x < 28; ++x) {
+      const bool ink = y >= first && y < first + count && rows[y - first][x] == '#';
+      assert(black(8 + x, 928 + y) == ink);
+      assert((M5.Display.panel[(928 + y) * 540 + 8 + x] == 0) == ink);
+    }
 }
 
 void expectPartialModeChange(NetworkMode next, bool rotated) {
@@ -403,7 +433,9 @@ int main() {
   settingsRotated = false;
   assert(nextNetworkMode(NetworkMode::Off) == NetworkMode::Sta);
   assert(nextNetworkMode(NetworkMode::Sta) == NetworkMode::Ap);
-  assert(nextNetworkMode(NetworkMode::Ap) == NetworkMode::Off);
+  assert(nextNetworkMode(NetworkMode::Ap) == NetworkMode::Live);
+  assert(nextNetworkMode(NetworkMode::Live) == NetworkMode::Off);
+  // USB storage is diagnostics-only; A never enters it and leaves it for Off.
   assert(nextNetworkMode(NetworkMode::Usb) == NetworkMode::Off);
   assert(bodyFontHasGlyph('&'));
 
@@ -474,7 +506,8 @@ int main() {
   settingsStaConnected = true;
   settingsStaIp = "192.168.1.23";
   settingsStaError = "";
-  for (NetworkMode mode : {NetworkMode::Off, NetworkMode::Sta, NetworkMode::Ap}) {
+  settingsLiveStatus = "Online · Push updates live";
+  for (NetworkMode mode : {NetworkMode::Off, NetworkMode::Sta, NetworkMode::Ap, NetworkMode::Live}) {
     rotateSettings(false);
     networkMode = mode;
     showSettings(true);
@@ -490,11 +523,12 @@ int main() {
       assert(countBlack(24, 448, 500, 472) > 0);
       assert(countBlack(24, 480, 500, 504) > 0);
       writePGM("ui-simulation-settings-ap.pgm", true);
-    } else if (mode == NetworkMode::Sta) {
+    } else if (mode == NetworkMode::Sta || mode == NetworkMode::Live) {
       assert(countBlack(32, 112, 200, 150) > 0);
       assert(countBlack(32, 160, 500, 190) > 0);
       assert(countBlack(32, 196, 300, 226) > 0);
       assert(countBlack(32, 232, 400, 262) > 0);
+      if (mode == NetworkMode::Live) writePGM("ui-simulation-settings-live.pgm", true);
     } else {
       assert(countBlack(32, 112, 400, 150) > 0);
       assert(countBlack(32, 160, 450, 190) > 0);
@@ -516,6 +550,7 @@ int main() {
     else if (mode == NetworkMode::Ap)
       writePGM("ui-simulation-settings-ap-rotated.pgm", true);
   }
+  settingsLiveStatus = "";
 
   lanPanelTransitions();
 
@@ -540,7 +575,7 @@ int main() {
     rotateSettings(rotated);
     networkMode = NetworkMode::Off;
     showSettings(true);
-    for (NetworkMode next : {NetworkMode::Sta, NetworkMode::Ap, NetworkMode::Off})
+    for (NetworkMode next : {NetworkMode::Sta, NetworkMode::Ap, NetworkMode::Live, NetworkMode::Off})
       expectPartialModeChange(next, rotated);
   }
 
@@ -574,7 +609,63 @@ int main() {
   assert(countBlack(521, 20, 539, 900) > 0);   // hanging punctuation ink
   assert(countBlack(200, 926, 340, 960) > 0);  // page number
   assert(countBlack(504, 928, 532, 956) > 0);  // status icon
+  assert(countBlack(8, 928, 36, 956) == 0);     // no P icon outside P
   writePGM("ui-simulation-reading.pgm");
+
+  // P status is a 28 px icon mirroring the status icon at the bottom-left of
+  // the reader and the library. Each state must match its pixel art exactly.
+  liveIcon = LiveIcon::Online;
+  showBook(true);
+  expectLiveIcon(LiveIcon::Online);
+  assert(countBlack(200, 926, 340, 960) > 0 && countBlack(504, 928, 532, 956) > 0);
+  showBook(false);  // a page turn keeps the icon and refreshes its cell
+  expectLiveIcon(LiveIcon::Online);
+  assert(!M5.Display.lastFull && M5.Display.lastRefreshX == 8 && M5.Display.lastRefreshW == 532);
+  liveIcon = LiveIcon::Off;
+  updateBookFooter();
+  assert(M5.Display.lastRefreshX == 8 && M5.Display.lastRefreshW == 532);
+  expectLiveIcon(LiveIcon::Off);
+  writePGM("ui-simulation-reading-live.pgm");
+  liveIcon = LiveIcon::Connecting;
+  updateBookFooter();
+  expectLiveIcon(LiveIcon::Connecting);
+  // The cache-failure message owns the footer from x=24 and hides the icon.
+  simulatedPrefetchFailed = true;
+  updateBookFooter();
+  assert(M5.Display.lastRefreshX == 8 && countBlack(8, 928, 24, 956) == 0);
+  simulatedPrefetchFailed = false;
+  updateBookFooter();
+  expectLiveIcon(LiveIcon::Connecting);
+  liveIcon = LiveIcon::None;
+  updateBookFooter();
+  assert(M5.Display.lastRefreshX == 8 && countBlack(8, 928, 36, 956) == 0);
+  updateBookFooter();
+  assert(M5.Display.lastRefreshX == 120 && M5.Display.lastRefreshW == 420);
+  liveIcon = LiveIcon::Online;
+  showLibrary(true);
+  expectLiveIcon(LiveIcon::Online);
+  assert(countBlack(16, 8, 300, 48) == 0 && countBlack(504, 8, 532, 36) > 0);  // header holds only the battery
+  writePGM("ui-simulation-library-live.pgm");
+  liveIcon = LiveIcon::Off;
+  updateLibraryLive();
+  assert(!M5.Display.lastFull && M5.Display.lastRefreshX == 8 && M5.Display.lastRefreshY == 928);
+  assert(M5.Display.lastRefreshW == 28 && M5.Display.lastRefreshH == 28);
+  expectLiveIcon(LiveIcon::Off);
+  liveIcon = LiveIcon::None;
+  updateLibraryLive();
+  assert(countBlack(8, 928, 36, 956) == 0 && countBlack(504, 928, 532, 956) > 0);
+  // Status cells never flash the panel: indicator refreshes stay partial and
+  // do not use up the partial budget that schedules full refreshes.
+  for (int i = 0; i < 50; ++i) {
+    liveIcon = i % 2 ? LiveIcon::Online : LiveIcon::Off;
+    updateLibraryLive(); assert(!M5.Display.lastFull);
+    updateLibraryBattery(); assert(!M5.Display.lastFull);
+    showLoading(); assert(!M5.Display.lastFull);
+  }
+  liveIcon = LiveIcon::None;
+  updateLibraryLive();
+  loadBook(hang);
+  showBook(true);
 
   // Fifty footer updates (pagination/busy/P icon) after a full refresh must
   // leave the reading partial budget untouched: the next page turn below is
