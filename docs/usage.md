@@ -20,12 +20,12 @@ Extensions are case-insensitive. Each book retains its reading position. For EPU
 | --- | --- | --- | --- |
 | Library | Previous book; double-click previous screen; hold to repeat | Next book; double-click next screen; hold to repeat | Open selection |
 | Reading | Previous page; hold to repeat | Next page; hold to repeat | Return to library |
-| Network settings | Cycle N → A → Off | Toggle R (180°) | Return to library |
+| Network settings | Cycle N → A → P → Off | Toggle R (180°) | Return to library |
 | Network settings, delivery prompt shown | Next mode (turns N off, which cancels) | Toggle R (180°) | Accept the batch |
 
 The library detects a double-click when releases of the same button are at most 200 ms apart by default; otherwise they are two single clicks. A single click waits up to the configured double-click interval (default 200 ms). Holding starts repeat after about 600 ms. Navigation during loading or refresh is discarded; release the buttons before a new action. The bottom icon indicates busy work.
 
-R saves display rotation. Rotated library/reading navigation swaps A/B; settings retain physical button mappings. N/A stay on one row, with R nearest the buttons. A+B and the power key are unchanged.
+R saves display rotation. Rotated library/reading navigation swaps A/B; settings retain physical button mappings. N/A/P stay on one row, with R nearest the buttons. A+B and the power key are unchanged.
 
 ## Chinese typography
 
@@ -48,17 +48,20 @@ Enter the home SSID/password under Home Wi-Fi and save, then select N. Failed sa
 
 A closes after five idle minutes. Background library polling does not extend the session; progressing transfers keep it active, while 45 seconds without progress cancels reception. The AP serves local HTTP without TLS; QR session credentials apply only to that AP session.
 
-## N / A / Off
+## N / A / P / Off
 
 - **N** connects to saved home Wi-Fi and receives LAN deliveries while Settings stays open. Below the SSID, status and IP, the screen shows a delivery prompt or transfer type/name/progress. A dropped connection gets a fresh 20-second connection window; timeout turns the radio off until N is selected again.
 - **A** provides a temporary AP, web uploads and home Wi-Fi setup.
+- **P** (live Push) stays connected after you leave Settings, so a sender paired earlier in N can update Push at any time without A+B. An open Push page refreshes immediately; the library and other books are not interrupted. Ordinary files and pairing still use N. While P is selected, a small icon at the bottom-left of the library and the reader, opposite the status icon, shows its state: a dot under an arc (online), a dot alone (connecting or retrying), or the dot and arc struck through (paused or stopped; the reason is in Settings).
 - **Off** closes networking.
 
-USB book transfer is paused and disabled by default because actual-SD USB failures remain unresolved. U is hidden; ordinary builds do not expose the card. CDC serial/programming remains available. Transfer books through A or a safely removed SD card. The retained MSC implementation requires an explicit experimental build; it is not normal user operation.
+P is meant for a reader on external power. On battery it keeps the radio awake while you read; below 50 % it pauses until external power is connected, and it stops after 30 seconds without a connection, or 60 seconds after losing one, for example when you take the reader out of the house. On external power it keeps retrying (1, 2, then every 5 minutes). P is restored after a reboot unless it stopped by itself. Selecting P needs saved home Wi-Fi, a paired sender and an SD card; without one, Settings shows which one is missing.
 
-Inactive entries carry `¬`. Leaving settings closes networking. After reboot, restored settings start with N/A inactive. USB attachment enables neither book transfer nor networking. Reading settings and shutdown-image management are available only through A.
+USB book transfer is paused and disabled by default because actual-SD USB failures remain unresolved. It is no longer a network mode; ordinary builds do not expose the card. CDC serial/programming remains available. Transfer books through A or a safely removed SD card. The retained MSC implementation requires an explicit experimental build; it is not normal user operation.
 
-N uses the [LAN client](lan-protocol.md) on macOS, Linux or Windows; an AI agent can use the [delivery skill](skills/paperdiy-delivery/SKILL.md). Each delivery asks first:
+Inactive entries carry `¬`. Leaving settings closes N and A; P keeps running. After reboot, restored settings start with N/A inactive. USB attachment enables neither book transfer nor networking. Reading settings and shutdown-image management are available only through A.
+
+N and P use the [LAN client](lan-protocol.md) on macOS, Linux or Windows (P: `push SOURCE --live`); an AI agent can use the [delivery skill](skills/paperdiy-delivery/SKILL.md). Each delivery asks first:
 
 ```
 Hermes · Receive 3 files?
@@ -106,6 +109,8 @@ keeps its native 28/20/14 px sizes. Typography changes apply when a book is next
 opened: pagination is rebuilt around the saved source position, not a page number.
 Balanced allows 10 consecutive partial reading updates before a full refresh;
 Clarity allows 4 and Less flashing 24. Scene changes still use a full refresh.
+Status updates (P icon, battery, loading icon, page count, delivery progress)
+never cause a full refresh and do not count toward these limits.
 
 Upload a PNG, JPEG or WebP image up to 12 MiB under Sleep image. The browser
 converts it locally into a bounded monochrome mask and shows a preview; white

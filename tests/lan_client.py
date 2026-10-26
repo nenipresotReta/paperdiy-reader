@@ -73,7 +73,8 @@ class Reader:
         self.receipts, self.active = {}, {}
         self.batch, self.accept_at, self.checking = None, None, 0
         self.capacity, self.library, self.calls = 4, 0, []
-        self.files = []
+        self.files, self.positions = [], []
+        self.live = False   # P: paired senders replace Push without a batch
 
     # ---- user at the device
     def prompt(self):
@@ -133,7 +134,9 @@ class Reader:
         self.calls.append((method, route, credentials is not None))
         client = self.authenticate(credentials)
         if route == "/lan/v2/hello":
-            return {"v": 2, "deviceId": self.device_id, "pushRevision": self.revision, "batchEntries": 8}
+            return {"v": 2, "deviceId": self.device_id, "pushRevision": self.revision, "batchEntries": 8, "live": self.live}
+        if self.live and route in ("/lan/v2/batch/offer", "/lan/v2/pair/reveal", "/lan/v2/batch/status"):
+            raise lan.RemoteFailure("live_mode", 409)
         if route == "/lan/v2/batch/offer":
             return self.offer(args, client)
         if route == "/lan/v2/pair/reveal":
@@ -168,22 +171,26 @@ class Reader:
             raise lan.RemoteFailure("unauthorized", 401)
         if route == "/lan/v1/capabilities":
             return {"v": 2, "deviceId": self.device_id, "pushRevision": self.revision, "epoch": "e" * 32,
-                    "batchEntries": 8, "limits": {"chunkBytes": 4096}}
+                    "batchEntries": 8, "limits": {"chunkBytes": 4096}, "live": self.live}
         request_id = args.get("requestId")
         key = (client, request_id)
         if route == "/lan/v1/uploads/start":
+            if "position" in args and (args["kind"] != "push" or args["position"] not in ("top", "keep")):
+                raise lan.RemoteFailure("invalid_metadata", 400)
             if key in self.receipts:
                 return {"state": "complete", "receipt": self.receipts[key]}
             batch = self.batch
             entry = None
             if batch and batch["phase"] == "accepted" and batch["client"] == client:
                 entry = next((e for e in batch["entries"] if e["admission"] == "ok" and e["requestId"] == request_id), None)
-            if key not in self.active and (not entry or entry["fingerprint"] != args["fingerprint"]):
+            live_push = self.live and args["kind"] == "push"
+            if key not in self.active and not live_push and (not entry or entry["fingerprint"] != args["fingerprint"]):
                 raise lan.RemoteFailure("not_accepted", 409)
             if key not in self.active:
                 meta = {k: args[k] for k in ("requestId", "fingerprint", "kind", "name", "title", "sha256")}
                 meta["size"] = int(args["size"])
                 meta["baseRevision"] = args["baseRevision"]
+                meta["position"] = args.get("position", "top")
                 if meta["kind"] == "push" and int(meta["baseRevision"]) != self.revision:
                     raise lan.RemoteFailure("revision_conflict", 409)
                 self.active[key] = {"meta": meta, "body": bytearray()}
@@ -231,6 +238,7 @@ class Reader:
         if meta["kind"] == "push":
             self.revision += 1
             receipt["revision"] = self.revision
+            self.positions.append(meta["position"])
         else:
             receipt["name"] = meta["name"]
             self.library += 1
@@ -866,6 +874,76 @@ class Paired(World):
         self.assertEqual((code, result["code"]), (2, "unauthorized"))
 
 
+class Live(Paired):
+    """P: the reader takes Push from a paired sender with no batch or A+B."""
+
+    def batch_calls(self):
+        return [c for c in self.reader.calls if c[1].startswith("/lan/v2/batch") or c[1] == "/lan/v2/pair/reveal"]
+
+    def test_live_push_replaces_push_without_acceptance(self):
+        self.reader.live = True
+        before = len(self.batch_calls())
+        code, result = self.run_cli("push", self.source("board.md"), "--live", "--position", "keep", "--json", "--wait", "5")
+        self.assertEqual((code, result["state"], result["summary"]["delivered"]), (0, "done", 1), result)
+        self.assertEqual((self.reader.revision, self.reader.positions), (1, ["keep"]))
+        self.assertEqual(len(self.batch_calls()), before)
+        self.assertIsNone(self.reader.prompt())
+        # Without --position the field is omitted and the reader uses the first page.
+        code, result = self.run_cli("push", self.source("board2.md"), "--live", "--json", "--wait", "5")
+        self.assertEqual((code, self.reader.revision, self.reader.positions), (0, 2, ["keep", "top"]))
+        starts = [c for c in self.net.log if c[2] == "/lan/v1/uploads/start"]
+        self.assertEqual((starts[-2][3].get("position"), "position" in starts[-1][3]), ("keep", False))
+
+    def test_live_unavailable_when_reader_is_not_on_p(self):
+        code, result = self.run_cli("push", self.source("board.md"), "--live", "--json", "--wait", "5")
+        self.assertEqual((code, result["next"], result["items"][0]["state"]), (2, "live_unavailable", "queued"), result)
+        self.assertEqual((self.reader.files, self.reader.revision), ([], 0))
+        # The queued body is superseded by the next live push once P is on.
+        self.reader.live = True
+        code, result = self.run_cli("push", self.source("board2.md"), "--live", "--json", "--wait", "5")
+        self.assertEqual((code, result["summary"]["delivered"]), (0, 1), result)
+        states = sorted(i["state"] for i in self.db()["items"] if i["kind"] == "push")
+        self.assertIn("superseded", states)
+
+    def test_live_unreachable_reader_fails(self):
+        self.reader.live = True
+        self.reader.switch_off()
+        code, result = self.run_cli("push", self.source("board.md"), "--live", "--json", "--wait", "1", "--budget", "5")
+        self.assertEqual((code, result["next"]), (2, "device_unreachable"), result)
+
+    def test_live_rebases_a_stale_body_and_retries_one_race(self):
+        self.reader.live = True
+        self.reader.revision = 5
+        with lan.Store(self.state) as store:
+            store.db["devices"][self.device]["pushRevision"] = 2; store.save()
+        code, result = self.run_cli("push", self.source("board.md"), "--live", "--json", "--wait", "5")
+        self.assertEqual((code, self.reader.revision), (0, 6), result)
+        # Another sender publishes between capabilities and start: one retry wins.
+        original = self.reader.handle
+        races = {"left": 1}
+
+        def racing(method, path, form, credentials):
+            if path == "/lan/v1/uploads/start" and races["left"]:
+                races["left"] -= 1
+                self.reader.revision += 1
+            return original(method, path, form, credentials)
+        self.reader.handle = racing
+        code, result = self.run_cli("push", self.source("board2.md"), "--live", "--json", "--wait", "5")
+        self.assertEqual((code, result["summary"]["delivered"], self.reader.revision), (0, 1, 8), result)
+        # A second race in the same command is reported, never looped on.
+        races["left"] = 2
+        code, result = self.run_cli("push", self.source("board3.md"), "--live", "--json", "--wait", "5")
+        self.assertEqual((code, result["items"][0]["state"], result["items"][0]["code"]), (2, "blocked", "revision_conflict"), result)
+
+    def test_live_needs_a_paired_reader_and_position_needs_live(self):
+        code, result = self.run_cli("push", self.source("board.md"), "--position", "keep", "--json")
+        self.assertEqual((code, result["code"]), (2, "position_requires_live"))
+        with lan.Store(self.state) as store:
+            store.db["devices"] = {}; store.save()
+        code, result = self.run_cli("push", self.source("board.md"), "--live", "--json", "--wait", "5")
+        self.assertEqual((code, result["code"]), (2, "no_paired_device"))
+
+
 class Output(World):
     def test_json_is_ascii_and_human_output_survives_non_utf8_console(self):
         self.mdns.hosts = {}
@@ -1025,6 +1103,28 @@ class Firmware(unittest.TestCase):
         self.wire.accept_at = self.clock() + 1
         code, result = self.run_cli("sync", "--json", "--wait", "30")
         self.assertEqual((code, result["summary"]["delivered"]), (0, 1), result)
+
+
+    def test_live_push_against_real_handlers(self):
+        self.wire.accept_at = self.clock()
+        self.run_cli("pair", "--label", "DSH", "--json", "--wait", "5")
+        code, result = self.run_cli("sync", "--json", "--wait", "30")
+        self.assertEqual(result["state"], "done", result)
+        # N refuses a live push: capabilities say P is off.
+        code, result = self.run_cli("push", self.source("n.md", b"in N"), "--live", "--json", "--wait", "5")
+        self.assertEqual((code, result["next"]), (2, "live_unavailable"), result)
+        assert self.wire.command("LIVE") == "OK"
+        self.wire.paths.clear()
+        code, result = self.run_cli("push", self.source("p.md", "看板 one".encode()), "--live", "--position", "keep",
+                                    "--json", "--wait", "5")
+        self.assertEqual((code, result["summary"]["delivered"]), (0, 1), result)
+        self.assertNotIn("/lan/v2/batch/offer", self.wire.paths)
+        self.assertEqual(self.wire.prompt()["pending"], False)
+        code, result = self.run_cli("push", self.source("p2.md", b"two"), "--live", "--json", "--wait", "5")
+        self.assertEqual((code, result["summary"]["delivered"]), (0, 1), result)
+        # Ordinary files still need N: the sender's batch offer is refused in P.
+        code, result = self.run_cli("send", self.source("f.md", b"file"), "--json", "--wait", "2")
+        self.assertEqual((result["next"], result["items"][0]["state"]), ("live_mode", "queued"), result)
 
 
 # ---------------------------------------------------------------------- mDNS

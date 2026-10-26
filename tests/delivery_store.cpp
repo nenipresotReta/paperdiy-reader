@@ -128,6 +128,33 @@ void boundedLedgerAndCorruption(){
   push.files[ps.pushPath()][0]^=1;
   Store recovered(push.io(),push.hash());push.recover(recovered);assert(recovered.pushMetadata().revision==1);
 }
+uint32_t recordCrc(const std::vector<uint8_t>& b){uint32_t v=~uint32_t(0);for(size_t i=0;i+4<b.size();++i){v^=b[i];for(unsigned k=0;k<8;++k)v=(v>>1)^((v&1)?0xedb88320u:0);}return ~v;}
+void resealRecord(std::vector<uint8_t>& b){const uint32_t c=recordCrc(b);for(unsigned i=0;i<4;++i)b[b.size()-1-i]=uint8_t(c>>(8*i));}
+void pushPosition(){
+  Fixture f;Store store(f.io(),f.hash());f.recover(store);
+  const std::string body="Synthetic live Push";auto keep=f.metadata(1,body);keep.position=1;
+  f.send(store,keep,body);
+  assert(store.receipt(keep.clientId,keep.requestId).receipt.metadata.position==1);
+  assert(store.pushMetadata().metadata.position==1&&f.published==1);
+  // The hint is not fingerprinted, so a replay must repeat it exactly.
+  auto top=keep;top.position=0;assert(store.begin(top).code==Code::Conflict);
+  assert(store.begin(keep).state==State::Complete);
+  auto file=f.metadata(2,"file",Kind::File);file.position=1;assert(store.begin(file).code==Code::Invalid);
+  auto bad=f.metadata(3,"Next",Kind::Push,1);bad.position=2;assert(store.begin(bad).code==Code::Invalid);
+  // Only byte 493 and the CRC distinguish the two hints on disk.
+  const auto& pushRecord=f.files["/.paperdiy/lan/push1.rec"];assert(pushRecord.size()==1024&&pushRecord[493]==1);
+  Fixture g;Store other(g.io(),g.hash());g.recover(other);auto plain=g.metadata(1,body);g.send(other,plain,body);
+  const auto& plainRecord=g.files["/.paperdiy/lan/push1.rec"];assert(plainRecord[493]==0);
+  unsigned differing=0;for(size_t i=0;i<1020;++i)differing+=pushRecord[i]!=plainRecord[i];
+  assert(differing==1);
+  // Hints survive recovery; records written before this byte existed read as top.
+  Store reboot(f.io(),f.hash());f.recover(reboot);
+  assert(reboot.pushMetadata().metadata.position==1&&reboot.receipt(keep.clientId,keep.requestId).receipt.metadata.position==1);
+  Store old(g.io(),g.hash());g.recover(old);assert(old.pushMetadata().revision==1&&old.pushMetadata().metadata.position==0);
+  // A value no firmware writes rejects the record even with a valid CRC.
+  auto& sealed=f.files["/.paperdiy/lan/push1.rec"];sealed[493]=2;resealRecord(sealed);
+  Store rejected(f.io(),f.hash());f.recover(rejected);assert(rejected.pushMetadata().revision==0);
+}
 void canonical(){
   Fixture f;Metadata m;m.kind=Kind::Push;m.name="Push.md";m.title="Synthetic";m.size=3;m.sha256=std::string(64,'0');
   assert(fingerprint(m,f.hash())=="7c5dc380b37e359158a305fc6aff88f3397a4c8a7d1b8a2d00c89c3fd0016d74");
@@ -148,4 +175,4 @@ void pushRecoveryDoesNotWaitForLargeFile(){
   assert(reboot.recovered()&&reboot.receipt(m.clientId,m.requestId).state==State::Complete);
 }
 }
-int main(){canonical();basic();unalignedDuplicateAndGuards();invalidAndPreservation();faultRecovery(Kind::File);faultRecovery(Kind::Push);boundedLedgerAndCorruption();pushRecoveryDoesNotWaitForLargeFile();std::puts("delivery_store tests passed");}
+int main(){canonical();basic();pushPosition();unalignedDuplicateAndGuards();invalidAndPreservation();faultRecovery(Kind::File);faultRecovery(Kind::Push);boundedLedgerAndCorruption();pushRecoveryDoesNotWaitForLargeFile();std::puts("delivery_store tests passed");}

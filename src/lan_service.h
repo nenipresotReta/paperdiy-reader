@@ -12,7 +12,9 @@ void storageChanged();
 bool storageBusy();
 bool pushReady();
 bool takeLibraryChanged();
-bool start(const char* address);
+// live=true is P: paired senders replace Push without a batch prompt, and
+// batch offers, pairing and file uploads are refused until the next start().
+bool start(const char* address,bool live=false);
 void stop();
 bool poll();
 bool active();
@@ -20,6 +22,10 @@ bool active();
 bool refreshLibrary();
 bool isPushPath(const char* path);
 const char* currentPushPath();
+// Set when a different Push body was published; cleared by reading it.
+bool takePushUpdated();
+// The current Push asked an open reader to keep its position (else page 1).
+bool pushKeepsPosition();
 
 // Consent prompt for one offered batch. Only a short A+B on the Settings N
 // panel accepts it; switching off N, leaving Settings or 60 s cancels it.
@@ -39,6 +45,8 @@ struct ClientInfo {std::string clientId,label;};
 RegistryStatus listClients(std::vector<ClientInfo>& out);
 RegistryStatus revokeClient(const std::string& clientId);
 RegistryStatus forgetClients();
+// Unlike the AP WebUI calls, this also answers while the receiver runs.
+RegistryStatus pairedCount(size_t& count);
 #ifdef PAPERDIY_DIAGNOSTICS
 void printStatus();
 #endif

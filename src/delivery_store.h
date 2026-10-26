@@ -21,6 +21,9 @@ struct Metadata {
   std::string requestId,clientId,fingerprint,name,title,sha256;
   Kind kind=Kind::File;
   uint32_t size=0,baseRevision=0;
+  // Push display hint for an open reader: 0 = first page, 1 = keep position.
+  // Not part of the fingerprint; replays must repeat it. Files always use 0.
+  uint8_t position=0;
 };
 struct Receipt {Metadata metadata;std::string finalName;uint32_t revision=0;uint64_t sequence=0;State state=State::Unknown;};
 struct Result {Code code=Code::Unknown;State state=State::Unknown;uint32_t offset=0,size=0;Receipt receipt;};
@@ -88,6 +91,7 @@ inline std::string hexadecimal(const uint8_t* bytes,size_t count){
 }
 inline bool valid(const Metadata& m){
   if(!hex(m.requestId,32)||!hex(m.clientId,16)||!hex(m.fingerprint,64)||!hex(m.sha256,64)||!label(m.name,true)||!label(m.title)||!m.size)return false;
+  if(m.position>1||(m.kind!=Kind::Push&&m.position))return false;
   if(m.kind==Kind::Push)return m.name=="Push.md"&&m.size<=PUSH_LIMIT;
   return m.kind==Kind::File&&m.baseRevision==0&&m.size<=document_format::sourceLimit(document_format::detect(m.name.c_str()));
 }
@@ -211,7 +215,7 @@ class Store {
   bool ready() const {return io_.stat&&io_.read&&io_.write&&io_.rename&&io_.remove&&io_.sync&&io_.ready&&io_.ready(io_.context)&&hash_.begin&&hash_.update&&hash_.finish;}
   Entry stat(const std::string& path,uint32_t& size) const {return io_.stat(io_.context,path.c_str(),&size);}
   static bool key(const Receipt& r,const std::string& client,const std::string& request){return r.state!=State::Unknown&&r.metadata.clientId==client&&r.metadata.requestId==request;}
-  static bool same(const Receipt& r,const Metadata& m){return r.metadata.fingerprint==m.fingerprint&&r.metadata.sha256==m.sha256&&r.metadata.size==m.size&&r.metadata.kind==m.kind&&r.metadata.name==m.name&&r.metadata.title==m.title&&r.metadata.baseRevision==m.baseRevision;}
+  static bool same(const Receipt& r,const Metadata& m){return r.metadata.fingerprint==m.fingerprint&&r.metadata.sha256==m.sha256&&r.metadata.size==m.size&&r.metadata.kind==m.kind&&r.metadata.name==m.name&&r.metadata.title==m.title&&r.metadata.baseRevision==m.baseRevision&&r.metadata.position==m.position;}
   const Receipt* find(const std::string& client,const std::string& request) const {
     for(const auto& r:receipts_)if(key(r,client,request))return &r;
     for(const auto& r:pushRecords_)if(r.state==State::Complete&&key(r,client,request))return &r;
@@ -237,6 +241,11 @@ class Store {
     r.metadata.name=text(b+204,96);r.metadata.title=text(b+300,96);r.finalName=text(b+396,96);
     if(b[492]!=uint8_t(State::Cancelled)&&b[492]!=uint8_t(State::Complete))return false;
     r.state=State(b[492]);
+    // Byte 493 was zero before Push positions existed, so older records read
+    // as "first page". Older firmware ignores it, keeping records valid on a
+    // downgrade. Any other value means the record is not one we wrote.
+    if(b[493]>1)return false;
+    r.metadata.position=b[493];
     if(!r.sequence||r.sequence==UINT64_MAX||!valid(r.metadata)||!label(r.finalName,true)||fingerprint(r.metadata,hash_)!=r.metadata.fingerprint)return false;
     return true;
   }
@@ -244,7 +253,7 @@ class Store {
     auto* b=buffer_.data();std::memset(b,0,RECORD);std::memcpy(b,"PDL1",4);b[4]=type;b[5]=uint8_t(r.metadata.kind);
     number(b+8,r.sequence,8);number(b+16,r.metadata.size,4);number(b+20,r.metadata.baseRevision,4);number(b+24,r.revision,4);
     text(b+28,r.metadata.requestId,32);text(b+60,r.metadata.clientId,16);text(b+76,r.metadata.fingerprint,64);text(b+140,r.metadata.sha256,64);
-    text(b+204,r.metadata.name,96);text(b+300,r.metadata.title,96);text(b+396,r.finalName,96);b[492]=uint8_t(r.state);
+    text(b+204,r.metadata.name,96);text(b+300,r.metadata.title,96);text(b+396,r.finalName,96);b[492]=uint8_t(r.state);b[493]=r.metadata.position;
     number(b+RECORD-4,crc(b,RECORD-4),4);
     constexpr const char* temporary="/.paperdiy/lan/record.tmp";
     if(!io_.write(io_.context,temporary,0,b,RECORD,true)||!io_.sync(io_.context,temporary)||!io_.rename(io_.context,temporary,path.c_str(),true)||!io_.sync(io_.context,path.c_str()))return false;

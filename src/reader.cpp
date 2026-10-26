@@ -201,6 +201,24 @@ size_t layoutPage(size_t from,bool draw,int top,reader_work::Budget* sharedBudge
     [draw](const char* ch,size_t n,int x,int y){if(draw)drawBodyGlyph(ch,n,x,y);},
     [&](){budget.cooperate([](){return millis();},[](){delay(1);});},draw);
 }
+namespace {
+// One-shot context from the Push page that was open when P replaced it.
+bookmarks::Anchor livePushAnchor;
+}
+void retainLivePushPosition(){
+  livePushAnchor=bookmarks::Anchor();
+  const uint32_t offset=currentReadingOffset();
+  if(!book||offset==UINT32_MAX||offset>=bookLength)return;
+  auto anchor=bookmarks::capture(book,bookLength,offset);
+  // A short context survives edits near the page. The search still prefers
+  // the match closest to the old relative position.
+  constexpr size_t BEFORE=48,AFTER=96;
+  if(anchor.cursor>BEFORE){anchor.context.erase(0,anchor.cursor-BEFORE);anchor.cursor=BEFORE;}
+  if(anchor.context.size()>anchor.cursor+AFTER)anchor.context.resize(anchor.cursor+AFTER);
+  anchor.valid=!anchor.context.empty();
+  livePushAnchor=anchor;
+}
+void clearLivePushPosition(){livePushAnchor=bookmarks::Anchor();}
 bool indexBook(bool reset,bool migrateLegacy,const bookmarks::Anchor* anchor,bool requireRecovery,bool progressive){
   cancelReaderIndex();
   if(reader_content::active()){
@@ -222,6 +240,14 @@ bool indexBook(bool reset,bool migrateLegacy,const bookmarks::Anchor* anchor,boo
     if(managed>=0){
       uint8_t digest[32];mbedtls_sha256_ret((const uint8_t*)book,bookLength,digest,0);
       if(!managed_progress::read(prefs,managed,digest,bookLength,offset)){Console.println("PROGRESS_READ_FAILED managed=1");return false;}
+      // New Push content has no saved offset. Keep the old page when its
+      // context is still present, otherwise start at the first page.
+      if(!offset&&livePushAnchor.valid){
+        uint32_t moved=0;
+        if(bookmarks::relocate(livePushAnchor,book,bookLength,moved,[](){delay(1);})&&moved<bookLength)offset=moved;
+        Console.printf("PUSH_RELOCATED found=%u offset=%u\n",unsigned(offset!=0),unsigned(offset));
+      }
+      livePushAnchor=bookmarks::Anchor();
     }else if(prefs.isKey(bookmarkKey.c_str())){
       offset=prefs.getUInt(bookmarkKey.c_str(),UINT32_MAX);
       if(offset==UINT32_MAX){Console.println("PROGRESS_READ_FAILED");return false;}

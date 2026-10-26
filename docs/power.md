@@ -23,7 +23,16 @@ On USB or other external power, only lower the CPU frequency; keep the processor
 awake so USB enumeration, serial access, and firmware upload remain available.
 An active AP or STA also blocks manual light sleep, which would suspend Wi-Fi;
 idle CPU throttling remains enabled. Leaving settings disables the radio and
-restores the ordinary battery sleep policy.
+restores the ordinary battery sleep policy, except in P.
+
+P keeps its STA outside Settings, so on battery it blocks manual light sleep
+for as long as it runs, while reading too. Its policy (`live_policy.h`) is the
+bound: below 50 % battery P pauses with the radio off until external power is
+connected, and on battery it stops after 30 s without a first association or
+60 s after losing one. On external power it retries with a 1 → 2 → 5 minute
+backoff instead. The power source is the checked `PWR_SRC` read described
+below; a failed read neither pauses P nor applies the battery deadlines. How
+much a running P drains the battery has not been measured.
 
 N runs its TLS listener only while explicitly selected. Leaving N closes the
 listener and connections, discards unfinished reception, preserves any

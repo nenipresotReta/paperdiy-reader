@@ -18,6 +18,7 @@
 #include "usb_storage.h"
 #include "usb_transport.h"
 #include "lan_service.h"
+#include "live_policy.h"
 #include <SD.h>
 #include <esp_heap_caps.h>
 #if defined(PAPERDIY_DIAGNOSTICS) && defined(PAPERDIY_NETWORK_TESTS)
@@ -49,6 +50,93 @@ bool usbWaiting=false;
 uint64_t usbLastWritten=0;
 uint64_t usbLastRead=0;
 uint32_t usbLastWriteAt=0;
+// ---- P: persistent STA receiver for live Push ------------------------------
+live_policy::Machine live;
+int liveBattery=-1;
+uint32_t liveBatteryAt=0;
+bool liveBatteryRead=false;
+live_policy::Inputs liveInputs(){
+  live_policy::Inputs in;in.now=millis();
+  bool known=false;const uint8_t source=powerSourceBits(known);
+  in.supply=!known?live_policy::Supply::Unknown:(source&3)?live_policy::Supply::External:
+    (source&4)?live_policy::Supply::Battery:live_policy::Supply::Unknown;
+  // The fuel gauge is an I2C read; the 50 % rule needs no faster sampling.
+  if(!liveBatteryRead||uint32_t(in.now-liveBatteryAt)>=5000){liveBattery=M5.Power.getBatteryLevel();liveBatteryAt=in.now;liveBatteryRead=true;}
+  in.battery=liveBattery;in.connected=settingsStaConnected;
+  return in;
+}
+const char* liveReasonText(live_policy::Reason reason){
+  using live_policy::Reason;
+  switch(reason){
+    case Reason::NoWifi:return "No WiFi config";
+    case Reason::NoSender:return "Pair a sender in N first";
+    case Reason::NoCard:return "SD card unavailable";
+    case Reason::ConnectFailed:return "Connection failed";
+    case Reason::ConnectionLost:return "Connection lost";
+    case Reason::LowBattery:return "Paused · battery below 50%";
+    default:return "";
+  }
+}
+void liveLabels(){
+  using live_policy::State;
+  const auto state=live.state();
+  if(networkMode!=NetworkMode::Live||state==State::Inactive){settingsLiveStatus="";liveIcon=LiveIcon::None;return;}
+  switch(state){
+    case State::Connecting:settingsLiveStatus="Connecting...";liveIcon=LiveIcon::Connecting;break;
+    case State::Online:settingsLiveStatus="Online · Push updates live";liveIcon=LiveIcon::Online;break;
+    case State::Reconnecting:settingsLiveStatus="Reconnecting...";liveIcon=LiveIcon::Connecting;break;
+    case State::Waiting:settingsLiveStatus="Offline · retrying";liveIcon=LiveIcon::Connecting;break;
+    default:settingsLiveStatus=liveReasonText(live.reason());liveIcon=LiveIcon::Off;break;
+  }
+}
+void liveSaveSelected(bool selected){
+  if(!resume_state::saveLiveSelected(prefs,selected))Console.printf("LIVE_SAVE_FAILED selected=%u\n",unsigned(selected));
+}
+void liveLog(){
+  Console.printf("LIVE state=%u reason=%u radio=%u\n",unsigned(live.state()),unsigned(live.reason()),unsigned(live.radioWanted()));
+}
+// Radio follows the policy; the STA owner stays network.cpp.
+void liveApply(){
+  if(live.radioWanted()){if(!networkStaRunning())networkApply(NetworkMode::Live);}
+  else if(networkStaRunning())networkStop();
+}
+void liveFail(live_policy::Reason reason){live.fail(reason,millis());liveSaveSelected(false);}
+// Selected in Settings or restored at boot. Preconditions fail visibly
+// without enabling the radio or remembering P.
+void liveEnter(){
+  networkStop();networkMode=NetworkMode::Live;
+  const auto in=liveInputs();
+  size_t senders=0;
+  if(!networkStaConfigured())liveFail(live_policy::Reason::NoWifi);
+  else if(!sdOK||sdOwnedByUsb())liveFail(live_policy::Reason::NoCard);
+  else if(lan_service::pairedCount(senders)!=lan_service::RegistryStatus::Ok||!senders)liveFail(live_policy::Reason::NoSender);
+  else {live.start(in);liveSaveSelected(true);liveApply();}
+  liveLabels();liveLog();
+}
+// The user moved off P: forget it, including for the next boot.
+void liveLeave(){live.stop();liveSaveSelected(false);liveLabels();}
+// Every loop outside Loading while P is selected, on any screen.
+void liveTick(){
+  bool network=false,delivery=false;
+  if(networkStaRunning()){network=networkPoll();delivery=networkDeliveryChanged();}
+  const LiveIcon icon=liveIcon;const String status=settingsLiveStatus;
+  bool changed=live.step(liveInputs());
+  if(changed&&live.state()==live_policy::State::Failed)liveSaveSelected(false);
+  // A self-revocation can remove the last sender while P runs.
+  size_t senders=0;
+  if(live.radioWanted()&&lan_service::active()&&lan_service::pairedCount(senders)==lan_service::RegistryStatus::Ok&&!senders){
+    liveFail(live_policy::Reason::NoSender);changed=true;
+  }
+  liveApply();
+  if(changed){liveLabels();liveLog();}
+  const bool labels=icon!=liveIcon||status!=settingsLiveStatus;
+  if(screen==Screen::Settings&&settingsId==SettingsId::Network){
+    if(network||labels)updateSettingsNetwork();else if(delivery)updateSettingsDelivery();
+  }else if(icon!=liveIcon){
+    if(screen==Screen::Library)updateLibraryLive();
+    else if(screen==Screen::Reading)updateBookFooter();
+  }
+}
 bool releaseUsb(){
   if(!sdOwnedByUsb()){usbWaiting=false;return true;}
   usb_storage::poll();
@@ -145,8 +233,8 @@ bool leaveReading(){
 }
 void library(bool scene=true){
   if(!releaseUsb())return;
-  networkStop();
-  networkMode=NetworkMode::Off;
+  // P is the one network mode that outlives Settings.
+  if(networkMode!=NetworkMode::Live){networkStop();networkMode=NetworkMode::Off;}
   if(!leaveReading())return;
   if(!sdOK&&digitalRead(48)==LOW){showLoading();scanSD();lan_service::storageChanged();}
   lan_service::storagePoll();lan_service::refreshLibrary();
@@ -197,9 +285,23 @@ void openSelected(bool forceReflow=false){
   if(!leaveReading())return;
   if(!sdOK){showLoading();scanSD();library();discardLoadingInput();return;}
   if(selectedBook>=sdBooks.size())return;
-  networkStop();networkMode=NetworkMode::Off;
+  if(networkMode!=NetworkMode::Live){networkStop();networkMode=NetworkMode::Off;}
   screen=Screen::Loading;showLoading();
   finishOpen(beginOpenSD(selectedBook,true,forceReflow));
+}
+// A new Push body was published. Only an open Push page follows it, with one
+// full refresh; the library row and other books are never interrupted.
+void livePushUpdated(){
+  if(screen!=Screen::Reading||!lan_service::isPushPath(bookIdentity.c_str()))return;
+  const String next=lan_service::currentPushPath();
+  size_t index=sdBooks.size();
+  for(size_t i=0;i<sdBooks.size();++i)if(sdBooks[i]==next){index=i;break;}
+  if(index>=sdBooks.size())return;
+  const bool keep=lan_service::pushKeepsPosition();
+  if(keep)retainLivePushPosition();else clearLivePushPosition();
+  Console.printf("LIVE_PUSH_REFRESH keep=%u\n",unsigned(keep));
+  settingsSelected=false;selectedBook=index;openSelected();
+  if(screen!=Screen::Loading)clearLivePushPosition();
 }
 void dispatch(controls::Action action){
   using controls::Action;
@@ -216,14 +318,12 @@ void dispatch(controls::Action action){
     if(action==Action::Previous){
       NetworkMode next=nextNetworkMode(networkMode);
       if(networkMode==NetworkMode::Usb&&!releaseUsb())return;
+      if(networkMode==NetworkMode::Live)liveLeave();
       networkStop();
       cancelContentPrefetch();
       networkMode=next;
-      if(next==NetworkMode::Usb){
-        usbWaiting=usb_storage::available();
-        settingsUsbStatus=usbWaiting?"Connect USB":"USB storage unavailable";
-        beginUsb();
-      }else networkApply(next);
+      if(next==NetworkMode::Live)liveEnter();
+      else networkApply(next);
       showSettings(true);
       return;
     }
@@ -286,9 +386,17 @@ void diagnosticCommand(const String& line){
     logUsbDiagnostics();return;
   }
   if(line=="LAN_STATUS"){lan_service::printStatus();return;}
+  if(line=="LIVE_STATUS"){
+    const auto in=liveInputs();
+    Console.printf("LIVE_STATUS mode=%u state=%u reason=%u radio=%u sta=%u connected=%u supply=%u battery=%d retry_ms=%u selected_saved=%u\n",
+      unsigned(networkMode),unsigned(live.state()),unsigned(live.reason()),unsigned(live.radioWanted()),unsigned(networkStaRunning()),
+      unsigned(in.connected),unsigned(in.supply),in.battery,unsigned(live.retryIn(in.now)),unsigned(resume_state::liveSelected(prefs)));
+    return;
+  }
   if(line=="USB_ENTER"){
     if(!usb_storage::available()){Console.println("USB_DISABLED experimental=0");return;}
     if(!leaveReading())return;
+    if(networkMode==NetworkMode::Live)liveLeave();
     networkStop();settingsSelected=true;settingsId=SettingsId::Network;screen=Screen::Settings;
     networkMode=NetworkMode::Usb;usbWaiting=usb_storage::available();
     settingsUsbStatus=usbWaiting?"Connect USB":"USB storage unavailable";beginUsb();showSettings(true);return;
@@ -474,6 +582,12 @@ void appSetup(){
     if(savedSet){selectedBook=0;settingsSelected=true;settingsId=SettingsId::Network;}
     else {selectedBook=savedBook;settingsSelected=false;}
   };
+  // Restore P before the first scene: its icon is drawn with that scene's
+  // refresh instead of a separate one, and Wi-Fi joins while the book loads.
+  if(resume_state::liveSelected(prefs)){
+    liveEnter();
+    Console.printf("BOOT_LIVE state=%u reason=%u\n",unsigned(live.state()),unsigned(live.reason()));
+  }
   if(bootCode==1&&canResume){
     selectedBook=lastIndex;
     // Keep the physical sleep image visible while loading; only the footer
@@ -540,6 +654,11 @@ void appLoop(){
   }
   device_loop_trace::mark(Stage::BeforeUsb);pollUsb();device_loop_trace::mark(Stage::AfterUsb);
   device_loop_trace::mark(Stage::BeforeStorage);lan_service::storagePoll();device_loop_trace::mark(Stage::AfterStorage);
+  if(lan_service::takePushUpdated()){
+    livePushUpdated();
+    if(screen==Screen::Loading){delay(1);return;}
+  }
+  if(networkMode==NetworkMode::Live)liveTick();
   if(contentPrefetchPending()&&(networkActive()||lan_service::storageBusy()))cancelContentPrefetch();
   if(lan_service::takeLibraryChanged()&&screen==Screen::Library)showLibrary(false);
   if(screen==Screen::Settings&&settingsId==SettingsId::Network){

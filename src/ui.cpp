@@ -26,7 +26,17 @@ String settingsStaSsid,settingsStaIp,settingsStaError;
 bool settingsStaConfigured=false,settingsStaConnected=false;
 String settingsUsbStatus="Connect USB";
 String settingsLanType,settingsLanName,settingsLanState;
+String settingsLiveStatus;
+LiveIcon liveIcon=LiveIcon::None;
 namespace {
+// P status outside Settings: a 28 px cell mirroring the status icon, at the
+// bottom-left of both the library and the reader. Rows 8..20 of the cell,
+// bit 27 is the left column: dot + arc, dot only, and dot + arc struck out.
+constexpr int LIVE_ICON_X=8,LIVE_ICON_Y=928,LIVE_ICON_SIZE=28,LIVE_ICON_TOP=8,LIVE_ICON_ROWS=13;
+constexpr uint32_t LIVE_ONLINE[LIVE_ICON_ROWS]={0,0,0x000f800,0x003fe00,0x0030600,0,0,0x0007000,0x000f800,0x000f800,0x000f800,0x0007000,0};
+constexpr uint32_t LIVE_CONNECTING[LIVE_ICON_ROWS]={0,0,0,0,0,0,0,0x0007000,0x000f800,0x000f800,0x000f800,0x0007000,0};
+constexpr uint32_t LIVE_OFF[LIVE_ICON_ROWS]={0x00c0000,0x0060000,0x0037800,0x001be00,0x002c600,0x0006000,0x0003000,0x0005800,0x000ec00,0x000f600,0x000fb00,0x0007180,0x00000c0};
+bool liveIconDrawn=false;
 constexpr int TOP=56,ROW=39;
 constexpr int BATTERY_CELL_X=504,BATTERY_CELL_Y=8,BATTERY_CELL_W=28,BATTERY_CELL_H=28;
 constexpr int BATTERY_X=506,BATTERY_Y=16,BATTERY_W=22,BATTERY_H=12;
@@ -89,13 +99,13 @@ void bodyText(const char* text,int x,int y){
 int activeModeIndex(){
   if(networkMode==NetworkMode::Sta)return 0;
   if(networkMode==NetworkMode::Ap)return 1;
-  if(PAPERDIY_EXPERIMENTAL_USB_MSC&&networkMode==NetworkMode::Usb)return 2;
+  if(networkMode==NetworkMode::Live)return 2;
   return -1;
 }
 void modeRow(int dx,int y){
-  static const char* labels[3]={"N","A","U"};
+  static const char* labels[3]={"N","A","P"};
   const int active=activeModeIndex();
-  for(int i=0;i<(PAPERDIY_EXPERIMENTAL_USB_MSC?3:2);++i){
+  for(int i=0;i<3;++i){
     if(i!=active)drawInterfaceGlyph("\xc2\xac",2,MODE_PREFIX_X[i]+dx,y,TFT_BLACK);
     drawInterfaceGlyph(labels[i],1,MODE_LETTER_X[i]+dx,y,TFT_BLACK);
   }
@@ -183,6 +193,25 @@ void staPanel(){
   }
   deliveryPanel();
 }
+void livePanel(){
+  const int dy=settingsContentDy();
+  bodyText("Live Push",32,112+dy);
+  font();
+  int y=160+dy;
+  smallLine(settingsStaConfigured?String("SSID: ")+settingsStaSsid:String("No WiFi config"),32,y);y+=36;
+  smallLine(settingsLiveStatus,32,y);y+=36;
+  if(settingsStaConnected)smallLine(String("IP: ")+settingsStaIp,32,y);
+  deliveryPanel();
+}
+// Clears the cell and draws the current P state; None leaves it blank.
+void liveIconCell(){
+  M5.Display.fillRect(LIVE_ICON_X,LIVE_ICON_Y,LIVE_ICON_SIZE,LIVE_ICON_SIZE,TFT_WHITE);
+  const uint32_t* rows=liveIcon==LiveIcon::Online?LIVE_ONLINE:liveIcon==LiveIcon::Connecting?LIVE_CONNECTING:
+    liveIcon==LiveIcon::Off?LIVE_OFF:nullptr;
+  if(!rows)return;
+  for(int r=0;r<LIVE_ICON_ROWS;++r)for(int c=0;c<LIVE_ICON_SIZE;++c)
+    if(rows[r]&(1u<<(LIVE_ICON_SIZE-1-c)))M5.Display.drawPixel(LIVE_ICON_X+c,LIVE_ICON_Y+LIVE_ICON_TOP+r,TFT_BLACK);
+}
 void usbPanel(){
   const int dy=settingsContentDy();
   bodyText("USB Storage",32,112+dy);
@@ -244,7 +273,7 @@ void showLibrary(bool sceneChange){
       row(entry-settings_registry::COUNT,int(r),entry==cursor);
   }
   if(!sdOK){font();String text="sd card mount failed";M5.Display.setCursor((540-M5.Display.textWidth(text))/2,450);M5.Display.print(text);}
-  statusIcon();endRefresh("library",0,0,540,960);
+  liveIconCell();statusIcon();endRefresh("library",0,0,540,960);
   if(contentPrefetchFailed())showPrefetchFailureBanner();
   Console.printf("LIBRARY books=%u selected=%u settings=%d first=%u rows=%u mounted=%d\n",(unsigned)sdBooks.size(),(unsigned)selectedBook,settingsSelected?1:0,(unsigned)firstBook,controls::LIBRARY_ROWS,sdOK);
 }
@@ -274,12 +303,15 @@ void showBook(bool sceneChange){
   if(pageOffsets.empty())return;
   beginRefresh(sceneChange,true);
   const int edge=std::min(20,reader_settings::geometry().left-4);
+  // The failure message starts at x=24 and replaces the P icon while shown.
+  const bool icon=liveIcon!=LiveIcon::None&&!contentPrefetchFailed(),iconArea=icon||liveIconDrawn;
   if(sceneChange){M5.Display.fillScreen(TFT_WHITE);}
   else {
     M5.Display.fillRect(20,20,520,896,TFT_WHITE);
     // The failure message starts at x=24, not in the normal pagination band.
     if(contentPrefetchFailed())M5.Display.fillRect(24,923,516,37,TFT_WHITE);
     else M5.Display.fillRect(120,923,300,37,TFT_WHITE);
+    if(iconArea)M5.Display.fillRect(LIVE_ICON_X,LIVE_ICON_Y,LIVE_ICON_SIZE,LIVE_ICON_SIZE,TFT_WHITE);
   }
   statusIcon(sdBackgroundPending()||contentPrefetchPending());
   font();prepareReaderFont();
@@ -294,7 +326,10 @@ void showBook(bool sceneChange){
     String number=(current?String(current):String("…"))+" / "+(total?String(total):String("…"));
     M5.Display.setCursor((540-M5.Display.textWidth(number))/2,960-READER_FONT_HEIGHT);M5.Display.print(number);
   }
-  endRefresh("page",edge,20,540-edge,940);
+  if(icon)liveIconCell();
+  liveIconDrawn=icon;
+  const int left=iconArea?LIVE_ICON_X:edge;
+  endRefresh("page",left,20,540-left,940);
   contentPrefetchFirstPaint();
   uint32_t offset=pageOffsets[pageNumber];
   uint32_t end=currentPageEnd();
@@ -303,10 +338,12 @@ void showBook(bool sceneChange){
 void updateBookFooter(){
   if(pageOffsets.empty())return;
   const bool failed=contentPrefetchFailed();
-  // The failure message starts at x=24; the normal pagination band starts at 120.
-  const int left=failed?24:120;
+  const bool icon=liveIcon!=LiveIcon::None&&!failed;
+  // The failure message starts at x=24; the normal pagination band starts at
+  // 120. The band widens to the P icon cell while it is (or was just) shown.
+  const int left=icon||liveIconDrawn?LIVE_ICON_X:failed?24:120;
   const int width=540-left;
-  beginRefresh();font();M5.Display.fillRect(left,923,width,37,TFT_WHITE);
+  beginRefresh(false,true,true);font();M5.Display.fillRect(left,923,width,37,TFT_WHITE);
   statusIcon(sdBackgroundPending()||contentPrefetchPending());
   const uint32_t current=readerPageNumber(),total=readerTotalPages();
   if(failed){
@@ -316,6 +353,8 @@ void updateBookFooter(){
     const String label=(current?String(current):String("…"))+" / "+(total?String(total):String("…"));
     M5.Display.setCursor((540-M5.Display.textWidth(label))/2,960-READER_FONT_HEIGHT);M5.Display.print(label);
   }
+  if(icon)liveIconCell();
+  liveIconDrawn=icon;
   endRefresh("pagination",left,923,width,37);
 }
 void showPrefetchFailureBanner(){
@@ -328,7 +367,7 @@ void showPrefetchFailureBanner(){
   endRefresh("prefetch-failure",20,8,500,40);
 }
 void showLoading(){
-  beginRefresh();font();
+  beginRefresh(false,false,true);font();
   statusIcon(true);endRefresh("loading",504,928,28,28);
   Console.println("LOADING_VISIBLE input=discard");
 }
@@ -342,6 +381,7 @@ void showSettings(bool sceneChange){
   M5.Display.fillScreen(TFT_WHITE);
   if(networkMode==NetworkMode::Ap)apPanel();
   else if(networkMode==NetworkMode::Sta)staPanel();
+  else if(networkMode==NetworkMode::Live)livePanel();
   else if(PAPERDIY_EXPERIMENTAL_USB_MSC&&networkMode==NetworkMode::Usb)usbPanel();
   int dx=settingsDx();
   modeRow(dx,settingsModeY());
@@ -368,27 +408,34 @@ void updateSettingsNetwork(){
   M5.Display.fillRect(0,y,540,SETTINGS_CONTENT_H,TFT_WHITE);
   if(networkMode==NetworkMode::Ap)apPanel();
   else if(networkMode==NetworkMode::Sta)staPanel();
+  else if(networkMode==NetworkMode::Live)livePanel();
   else if(PAPERDIY_EXPERIMENTAL_USB_MSC&&networkMode==NetworkMode::Usb)usbPanel();
   endRefresh("settings-network",0,y,540,SETTINGS_CONTENT_H);
 }
 void updateSettingsDelivery(){
-  if(settingsId!=SettingsId::Network||networkMode!=NetworkMode::Sta)return;
+  if(settingsId!=SettingsId::Network||(networkMode!=NetworkMode::Sta&&networkMode!=NetworkMode::Live))return;
   // A prompt appearing or leaving changes the whole content area.
   static bool promptShown=false;
   const bool pending=lan_service::promptPending();
   if(pending||promptShown){promptShown=pending;updateSettingsNetwork();return;}
+  // Progress and receipt lines change often during a transfer; they are a
+  // status refresh, so a long upload never flashes the whole panel.
   const int y=268+settingsContentDy();
-  beginRefresh();M5.Display.fillRect(0,y,540,244,TFT_WHITE);deliveryPanel();
+  beginRefresh(false,false,true);M5.Display.fillRect(0,y,540,244,TFT_WHITE);deliveryPanel();
   endRefresh("delivery",0,y,540,244);
 }
 
+void updateLibraryLive(){
+  beginRefresh(false,false,true);liveIconCell();
+  endRefresh("live",LIVE_ICON_X,LIVE_ICON_Y,LIVE_ICON_SIZE,LIVE_ICON_SIZE);
+}
 void updateLibraryBattery(){
   int raw=M5.Power.getBatteryLevel();bool charging=chargingNow();
   int level=batteryLevelForDisplay(raw,charging);
   // Only the quantized fill is visible; charging freezes the displayed level
   // but has no separate icon. Keep sampling/history even when no pixel changes.
   if(batteryFillWidth(level)==lastBatteryFill)return;
-  beginRefresh();battery(level);
+  beginRefresh(false,false,true);battery(level);
   endRefresh("battery",BATTERY_CELL_X,BATTERY_CELL_Y,BATTERY_CELL_W,BATTERY_CELL_H);
 }
 void saveBatteryHistory(){

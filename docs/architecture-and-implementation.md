@@ -75,6 +75,7 @@ These limits do not guarantee that every maximum fits simultaneously. The import
 | [ui.cpp](../src/ui.cpp), [display_driver.cpp](../src/display_driver.cpp) | Scene composition, dirty regions, rotation and panel completion |
 | [network.cpp](../src/network.cpp), [web_page.h](../src/web_page.h) | Explicit AP/STA lifecycle and English WebUI |
 | [lan_service.cpp](../src/lan_service.cpp), [lan_tls.cpp](../src/lan_tls.cpp), [lan_nvs.cpp](../src/lan_nvs.cpp) | Paired TLS service and fail-closed credential persistence |
+| [live_policy.h](../src/live_policy.h) | P lifecycle: connection deadlines, external-power backoff, low-battery pause |
 | [delivery_store.h](../src/delivery_store.h), [delivery_store_sd.cpp](../src/delivery_store_sd.cpp) | Non-overwriting files, bounded Push replacement and receipts |
 | [usb_storage.cpp](../src/usb_storage.cpp), [usb_transport.cpp](../src/usb_transport.cpp) | Exclusive raw-card access and native CDC/MSC lifecycle |
 | [power.cpp](../src/power.cpp), [card_sleep.h](../src/card_sleep.h) | CPU profiles, wake sources, card interrupt restoration and charging LED |
@@ -250,7 +251,7 @@ Native/WASM tests compare complete PDT bytes and decoded semantic meaning. A loo
 
 `resumeV2` stores scene, stable settings ID and a bounded path. Corrupt V2 does not revive stale V1. Rotation has checked persistence. `wifiCfgV1` stores Wi-Fi separately; endpoints do not return its password. Application NVS is not encrypted.
 
-Partial refresh is the normal page path. Scene changes and periodic cleanup retain necessary full refreshes; geometry/settings changes invalidate the relevant refresh baseline. Panel completion is awaited before shutdown.
+Partial refresh is the normal page path. Scene changes and periodic cleanup retain necessary full refreshes. Status areas (P icon, battery, loading icon, reader footer, delivery progress lines) always refresh fast and neither count toward nor trigger the periodic full refresh; geometry/settings changes invalidate the relevant refresh baseline. Panel completion is awaited before shutdown.
 
 The CPU uses 240 MHz for active work and 80 MHz in ordinary idle. USB storage ownership holds the active profile until raw-driver release. External power, live radio, USB and unstable input/storage block manual light sleep. Button/card wake sources are rearmed after wake; the LED follows charging status. These are software policies. No measured standby current or battery-life claim is available. See [power](power.md) for the tested wake boundary.
 

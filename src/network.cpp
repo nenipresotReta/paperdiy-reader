@@ -31,8 +31,12 @@ BoundedWebServer* web=nullptr;
 DNSServer dns;
 bool apRunning=false,staRunning=false;
 bool radioStopFailed=false;
-bool deliveryDirty=false,receiverAttempted=false;
-uint32_t apActivity=0,staStarted=0,uploadGeneration=0;
+bool deliveryDirty=false,receiverAttempted=false,receiverFailed=false;
+bool staLive=false; // STA was started for P rather than N
+uint32_t apActivity=0,staStarted=0,uploadGeneration=0,receiverFailedAt=0;
+// P restarts a receiver that could not start (card missing or remounting);
+// N reports the failure until the user selects it again.
+constexpr uint32_t LIVE_RECEIVER_RETRY_MS=5000;
 String apToken;
 
 constexpr uint32_t AP_TIMEOUT_MS=5u*60u*1000u;
@@ -590,10 +594,10 @@ void startSta(){
 }
 
 void networkStop(){
-  lan_service::stop();receiverAttempted=false;deliveryDirty=false;
+  lan_service::stop();receiverAttempted=receiverFailed=false;deliveryDirty=false;
   if(web){web->stop();delete web;web=nullptr;}
   dns.stop();resetUpload();clearReceipts();
-  apRunning=false;staRunning=false;
+  apRunning=false;staRunning=false;staLive=false;
   WiFi.softAPdisconnect(true);WiFi.disconnect(true);
   radioStopFailed=!WiFi.mode(WIFI_OFF);
 #ifdef ARDUINO
@@ -603,10 +607,12 @@ void networkStop(){
   settingsStaConnected=false;settingsStaIp="";settingsStaError="";
 }
 void networkApply(NetworkMode mode){
-  networkStop();
+  networkStop();staLive=mode==NetworkMode::Live;
   if(mode==NetworkMode::Ap)startAp();
-  else if(mode==NetworkMode::Sta)startSta();
+  else if(mode==NetworkMode::Sta||mode==NetworkMode::Live)startSta();
 }
+bool networkStaConfigured(){String ssid,pass;return loadCredentials(ssid,pass);}
+bool networkStaRunning(){return staRunning;}
 bool networkPoll(){
   bool changed=false;
   if(apRunning&&web){
@@ -627,9 +633,12 @@ bool networkPoll(){
         if(receiverAttempted){lan_service::stop();receiverAttempted=false;}
         settingsStaConnected=true;settingsStaError="";settingsStaIp=ip;changed=true;
       }
+      if(receiverFailed&&staLive&&millis()-receiverFailedAt>=LIVE_RECEIVER_RETRY_MS)receiverAttempted=false;
       if(!receiverAttempted){
-        receiverAttempted=true;
-        if(!lan_service::start(ip.c_str())){settingsLanState="Receiver unavailable";deliveryDirty=true;}
+        receiverAttempted=true;receiverFailed=false;
+        if(!lan_service::start(ip.c_str(),staLive)){
+          settingsLanState="Receiver unavailable";deliveryDirty=true;receiverFailed=true;receiverFailedAt=millis();
+        }
       }
       if(lan_service::poll())deliveryDirty=true;
     }else if(settingsStaConnected){
@@ -637,7 +646,8 @@ bool networkPoll(){
       settingsStaConnected=false;settingsStaIp="";settingsStaError="";
       staStarted=millis();changed=true;
     }
-    if(!connected&&settingsStaError.length()==0&&millis()-staStarted>=20000){
+    // P owns its own connection deadlines (live_policy.h).
+    if(!staLive&&!connected&&settingsStaError.length()==0&&millis()-staStarted>=20000){
       lan_service::stop();WiFi.disconnect(true);radioStopFailed=!WiFi.mode(WIFI_OFF);staRunning=false;
       settingsStaError="Connection failed";changed=true;
     }
@@ -653,6 +663,6 @@ bool networkActive(){
   return apRunning||staRunning||radioStopFailed||WiFi.getMode()!=WIFI_OFF;
 }
 void networkStorageChanged(){
-  lan_service::stop();receiverAttempted=false;
+  lan_service::stop();receiverAttempted=receiverFailed=false;
   lan_service::storageChanged();resetUpload();clearReceipts();cleanIncoming();
 }

@@ -162,6 +162,9 @@ bool powerDiagnosticSleep(uint32_t durationMs){
 }
 #endif
 
+uint8_t powerSourceBits(bool& known){
+  checkPowerSource();known=stats.sourceKnown;return stats.powerSource;
+}
 static bool charging=false,ledKnown=false;
 static uint32_t lastCheck=0;
 bool chargingNow(){return charging;}

@@ -75,6 +75,7 @@ flowchart TD
 | [ui.cpp](../src/ui.cpp)、[display_driver.cpp](../src/display_driver.cpp) | 场景、脏区域、旋转、面板完成 |
 | [network.cpp](../src/network.cpp)、[web_page.h](../src/web_page.h) | 显式 AP/STA 生命周期、英文 WebUI |
 | [lan_service.cpp](../src/lan_service.cpp)、[lan_tls.cpp](../src/lan_tls.cpp)、[lan_nvs.cpp](../src/lan_nvs.cpp) | 配对 TLS 服务及遇错关闭的凭据持久化 |
+| [live_policy.h](../src/live_policy.h) | P 生命周期：连接时限、外接电源退避、低电量暂停 |
 | [delivery_store.h](../src/delivery_store.h)、[delivery_store_sd.cpp](../src/delivery_store_sd.cpp) | 不覆盖文件、有界 Push 替换、回执 |
 | [usb_storage.cpp](../src/usb_storage.cpp)、[usb_transport.cpp](../src/usb_transport.cpp) | 独占 raw 卡访问、原生 CDC/MSC 生命周期 |
 | [power.cpp](../src/power.cpp)、[card_sleep.h](../src/card_sleep.h) | CPU 档位、唤醒源、卡中断恢复、充电 LED |
@@ -250,7 +251,7 @@ WebUI 先上传原书，再按服务端确认名称上传旁车，准备运行�
 
 `resumeV2` 保存场景、稳定设置 ID、有界路径；V2 损坏不复活旧 V1。旋转有校验持久化。`wifiCfgV1` 独立保存 Wi-Fi，端点不返回密码；应用 NVS 未加密。
 
-翻页正常使用局刷；场景变化/周期清理保留必要全刷，几何/设置变化失效相应刷新基线。关机前等待面板完成。
+翻页正常使用局刷；场景变化/周期清理保留必要全刷。状态区域（P 图标、电量、加载图标、阅读页脚、投递进度行）始终快速局刷，不计入也不触发周期全刷；几何/设置变化失效相应刷新基线。关机前等待面板完成。
 
 CPU 活动工作 240 MHz、普通空闲 80 MHz；USB 所有权到 raw 驱动释放前保持活动档。外电、无线、USB、输入/存储不稳定时阻止手动 light sleep。唤醒后重设按键/卡源，LED 跟随充电状态。这是软件策略，尚无待机电流/续航实测；唤醒边界见[电源](power.zh-CN.md)。
 

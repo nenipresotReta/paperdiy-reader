@@ -19,7 +19,7 @@
                           ◀───────  每项一个回执 → "Done · 3 files"
 ```
 
-- **只在设置页接收。** 接收端、其路由与 mDNS 通告仅在设置页且 N 激活时存在。
+- **N 只在设置页接收。** N 的接收端、其路由与 mDNS 通告仅在设置页且 N 激活时存在。唯一例外是 [P](#p实时-push)：它在设置页之外也保持接收端，但只接受此前在 N 里配对过的发送端发来的 Push。
 - **每批都须在设备上同意。** 一次短按 A+B（2 秒内松开）接受整批。A 保持原义（下一模式），因此会关闭 N 并取消；B 旋转并重绘；离开设置页取消；60 秒无操作过期；按住 A+B 2 秒关机，永不接受。未经接受，卡上不写任何内容。
 - **首次投递即配对。** 未知发送端的第一批带有承诺保护的短验证码（SAS）；一次 A+B 同时配对并接受。单独配对就是不带条目的同一请求。
 
@@ -86,9 +86,9 @@ POST 使用 `application/x-www-form-urlencoded`，双方均限制最多 16 个�
 
 | 操作 | 请求与结果 |
 | --- | --- |
-| `GET /lan/v1/capabilities` | `v:2`、`deviceId`、`pushRevision`、32 位十六进制 `epoch`、`receiptCapacity:16`、`receiptScope:"client"`、`batchEntries:8`、`limits`。 |
+| `GET /lan/v1/capabilities` | `v:2`、`deviceId`、`pushRevision`、32 位十六进制 `epoch`、`receiptCapacity:16`、`receiptScope:"client"`、`batchEntries:8`、`limits`、`live`（仅 P 下为 `true`）。 |
 | `GET /lan/v1/push` | 当前 Push 元数据，不含正文。 |
-| `POST /lan/v1/uploads/start` | `requestId`、`fingerprint`、`kind`、`name`、`title`、`size`、`sha256`、`baseRevision`。相同重放返回同一传输或回执。 |
+| `POST /lan/v1/uploads/start` | `requestId`、`fingerprint`、`kind`、`name`、`title`、`size`、`sha256`、`baseRevision`，可选 `position`（仅 Push，见 [P](#p实时-push)）。相同重放返回同一传输或回执。 |
 | `POST /lan/v1/uploads/chunk` | `requestId`、已接受的精确 `offset`、`data`（base64，≤ 4096 字节）。响应丢失后不盲目追加。 |
 | `GET /lan/v1/uploads/status?requestId=…` | 接收/校验状态与已接受偏移，或已完成回执。 |
 | `POST /lan/v1/uploads/commit` | 校验并发布；阅读器计算哈希时可能返回 `checking`。重放返回同一回执。 |
@@ -110,9 +110,30 @@ Push 是一本可替换的书。其基准修订是排队时已知的阅读器修
 
 阅读器共有 16 个回执槽（按客户端查询）以及两个 Push 提交记录。两整批即可写满，因此发送端在向某台阅读器提交新内容前，先解决该阅读器所有 `uncertain` 条目。断电后的发布恢复会核对意图、选定的最终文件及其完整哈希；已有文件从不删除或覆盖。
 
+## P：实时 Push
+
+P 是第三种网络模式（`N → A → P → 关闭`）。它连接已保存的家庭 Wi-Fi，并在阅读或浏览书库时保持接收端运行，此前在 N 里配对过的发送端可以随时替换 Push。
+
+- P 运行时，`GET /lan/v2/hello` 与 `GET /lan/v1/capabilities` 报告 `live:true`；N 下为 `live:false`。
+- `kind=push` 的 `uploads/start` 不需要批次，已认证客户端直接放行。修订号、大小、Markdown 校验、回执与恢复等检查照常进行。
+- `kind=file` 仍是 `409 not_accepted`。批次提交、配对揭示和批次状态返回 `409 live_mode`，因为配对和文件属于 N。
+- `position=top|keep`（仅 Push，缺省 `top`）告诉正打开这份 Push 的阅读器更新后停在哪里：第 1 页，或在新正文里仍能找到原文本上下文的那一页（找不到就回第 1 页）。文件带 `position` 或取其他值时返回 `400 invalid_metadata`。这个提示不计入指纹。它随请求保存，重放必须带相同的值，否则返回 `409 request_conflict`。它持久保存在 1024 字节回执与 Push 记录的第 493 字节；这个字节以前恒为 0，旧固件不读取它。
+- 与当前 Push 相同的正文照常是有回执的空操作，不刷新屏幕。
+- 在阅读器上，打开着的 Push 页面立即用一次全刷新更新。书库和其他书不会被打断；书库里的 Push 行就地更新。
+
+P 在以下情况停止：用户在设置页切走、关机、最后一个已配对发送端自我撤销，或满足下表的自动条件。除自动停止外，重启后会恢复 P。
+
+| 条件 | 电池供电 | 外接电源 |
+| --- | --- | --- |
+| 电量低于 50% | 暂停：关闭无线电，P 保持选中；接上外接电源后恢复 | — |
+| 开始后 30 秒内未连上 | 停止：`Connection failed` | 1 → 2 → 5 分钟后重试，之后每 5 分钟 |
+| 断线 60 秒未恢复 | 停止：`Connection lost` | 同上退避 |
+
+重连期间拔掉电源，从拔电时刻起开始计 30 秒或 60 秒。PMIC 读数未知时既不暂停，也不套用电池时限。停止后的 P 在设置页显示原因，书库和阅读页左下角的 P 图标显示为划掉状态。没有已保存的 Wi-Fi、已配对发送端或 SD 卡时选择 P，只显示原因，不开启无线电。
+
 ## 发现
 
-N 激活期间，阅读器通告 `paperdiy-<deviceId>.local` 和 `_paperdiy._tcp`（端口 8443，TXT `id=<deviceId>`）。发送端向 `224.0.0.251:5353` 发送 RFC 6762 一次性查询（QU 位、临时端口，两次各 1 秒），只接受所有者名称完全匹配的 IPv4 A 记录，忽略 AAAA。不依赖 Bonjour、nss-mdns 或 Windows mDNS；多播无法到达局域网时（如 NAT 后的容器）会干净地失败，此时使用 `--host`，并在路由器为阅读器保留固定地址。
+N 或 P 激活期间，阅读器通告 `paperdiy-<deviceId>.local` 和 `_paperdiy._tcp`（端口 8443，TXT `id=<deviceId>`）。发送端向 `224.0.0.251:5353` 发送 RFC 6762 一次性查询（QU 位、临时端口，两次各 1 秒），只接受所有者名称完全匹配的 IPv4 A 记录，忽略 AAAA。不依赖 Bonjour、nss-mdns 或 Windows mDNS；多播无法到达局域网时（如 NAT 后的容器）会干净地失败，此时使用 `--host`，并在路由器为阅读器保留固定地址。
 
 - **已配对：** 先用保存的地址与固定证书；该地址网络失败或证书不符时，解析 `paperdiy-<deviceId>.local` 并对每个 IPv4 结果用固定证书尝试。只有固定证书成功后才保存地址。其他阅读器不会让已配对发送端产生歧义。
 - **未配对：** 一次服务查询。一台 → 首次联系；多台 → `multiple_devices` 并给出 `{deviceId, host}` 候选（从不猜测）；没有 → `device_not_found`。`--host` 跳过发现。
@@ -134,6 +155,7 @@ python3 tools/paperdiy_lan.py status
 | 命令 | 用途 |
 | --- | --- |
 | `push SOURCE [--title T]` | 排队替换 Push，然后提交。 |
+| `push SOURCE --live [--position top\|keep]` | 阅读器处于 P：立即替换 Push，不经批次。仅限已配对发送端；未投递成功时退出码为 2。 |
 | `send SOURCE…` | 排队普通文件，然后提交。 |
 | `sync [--batch-id ID] [--reoffer]` | 继续某批次、解决不确定条目、提交已排队内容。`--reoffer` 包含曾 `not_accepted` 的条目。 |
 | `pair --label NAME [--host IP]` | 不带条目的首次联系（也用于重新配对）。 |
@@ -147,6 +169,7 @@ python3 tools/paperdiy_lan.py status
 
 - 只有一台已配对阅读器时 `--device` 可省略；多台 → `ambiguous_device`；没有 → 首次联系（需 `--label`）。
 - 批次按排队顺序取条目，最多 8 项、最多一个 Push；第二个 Push 等下一批。`blocked` 与 `not_accepted` 条目在用户决定前不再提交，同一次运行中任何条目最多提交一次。
+- `push --live` 先读取能力中的 `live`。P 未开启时报告 `live_unavailable`，条目保持排队，下一次实时推送会取代它。与 N 不同，从未开始上传的正文会改基到阅读器当前修订，最新的正文胜出。`uploads/start` 时因竞争得到 `revision_conflict`，会用新修订重试一次，仍冲突则报告 `blocked`。对处于 P 的阅读器执行 `send`、`pair` 或首次联系，报告 `live_mode`。
 - 首次联系在 `--json` 下提前返回 `awaiting_pairing_confirmation` 与 `sas`（AI 须转告数字）；人类输出打印数字后继续等待。
 
 ### 条目状态

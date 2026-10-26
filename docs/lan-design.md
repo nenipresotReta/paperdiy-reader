@@ -22,10 +22,16 @@ that transaction. Do not expose the AP page, Wi-Fi settings, filesystem browsing
 bookmarks, arbitrary deletion, firmware updates or command execution over N.
 
 Keep networking tied to the existing settings lifecycle: leaving settings,
-selecting Off/A/U, shutdown and reboot stop the N service. USB power alone never
+selecting Off/A/P, shutdown and reboot stop the N service. USB power alone never
 starts it. Opening a received document consequently stops N in the first version.
 Receiving while reading would require a separately reviewed lifecycle change;
 removing `networkStop()` on navigation is not an acceptable shortcut.
+
+That reviewed change is P (see [protocol: P](lan-protocol.md#p-live-push)). P
+keeps the STA and receiver across navigation for Push only. Pairing and files
+stay in N, and leaving Settings still stops N and A. Its connection and battery
+bounds live in a separate policy (`live_policy.h`) with host tests, rather
+than in navigation code.
 
 Document delivery is the first milestone. Short messages can subsequently use the
 same UTF-8 Markdown ingestion path with a smaller quota and an explicit inbox.

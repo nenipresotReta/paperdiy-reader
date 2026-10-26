@@ -4,7 +4,8 @@
 Python 3.9+ standard library only; macOS, Linux (including containers) and
 Windows. One foreground command per run, no daemon. Every batch is accepted
 on the reader with a short A+B; nothing is reported delivered without the
-reader's matching receipt.
+reader's matching receipt. With the reader on P, `push --live` replaces Push
+for an already paired sender without a batch.
 """
 import argparse
 import base64
@@ -686,7 +687,9 @@ class Store:
                       and (item.get("device") is None or hex_value(item.get("device"), 16))
                       and (item.get("batchId") is None or hex_value(item.get("batchId"), 16))
                       and (item.get("code") is None or isinstance(item.get("code"), str))
-                      and type(item.get("accepted", False)) is bool)
+                      and type(item.get("accepted", False)) is bool
+                      and item.get("position") in (None, "top", "keep")
+                      and (item.get("position") is None or item["kind"] == "push"))
                 if ok:
                     clean_label(item.get("name")); clean_label(item.get("title"))
                     base = item.get("baseRevision")
@@ -1132,7 +1135,7 @@ class Session:
             except RemoteFailure as error:
                 if error.code == "batch_busy" and self.waiting():
                     self.mark(entries, "batch_busy"); self.pause(REACH_RETRY_SECONDS); continue
-                if error.code in ("batch_busy", "rate_limited", "recovering"):
+                if error.code in ("batch_busy", "rate_limited", "recovering", "live_mode"):
                     self.mark(entries, error.code); return None, []
                 if error.code == "unauthorized":
                     raise Failure("unauthorized") from None
@@ -1166,7 +1169,8 @@ class Session:
                 response = self.call(address, "GET", path, pin=device["certSha256"], device=device)
                 unreachable = False
             except RemoteFailure as error:
-                if error.status == 404:
+                # live_mode: the reader left N for P, which drops every batch.
+                if error.status == 404 or error.code == "live_mode":
                     self.lost(entries); return "lost"
                 if error.code not in ("rate_limited", "recovering"):
                     raise
@@ -1212,6 +1216,8 @@ class Session:
         chunk = min(chunk, CHUNK_MAX) if integer(chunk) and chunk else CHUNK_MAX
         form = {key: item[key] for key in ("requestId", "fingerprint", "kind", "name", "title", "size", "sha256")}
         form["baseRevision"] = item["baseRevision"] if item["kind"] == "push" else ""
+        if item.get("position"):
+            form["position"] = item["position"]
         item["startSent"] = True; self.store.save()
         pin = device["certSha256"]
         try:
@@ -1368,6 +1374,43 @@ class Session:
             if not self.upload_batch(address, device, caps, admitted):
                 return
 
+    def run_live(self, device, item, *, host=None):
+        """P: replace Push now with no batch. The newest body wins a race."""
+        try:
+            address, caps = self.reach(device, host)
+        except Failure as error:
+            if error.code == "device_unreachable":
+                self.mark([item], "device_unreachable")
+                self.result["next"] = "device_unreachable"
+                return
+            raise
+        if caps.get("live") is not True:
+            self.mark([item], "live_unavailable")
+            self.result["next"] = "live_unavailable"
+            return
+        if not self.resolve_uncertain(address, device):
+            self.result["next"] = "uncertain"
+            return
+        for attempt in range(2):
+            if item["state"] != "queued":
+                return
+            # Unlike N, P rebases a body that was never started onto the
+            # reader's current revision: a status board shows the latest.
+            if not item["startSent"] and item["baseRevision"] != caps["pushRevision"]:
+                item["baseRevision"] = caps["pushRevision"]
+                item["fingerprint"] = fingerprint(item)
+                self.store.save()
+            self.upload(address, device, item, caps.get("limits"))
+            if attempt or item["state"] != "blocked" or item.get("code") != "revision_conflict":
+                return
+            # Another sender won between capabilities and start: retry once.
+            set_state(item, "queued"); self.store.save()
+            address, caps = self.reach(device, host)
+            if caps.get("live") is not True:
+                self.mark([item], "live_unavailable")
+                self.result["next"] = "live_unavailable"
+                return
+
     def first_contact(self, label, *, host=None, wait_for_acceptance=False, reoffer=False):
         """Offer unassigned entries (possibly none) to an unpaired reader."""
         clean_sender_label(label)
@@ -1513,6 +1556,9 @@ ADVICE = {
     "uncertain": "The reader may or may not have published an entry. Return to N to check its receipt.",
     "batch_busy": "The reader is busy with another sender's files.",
     "multiple_devices": "More than one reader answered. Use --host with the IP shown on the reader's N screen.",
+    "live_unavailable": "The reader is not on P. On the reader: Settings, then press A until P.",
+    "live_mode": "The reader is on P, which only takes live Push. For files or pairing: Settings, then press A until N.",
+    "no_paired_device": "Pair this sender first: on the reader, Settings, then press A until N.",
 }
 
 
@@ -1599,7 +1645,10 @@ def parser():
         if timing:
             p.add_argument("--wait", type=int, default=120)
             p.add_argument("--budget", type=int, default=600)
-    p = sub.add_parser("push"); p.add_argument("source"); p.add_argument("--title", default=""); common(p)
+    p = sub.add_parser("push"); p.add_argument("source"); p.add_argument("--title", default="")
+    p.add_argument("--live", action="store_true", help="replace Push now on a reader in P (paired senders only)")
+    p.add_argument("--position", choices=("top", "keep"), help="with --live: page an open Push shows after the update")
+    common(p)
     p = sub.add_parser("send"); p.add_argument("sources", nargs="+"); common(p)
     p = sub.add_parser("sync"); p.add_argument("--batch-id"); p.add_argument("--reoffer", action="store_true"); common(p)
     p = sub.add_parser("pair"); p.add_argument("--label", required=True); p.add_argument("--host"); p.add_argument("--json", action="store_true")
@@ -1654,6 +1703,8 @@ def main(argv=None, *, transport=None, resolver=None, clock=time.monotonic, slee
     try:
         if hasattr(args, "wait") and (not 0 <= args.wait <= 600 or not 1 <= args.budget <= 600 or args.wait > args.budget):
             raise Failure("invalid_budget")
+        if getattr(args, "position", None) and not args.live:
+            raise Failure("position_requires_live")
         with Store(args.state_dir) as store:
             def notify(kind, **values):
                 if not as_json and kind == "awaiting_pairing_confirmation":
@@ -1668,6 +1719,17 @@ def main(argv=None, *, transport=None, resolver=None, clock=time.monotonic, slee
                 if args.command == "pair":
                     session.first_contact(args.label, host=args.host, wait_for_acceptance=not as_json)
                     scope = [i for i in store.db["items"] if i.get("batchId") == session.result.get("batchId")]
+                elif args.command == "push" and args.live:
+                    # P never pairs: the reader must already know this sender.
+                    target = target_for_host(session, store, args.host) if args.host else choose_device(store, args.device)
+                    if target is None:
+                        raise Failure("no_paired_device")
+                    staged = store.enqueue(target["deviceId"], [args.source], "push", args.title)
+                    if args.position:
+                        staged[0]["position"] = args.position; store.save()
+                    if args.wait:
+                        session.run_live(target, staged[0], host=args.host)
+                    scope = [i for i in store.db["items"] if i["requestId"] == staged[0]["requestId"]]
                 else:
                     before = {i["requestId"]: (i["state"], i.get("code")) for i in store.db["items"]}
                     if args.command in ("push", "send") and args.wait and not store.db["devices"] and not store.db["pending"] and not args.label:
@@ -1771,6 +1833,9 @@ def main(argv=None, *, transport=None, resolver=None, clock=time.monotonic, slee
                 result = {"state": "pruned", "count": len(pruned)}
         emit(result, as_json, stdout)
         items = result.get("items", [])
+        if getattr(args, "live", False):
+            # A live update is only useful now: anything short of delivery fails.
+            return 0 if items and all(i["state"] == "delivered" for i in items) else 2
         return 2 if any(i["state"] in ("uncertain", "blocked") for i in items) else 0
     except Failure as error:
         result = {"state": "error", "code": error.code}

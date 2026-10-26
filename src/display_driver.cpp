@@ -21,9 +21,9 @@ void displaySetRotated(bool rotated){
   M5.Display.setRotation(target);
   Console.printf("DISPLAY_ROTATION base=%d target=%d size=%dx%d\n",normalRotation,target,M5.Display.width(),M5.Display.height());
 }
-bool beginRefresh(bool sceneChange,bool reading){
+bool beginRefresh(bool sceneChange,bool reading,bool indicator){
   powerActivity();
-  M5.Display.waitDisplay();started=millis();full=policy.choose(sceneChange,reading);
+  M5.Display.waitDisplay();started=millis();full=!indicator&&policy.choose(sceneChange,reading);
   M5.Display.setEpdMode(full?epd_mode_t::epd_quality:epd_mode_t::epd_fast);
   M5.Display.startWrite();return full;
 }

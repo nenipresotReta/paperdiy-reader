@@ -1,6 +1,6 @@
 ---
 name: paperdiy-delivery
-description: Send a Markdown Push update or ebooks to a PaperDIY reader over the home network, with the user accepting each batch on the reader. Use for delivery to this reader, not for general networking or firmware updates.
+description: Send a Markdown Push update or ebooks to a PaperDIY reader over the home network, with the user accepting each batch on the reader, or update Push live on a reader left on P. Use for delivery to this reader, not for general networking or firmware updates.
 ---
 
 Use the PaperDIY repository's `tools/paperdiy_lan.py` (Python 3.9+, standard
@@ -51,6 +51,32 @@ and report receipts.
    needs its own A+B. Say "This was batch 1 of 2; accept it and I'll send the
    next."
 
+## Live Push (reader on P)
+
+When the user has left the reader on **P** (for example plugged in as a status
+board), a sender that was paired earlier in N can replace Push with no A+B:
+
+```
+python3 tools/paperdiy_lan.py push board.md --title "Today" --live --position keep --json --wait 5
+```
+
+- `--position top` (default) shows page 1 of the new Push on a reader that has
+  Push open. `keep` stays on the same text when it still exists. Use `keep` for
+  a long document that is being edited, `top` for a board or notice.
+- Exit code 0 means `delivered`; anything else is 2.
+- `next`/`code` `live_unavailable`: "The reader isn't on P. On the reader:
+  Settings → press A until P." The entry stays queued, and the next live push
+  replaces it. Do not switch to N to force it through unless the user asks.
+- `no_paired_device`: pair first in N (`pair --label NAME`), with the user
+  confirming the SAS on the reader.
+- `live_mode` from `send`, `pair` or a first contact: P takes only live Push.
+  Files and pairing need N.
+- `blocked` + `revision_conflict` after a live push means another sender won
+  twice in a row; ask before pushing again.
+- Push as often as the content changes, at most about once a minute. The
+  reader redraws the whole screen on every new body, and an identical body
+  is a no-op.
+
 ## Content
 
 - `push` replaces the one Push book: UTF-8 Markdown (with `$…$`/`$$…$$` math)
@@ -81,8 +107,9 @@ and report receipts.
 - Use unpinned TLS after pairing, put tokens or secrets in arguments, chat or
   logs, scan a subnet, or change the host's network (Wi-Fi, IP, DHCP, DNS,
   routes).
-- Automatically re-offer, rebase a Push, `abandon`, `prune`, `revoke` or `pair`
-  again to make a retry pass — each needs the user's intent.
+- Automatically re-offer, rebase a Push in N, `abandon`, `prune`, `revoke` or
+  `pair` again to make a retry pass — each needs the user's intent. (`--live`
+  rebasing onto the reader's current Push is the documented P behavior.)
 - Claim success without a `delivered` receipt, claim what the screen shows,
   or call `not_accepted` a rejection (switching off N and a dropped
   connection look the same to the sender).
