@@ -28,8 +28,10 @@ upload + commit per entry ───────▶  one active transaction at a 
                           ◀───────  receipt per entry → "Done · 3 files"
 ```
 
-- **Reception is Settings-bound.** The receiver, its routes and its mDNS
-  advertisement exist only while the reader shows Settings with N active.
+- **N reception is Settings-bound.** In N the receiver, its routes and its
+  mDNS advertisement exist only while the reader shows Settings with N active.
+  [P](#p-live-push) is the one exception: it keeps the receiver up outside
+  Settings, but only for Push from senders paired earlier in N.
 - **Every batch needs consent on the reader.** One short A+B (released within
   2 s) accepts the whole batch. A keeps its meaning (next mode), so it switches
   N off, which cancels; B rotates and redraws; leaving Settings cancels; 60 s
@@ -148,9 +150,9 @@ over 16384 bytes. Errors use a stable snake_case `code`.
 
 | Operation | Request and result |
 | --- | --- |
-| `GET /lan/v1/capabilities` | `v:2`, `deviceId`, `pushRevision`, 32-hex `epoch`, `receiptCapacity:16`, `receiptScope:"client"`, `batchEntries:8`, `limits`. |
+| `GET /lan/v1/capabilities` | `v:2`, `deviceId`, `pushRevision`, 32-hex `epoch`, `receiptCapacity:16`, `receiptScope:"client"`, `batchEntries:8`, `limits`, `live` (`true` only in P). |
 | `GET /lan/v1/push` | Current Push metadata; no body. |
-| `POST /lan/v1/uploads/start` | `requestId`, `fingerprint`, `kind`, `name`, `title`, `size`, `sha256`, `baseRevision`. Identical replay returns the same transaction or receipt. |
+| `POST /lan/v1/uploads/start` | `requestId`, `fingerprint`, `kind`, `name`, `title`, `size`, `sha256`, `baseRevision`, optional `position` (Push only, see [P](#p-live-push)). Identical replay returns the same transaction or receipt. |
 | `POST /lan/v1/uploads/chunk` | `requestId`, exact accepted `offset`, `data` (base64, ≤ 4096 bytes). No blind append after a lost response. |
 | `GET /lan/v1/uploads/status?requestId=…` | Receiving/checking state and accepted offset, or a completed receipt. |
 | `POST /lan/v1/uploads/commit` | Validates and publishes; may return `checking` while the reader hashes. Replays return the same receipt. |
@@ -196,9 +198,52 @@ every `uncertain` entry for a reader before offering it anything new.
 Publication recovery after power loss verifies the intent, the chosen final
 file and its complete hash; existing files are never deleted or overwritten.
 
+## P: live Push
+
+P is the third network mode (`N → A → P → Off`). It joins the saved home Wi-Fi
+and keeps the receiver running while the user reads or browses the library, so
+a sender paired earlier in N can replace Push at any time.
+
+- `GET /lan/v2/hello` and `GET /lan/v1/capabilities` report `live:true` while
+  P runs, `live:false` in N.
+- `uploads/start` with `kind=push` needs no batch: an authenticated client is
+  admitted directly. The usual checks still apply: revision, size, Markdown
+  validation, receipts and recovery.
+- `kind=file` stays `409 not_accepted`. Batch offers, pairing reveals and batch
+  status return `409 live_mode`, because pairing and files belong to N.
+- `position=top|keep` (Push only; default `top`) tells a reader that has this
+  Push open where to land after the update: page 1, or the page whose text
+  context still exists in the new body (page 1 when it does not). A file with
+  `position`, or any other value, is `400 invalid_metadata`. The hint is not
+  part of the fingerprint. It is stored with the request, so a replay must
+  repeat it, or it gets `409 request_conflict`. It is persisted in byte 493 of
+  the 1024-byte receipt and Push records. That byte was zero before, and older
+  firmware does not read it.
+- A body identical to the current Push is the usual receipt-backed no-op and
+  does not refresh the screen.
+- On the reader, an open Push page refreshes immediately with one full
+  refresh. A library or another book is never interrupted; the Push row
+  updates in place.
+
+P stops when the user leaves it in Settings, at shutdown, when the last paired
+sender revokes itself, or automatically. It is restored after reboot unless it
+stopped automatically.
+
+| Condition | Battery | External power |
+| --- | --- | --- |
+| Battery below 50 % | pause: radio off, P stays selected; resumes when external power is connected | — |
+| No association within 30 s of starting | stop: `Connection failed` | retry after 1 → 2 → 5 min, then every 5 min |
+| Association lost for 60 s | stop: `Connection lost` | same backoff |
+
+Unplugging during a reconnect starts the 30 s or 60 s deadline at that moment.
+An unknown PMIC reading neither pauses nor applies the battery deadlines. A
+stopped P shows its reason in Settings, and its icon at the bottom-left of
+the library and reader is struck through. Selecting P without saved Wi-Fi, a paired sender or a card
+shows the reason without enabling the radio.
+
 ## Discovery
 
-While N is active the reader advertises `paperdiy-<deviceId>.local` and
+While N or P is active the reader advertises `paperdiy-<deviceId>.local` and
 `_paperdiy._tcp` on port 8443 with TXT `id=<deviceId>`. The sender sends RFC
 6762 one-shot queries (QU bit, ephemeral port; two 1-second attempts) to
 `224.0.0.251:5353` and accepts IPv4 A records with an exact owner name; AAAA is
@@ -232,6 +277,7 @@ python3 tools/paperdiy_lan.py status
 | Command | Purpose |
 | --- | --- |
 | `push SOURCE [--title T]` | Queue the Push replacement, then offer. |
+| `push SOURCE --live [--position top\|keep]` | Reader in P: replace Push now, without a batch. Paired senders only; exits 2 unless delivered. |
 | `send SOURCE…` | Queue ordinary files, then offer. |
 | `sync [--batch-id ID] [--reoffer]` | Continue a batch, resolve uncertain entries, offer what is queued. `--reoffer` includes entries that were `not_accepted`. |
 | `pair --label NAME [--host IP]` | First contact with no entries (also re-pairs a reader). |
@@ -251,6 +297,13 @@ N` (default 600) bounds the whole run including uploads; `--wait ≤ --budget �
 - Batches take queued entries in order, up to 8 and at most one Push; a second
   Push waits. `blocked` and `not_accepted` entries are excluded until the user
   decides, and no entry is offered twice in one run.
+- `push --live` reads `live` from capabilities first. If P is off, it reports
+  `live_unavailable` and leaves the entry queued; the next live push
+  supersedes it. Unlike N, a body that was never started is rebased onto the
+  reader's current revision, so the newest body wins. A
+  `revision_conflict` from a race at `uploads/start` is retried once with the
+  new revision, then reported as `blocked`. `send`, `pair` and a first contact
+  against a reader in P report `live_mode`.
 - First contact returns early with `awaiting_pairing_confirmation` and `sas`
   under `--json` (the agent must relay the number); human output prints the
   number and keeps waiting.
