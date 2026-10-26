@@ -187,11 +187,8 @@ same directory, for example:
 ```
 
 Safely eject the card before returning it to the device. Do not modify a card
-while the firmware owns its mounted filesystem. USB book transfer is paused
-and disabled by default; use AP upload or a safely removed card. CDC remains
-available, while MSC requires an explicit experimental build. See
-[USB ownership and recovery](development.md#usb-ownership-and-firmware-recovery)
-for the ownership contract and current hardware acceptance limits.
+while the firmware owns its mounted filesystem. The reader does not offer USB
+book transfer; use AP upload, LAN delivery or a safely removed card.
 
 ## Limits, validation and fallback
 

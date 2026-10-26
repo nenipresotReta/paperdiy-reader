@@ -57,7 +57,7 @@ A closes after five idle minutes. Background library polling does not extend the
 
 P is meant for a reader on external power. On battery it keeps the radio awake while you read; below 50 % it pauses until external power is connected, and it stops after 30 seconds without a connection, or 60 seconds after losing one, for example when you take the reader out of the house. On external power it keeps retrying (1, 2, then every 5 minutes). P is restored after a reboot unless it stopped by itself. Selecting P needs saved home Wi-Fi, a paired sender and an SD card; without one, Settings shows which one is missing.
 
-USB book transfer is paused and disabled by default because actual-SD USB failures remain unresolved. It is no longer a network mode; ordinary builds do not expose the card. CDC serial/programming remains available. Transfer books through A or a safely removed SD card. The retained MSC implementation requires an explicit experimental build; it is not normal user operation.
+USB is for the serial console and firmware flashing only; the reader never shows its card to a computer. Transfer books through A, N/P or a safely removed SD card.
 
 Inactive entries carry `¬`. Leaving settings closes N and A; P keeps running. After reboot, restored settings start with N/A inactive. USB attachment enables neither book transfer nor networking. Reading settings and shutdown-image management are available only through A.
 

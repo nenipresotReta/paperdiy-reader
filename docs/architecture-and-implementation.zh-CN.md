@@ -8,7 +8,7 @@
 
 PaperDIY Reader 在 ESP32-S3 M5Stack PaperDIY 上读取 FAT32 microSD 中的 EPUB、UTF-8 TXT 和 Markdown，使用 540 × 960 单色 framebuffer，为每本书保留一个源位置。
 
-`main.cpp` 调用 `appSetup()`、`appLoop()`。应用任务管理导航、当前文档、本地 FAT、设置和网络轮询。打开、分页、缓存发布使用协作式状态机，共用应用任务，并非后台 RTOS 任务。仅显式启用实验 MSC 时，TinyUSB 才在独立 SDK 任务调用其回调，使用独立存储所有权边界和互斥锁。
+`main.cpp` 调用 `appSetup()`、`appLoop()`。应用任务管理导航、当前文档、本地 FAT、设置和网络轮询。打开、分页、缓存发布使用协作式状态机，共用应用任务，并非后台 RTOS 任务。
 
 ```mermaid
 flowchart TD
@@ -24,7 +24,7 @@ flowchart TD
     Open --> Cache[完整缓存 / 提取与页面检查点]
     App --> Network[AP WebUI / 配对 LAN 服务]
     Network --> Delivery[事务 store]
-    App --> USB[实验 raw USB 存储]
+    App --> USB[USB CDC 控制台 / 刷写]
     App --> Power[时钟 / 休眠 / 唤醒策略]
 ```
 
@@ -42,14 +42,13 @@ flowchart TD
 | 规范页起点 | 最多 65,536 个 32 位偏移，payload 256 KiB |
 | 可见临时窗口 | 最多 32 个测量页起点 |
 | 增量存储传输 | 每步最多 8 KiB；文件系统调用仍同步 |
-| 实验 USB MSC 回调 | 最多 4 KiB，扇区 512 字节 |
 | 锁定 SDK 的 TLS 缓冲 | 内部堆 33,434 字节，另加上下文/密码状态 |
 | SD 总线 | SPI GPIO 39/40/38，CS 47；卡检测 GPIO 48 低有效 |
 | 导航 | GPIO 4、3，低有效 |
 
 这些上限不保证全部最大值同时可用。导入器在 DOM 分配前检查可用 PSRAM 和最大空闲块。即使 PSRAM 有空闲，无线、TLS、DMA 也可能需要内部 RAM。
 
-[platformio.ini](../platformio.ini)锁定 Espressif 平台和 M5 依赖。目标使用 GNU++11、原生 USB（`ARDUINO_USB_MODE=0`），启动启用 CDC。MSC 导书默认关闭，仅显式私人实验 `PAPERDIY_EXPERIMENTAL_USB_MSC=1` 构建可开放；普通构建隐藏 U 并拒绝 `USB_ENTER`。[partitions.csv](../partitions.csv)是分区权威。存在 OTA 槽，但未实现 OTA 固件端点。
+[platformio.ini](../platformio.ini)锁定 Espressif 平台和 M5 依赖。目标使用 GNU++11、原生 USB（`ARDUINO_USB_MODE=0`），启动启用 CDC。USB 只承载串口控制台和刷写，卡从不作为 USB 大容量存储暴露。[partitions.csv](../partitions.csv)是分区权威。存在 OTA 槽，但未实现 OTA 固件端点。
 
 ## 3. 模块索引与所有权
 
@@ -77,7 +76,7 @@ flowchart TD
 | [lan_service.cpp](../src/lan_service.cpp)、[lan_tls.cpp](../src/lan_tls.cpp)、[lan_nvs.cpp](../src/lan_nvs.cpp) | 配对 TLS 服务及遇错关闭的凭据持久化 |
 | [live_policy.h](../src/live_policy.h) | P 生命周期：连接时限、外接电源退避、低电量暂停 |
 | [delivery_store.h](../src/delivery_store.h)、[delivery_store_sd.cpp](../src/delivery_store_sd.cpp) | 不覆盖文件、有界 Push 替换、回执 |
-| [usb_storage.cpp](../src/usb_storage.cpp)、[usb_transport.cpp](../src/usb_transport.cpp) | 独占 raw 卡访问、原生 CDC/MSC 生命周期 |
+| [usb_transport.cpp](../src/usb_transport.cpp) | 供睡眠策略使用的 USB 主机连接状态 |
 | [power.cpp](../src/power.cpp)、[card_sleep.h](../src/card_sleep.h) | CPU 档位、唤醒源、卡中断恢复、充电 LED |
 
 仅头文件组件向主机故障注入测试暴露存储、分配、时钟和字形接口。全局当前文档仍有耦合。未来拆为 `DocumentSession`/`CacheStore` 时应保留现有所有权边界，不能引入并发 FAT 访问。
@@ -253,13 +252,13 @@ WebUI 先上传原书，再按服务端确认名称上传旁车，准备运行�
 
 翻页正常使用局刷；场景变化/周期清理保留必要全刷。状态区域（P 图标、电量、加载图标、阅读页脚、投递进度行）始终快速局刷，不计入也不触发周期全刷；几何/设置变化失效相应刷新基线。关机前等待面板完成。
 
-CPU 活动工作 240 MHz、普通空闲 80 MHz；USB 所有权到 raw 驱动释放前保持活动档。外电、无线、USB、输入/存储不稳定时阻止手动 light sleep。唤醒后重设按键/卡源，LED 跟随充电状态。这是软件策略，尚无待机电流/续航实测；唤醒边界见[电源](power.zh-CN.md)。
+CPU 活动工作 240 MHz、普通空闲 80 MHz。外电、无线、USB、输入/存储不稳定时阻止手动 light sleep。唤醒后重设按键/卡源，LED 跟随充电状态。这是软件策略，尚无待机电流/续航实测；唤醒边界见[电源](power.zh-CN.md)。
 
 ## 11. 网络与 USB
 
 ### AP WebUI
 
-普通网络状态显式为 Off、AP、STA/LAN；USB 存储保留为编译门禁后的实验状态。AP 提供英文设置、配网、上传、可选预处理；请求具有有界头/体、认证及上传状态。新文件不覆盖普通书，未完成传输留在自有临时文件，发布前校验。
+普通网络状态显式为 Off、AP、STA/LAN。AP 提供英文设置、配网、上传、可选预处理；请求具有有界头/体、认证及上传状态。新文件不覆盖普通书，未完成传输留在自有临时文件，发布前校验。
 
 关机图片在浏览器解码、适配显示、生成有界单色 `PDI1` 并预览。设备验证尺寸/头/CRC，写非活动槽、回读，再保存选择。移除先保存 none，不修改编译私人回退。
 
@@ -273,25 +272,19 @@ STA 仅显式选择时开服务。设备 P-256 证书、TLS 1.2 ECDHE-ECDSA/AES-
 
 store 同时一个事务、块最多 4 KiB、验证每 poll 最多 8 KiB、十六个客户端隔离回执。普通传输新建书；Push 最多 16 KiB Markdown，用两个自有槽覆盖版本而不累计。只有两个固定摘要进度记录，绕过普通逐版本缓存；历史由发送端保留。模糊发布报告 Uncertain，以字节核验恢复。协议/skill 见 [LAN 协议](lan-protocol.zh-CN.md)。
 
-### USB 存储
+### USB
 
-实际 SD 故障仍未解决，因此 USB 导书暂停。默认构建保留 CDC，但关闭 MSC、隐藏 U、拒绝 `USB_ENTER`。下述实现仅供显式启用的实验构建；RAM 盘验收不能证明 raw SD 可靠性。
+USB 只用作串口控制台和刷写通道，阅读器从不把卡暴露给电脑。书籍通过 A、N/P 或安全取出的卡传入。早先的实验性大容量存储模式已经删除，因为实际 SD 断连问题一直没有解决。
 
-HostOwned、ExitRequested、Fault 时主机拥有整张 raw 卡。暴露扇区前应用保存进度、关本地句柄、撤销 lease、卸载 FAT。同步、禁止移除、合法主机弹出控制释放。断线、挂起、bus reset、空闲不能自行把 FAT 交回设备。
+运行时控制台是原生 TinyUSB CDC（`ARDUINO_USB_MODE=0`）。以 1200 波特率打开它会重启进 ROM 下载器，下载器枚举为另一个 USB-Serial/JTAG 设备，所以刷写不需要 BOOT 键。分区表不变时，仅更新应用会保留 NVS，不授权擦除整片 flash。已配置或挂起的 USB 主机会阻止浅睡眠。
 
-所有权阻止本地书/缓存/图片、普通关机、远程 bootloader reset。独立 RAM 盘构建不触碰卡。读写回调有字节上限，但 SD/SDK 调用仍可能阻塞。首次错误诊断保留起因，不用后续 NotReady 覆盖。
-
-软件 reset/刷写前必须安全弹出并释放 raw 驱动。原生 CDC 的 1200 baud 路径也受此门禁。分区不变时 app-only 更新保留 NVS，不授权全 flash 擦除。
-
-真实卡可靠性问题仍未解决，MSC 默认关闭。
-
-经检查的构建替换修正锁定 SDK 的 card 生命周期问题：原代码先释放 card，再由 SPI 锁析构访问它。构建编译修正 SD 源副本，不改已安装 framework。读写回调释放互斥后让出一个 RTOS tick，busy/retry 路径也如此。源码与链接 ELF 检查确认，同任务 USB 队列发送原本已是零等待，因此没有应用 SDK 队列补丁。RTC 中 88 字节双槽 CRC 日志跨支持的 reset 保存阶段/计数/栈水位，不写 NVS。这些措施不能证明断连根因，单次 SDK SPI 仍可能阻塞。
+经检查的构建替换修正锁定 SDK 的 card 生命周期问题：原代码先释放 card，再由 SPI 锁析构访问它。构建编译修正后的 SD 源副本，不改已安装 framework，并作用于每次卸载，包括拔卡。另一个经检查的替换串行化 TinyUSB 设备控制器的 FIFO-empty 掩码更新，CDC 控制台依赖它；见[开发](development.zh-CN.md)。
 
 ## 12. 测试与限制
 
 原生 CMake 测试使用 ASan/UBSan、断言以及可注入的存储、分配器和时钟接口。Python 生成合成夹具并检查字库资源；Node 运行浏览器代码。覆盖损坏输入、分配失败、章节与分页恢复、规范文本/PDS 一致性、排版几何、协议重放和存储所有权。诊断命令与设备夹具需要显式构建标志。
 
-实际 SD 断连问题尚未解决，因此 USB 存储默认关闭。RAM 盘测试不能证明真实卡的可靠性。其他限制包括完整 EPUB/CSS 兼容性、通用字库覆盖、复杂日文 shaping、FAT 断电耐久性，以及尚未测量的待机电流。
+没有 USB 大容量存储。其他限制包括完整 EPUB/CSS 兼容性、通用字库覆盖、复杂日文 shaping、FAT 断电耐久性，以及尚未测量的待机电流。
 
 ## 13. 构建、发布与后续边界
 
@@ -304,7 +297,7 @@ CI 检查公开源准入、固件、sanitizer、生成资源、源再现。上�
 后续架构应保留：
 
 1. **文档会话：**共同拥有文本、语义、精确锚点、活动任务，明确 teardown。
-2. **存储所有者：**统一本地 FAT/raw USB、lease、故障恢复权威。
+2. **存储所有者：**统一本地 FAT、lease、故障恢复权威。
 3. **导入状态：**只恢复认证完成工作，部分文本不发布完整身份。
 4. **排版约定：**水平/竖排/对象共享测绘并显式限制驻留跨度。
 5. **传输 store：**分离 AP 配网、LAN 授权、耐久传输语义。

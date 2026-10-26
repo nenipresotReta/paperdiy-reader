@@ -8,7 +8,7 @@ This report describes module ownership, data formats, algorithms and failure beh
 
 PaperDIY Reader reads EPUB, UTF-8 TXT and Markdown from a FAT32 microSD card on the ESP32-S3 M5Stack PaperDIY. It uses a 540 × 960 monochrome framebuffer and preserves one source position per book.
 
-`main.cpp` calls `appSetup()` and `appLoop()`. The application task owns navigation, the current document, local FAT operations, settings and network polling. Opening, pagination and cache publication use cooperative state machines. They share the application task; they are not background RTOS tasks. When experimental MSC is explicitly enabled, TinyUSB invokes its callbacks on a separate SDK task, with a separate storage ownership boundary and mutex.
+`main.cpp` calls `appSetup()` and `appLoop()`. The application task owns navigation, the current document, local FAT operations, settings and network polling. Opening, pagination and cache publication use cooperative state machines. They share the application task; they are not background RTOS tasks.
 
 ```mermaid
 flowchart TD
@@ -24,7 +24,7 @@ flowchart TD
     Open --> Cache[complete cache / extraction and page checkpoints]
     App --> Network[AP WebUI / paired LAN service]
     Network --> Delivery[transaction store]
-    App --> USB[experimental raw USB storage]
+    App --> USB[USB CDC console / flashing]
     App --> Power[clock / sleep / wake policy]
 ```
 
@@ -42,14 +42,13 @@ Rendering reads state but does not persist progress. Navigation and lifecycle op
 | Canonical page starts | At most 65,536 32-bit offsets: 256 KiB payload |
 | Visible provisional window | At most 32 measured page starts |
 | Incremental storage transfer | At most 8 KiB per step; filesystem calls remain synchronous |
-| Experimental USB MSC callback | At most 4 KiB, 512-byte sectors |
 | TLS buffers on the pinned SDK | 33,434 bytes of internal heap, plus contexts and crypto state |
 | SD bus | SPI GPIO 39/40/38, CS 47; detect GPIO 48 active low |
 | Navigation | GPIO 4 and 3, active low |
 
 These limits do not guarantee that every maximum fits simultaneously. The importer checks available PSRAM and its largest free block before DOM allocation. Radio, TLS and DMA allocations can require internal RAM even when PSRAM is free.
 
-[platformio.ini](../platformio.ini) pins the Espressif platform and M5 dependencies. The target uses GNU++11 and native USB (`ARDUINO_USB_MODE=0`) with CDC enabled at boot. MSC book transfer is disabled by default; only an explicit private experimental `PAPERDIY_EXPERIMENTAL_USB_MSC=1` build can expose it. Ordinary builds hide U and reject `USB_ENTER`. [partitions.csv](../partitions.csv) is the partition authority. OTA slots exist, but an OTA firmware endpoint is not implemented.
+[platformio.ini](../platformio.ini) pins the Espressif platform and M5 dependencies. The target uses GNU++11 and native USB (`ARDUINO_USB_MODE=0`) with CDC enabled at boot. USB carries only the serial console and flashing; the card is never exposed as USB mass storage. [partitions.csv](../partitions.csv) is the partition authority. OTA slots exist, but an OTA firmware endpoint is not implemented.
 
 ## 3. Source map and ownership
 
@@ -77,7 +76,7 @@ These limits do not guarantee that every maximum fits simultaneously. The import
 | [lan_service.cpp](../src/lan_service.cpp), [lan_tls.cpp](../src/lan_tls.cpp), [lan_nvs.cpp](../src/lan_nvs.cpp) | Paired TLS service and fail-closed credential persistence |
 | [live_policy.h](../src/live_policy.h) | P lifecycle: connection deadlines, external-power backoff, low-battery pause |
 | [delivery_store.h](../src/delivery_store.h), [delivery_store_sd.cpp](../src/delivery_store_sd.cpp) | Non-overwriting files, bounded Push replacement and receipts |
-| [usb_storage.cpp](../src/usb_storage.cpp), [usb_transport.cpp](../src/usb_transport.cpp) | Exclusive raw-card access and native CDC/MSC lifecycle |
+| [usb_transport.cpp](../src/usb_transport.cpp) | USB host connection state for the sleep policy |
 | [power.cpp](../src/power.cpp), [card_sleep.h](../src/card_sleep.h) | CPU profiles, wake sources, card interrupt restoration and charging LED |
 
 Header-only components expose storage, allocator, clock and glyph interfaces to native fault-injection tests. Global current-document state remains a coupling point. A future `DocumentSession`/`CacheStore` split should preserve these existing ownership boundaries rather than introduce concurrent FAT access.
@@ -253,13 +252,13 @@ Native/WASM tests compare complete PDT bytes and decoded semantic meaning. A loo
 
 Partial refresh is the normal page path. Scene changes and periodic cleanup retain necessary full refreshes. Status areas (P icon, battery, loading icon, reader footer, delivery progress lines) always refresh fast and neither count toward nor trigger the periodic full refresh; geometry/settings changes invalidate the relevant refresh baseline. Panel completion is awaited before shutdown.
 
-The CPU uses 240 MHz for active work and 80 MHz in ordinary idle. USB storage ownership holds the active profile until raw-driver release. External power, live radio, USB and unstable input/storage block manual light sleep. Button/card wake sources are rearmed after wake; the LED follows charging status. These are software policies. No measured standby current or battery-life claim is available. See [power](power.md) for the tested wake boundary.
+The CPU uses 240 MHz for active work and 80 MHz in ordinary idle. External power, live radio, USB and unstable input/storage block manual light sleep. Button/card wake sources are rearmed after wake; the LED follows charging status. These are software policies. No measured standby current or battery-life claim is available. See [power](power.md) for the tested wake boundary.
 
 ## 11. Networking and USB
 
 ### AP WebUI
 
-Normal network state is explicit: Off, AP or STA/LAN. USB storage remains an experimental state behind the compile gate. The AP supplies English settings, provisioning, uploads and optional preparation. Requests have bounded headers/bodies, authentication and upload state. New files are published without overwriting ordinary books. Incomplete transfers stay owned temporaries and are checked before publication.
+Normal network state is explicit: Off, AP or STA/LAN. The AP supplies English settings, provisioning, uploads and optional preparation. Requests have bounded headers/bodies, authentication and upload state. New files are published without overwriting ordinary books. Incomplete transfers stay owned temporaries and are checked before publication.
 
 Shutdown artwork conversion occurs in the browser: decode a local image, fit the display, generate bounded monochrome `PDI1` and preview it. The device validates dimensions/header/CRC, writes the inactive artwork slot, verifies it and then persists selection. Removal persists “none”; it does not modify a compiled private fallback.
 
@@ -273,25 +272,19 @@ The separate `paperlan` namespace stores identity and at most four client verifi
 
 The store permits one transaction, chunks up to 4 KiB, verification up to 8 KiB per poll and sixteen client-scoped receipts. Ordinary delivery creates a new book. Push is at most 16 KiB Markdown in two owned slots; revisions overwrite rather than accumulate. Only two fixed digest-bound progress records exist, and Push bypasses ordinary per-revision caches. The sender retains history. Ambiguous publication is reported as Uncertain and recovered by checking bytes. Protocol and skill integration are in [LAN protocol](lan-protocol.md).
 
-### USB storage
+### USB
 
-USB book transfer is paused because actual-SD failures remain unresolved. Default builds retain CDC but disable MSC, hide U and reject `USB_ENTER`. The implementation below is retained only for explicitly enabled experimental builds; RAM-disk acceptance does not establish raw SD reliability.
+USB is the serial console and the flashing path; the reader never exposes the card to a computer. Books arrive through A, N/P or a safely removed card. An earlier experimental mass-storage mode was removed because actual-SD disconnects stayed unresolved.
 
-The host owns the entire raw card in HostOwned, ExitRequested and Fault. The application saves progress, closes local handles, invalidates leases and unmounts FAT before exposing sectors. Synchronization, removal prevention and valid host eject govern release. Disconnect, suspend, bus reset or idle time alone cannot return FAT ownership to the reader.
+The runtime console is native TinyUSB CDC (`ARDUINO_USB_MODE=0`). Opening it at 1200 baud reboots into the ROM downloader, which enumerates as a separate USB-Serial/JTAG device, so flashing needs no BOOT key. Application-only updates preserve NVS when the partition table is unchanged; they do not authorize whole-flash erasure. A configured or suspended USB host blocks light sleep.
 
-Ownership blocks local book/cache/art access, ordinary shutdown and remote bootloader reset. A separate RAM-disk build tests MSC without touching the card. Read/write callbacks are bounded in bytes, but SD/SDK calls can still block in time. First-failure diagnostics retain the initiating error instead of replacing it with later NotReady responses.
-
-Safe eject and raw-driver release are required before software reset or flashing. The native CDC recovery path uses 1200 baud only after this guard. Application-only updates preserve NVS when the partition table is unchanged; they do not authorize whole-flash erasure.
-
-Final raw-card acceptance remains open. The earlier successful transfer and subsequent failures are separate evidence; the current attempt is recorded in section 12.
-
-A checked build-time replacement corrects the pinned SDK card-lifetime issue: the card was freed before the SPI lock destructor used it. It compiles an SD source copy without modifying the installed framework. Read/write callbacks release their mutex and yield one RTOS tick, including the busy/retry path. Source and linked-ELF inspection showed that own-task USB queue sends already use zero wait; no SDK queue patch is applied. An 88-byte, two-slot CRC journal in RTC memory records stage/counters/stack watermark across supported resets without NVS writes. These measures do not establish the cause of the disconnect; a single SDK SPI call can still block.
+A checked build-time replacement corrects the pinned SDK card-lifetime issue: the card was freed before the SPI lock destructor used it. It compiles an SD source copy without modifying the installed framework and applies to every unmount, including card removal. A second checked replacement serializes the TinyUSB device controller's FIFO-empty mask updates that the CDC console relies on; see [development](development.md).
 
 ## 12. Tests and limits
 
 Native CMake tests use ASan/UBSan, assertions and injectable storage, allocator and clock interfaces. Python generates synthetic fixtures and checks font assets; Node runs the browser code. Coverage includes malformed input, allocation failures, chapter and page recovery, canonical-text/PDS parity, layout geometry, protocol replay and storage ownership. Diagnostic commands and device fixtures require explicit build flags.
 
-USB mass storage is disabled by default because actual-SD disconnects remain unresolved. RAM-disk tests do not establish real-card reliability. Other limits include full EPUB/CSS compatibility, universal font coverage, complex Japanese shaping, FAT power-loss durability and unmeasured standby current.
+There is no USB mass storage. Other limits include full EPUB/CSS compatibility, universal font coverage, complex Japanese shaping, FAT power-loss durability and unmeasured standby current.
 
 ## 13. Build, publication and next boundaries
 
@@ -304,7 +297,7 @@ Application code is MIT. MD4C, TinyXML2, Noto/STIX derivatives, Unicode data, th
 The next architectural boundaries to preserve are:
 
 1. **Document session:** own text, semantics, exact anchor and active jobs together, with explicit teardown.
-2. **Storage owner:** one authority for local FAT versus raw USB, leases and failure recovery.
+2. **Storage owner:** one authority for local FAT, leases and failure recovery.
 3. **Importer state:** resume only authenticated completed work; never publish partial text as a complete identity.
 4. **Layout contract:** shared measurement/painting and explicit resident-span bounds across horizontal, vertical and object paths.
 5. **Transport store:** separate AP provisioning, LAN authorization and durable delivery semantics.
