@@ -38,9 +38,3 @@ void logSDCacheInfo();
 // New physical insertion resets the per-session SD speed fallback.
 void resetSDSpeed();
 
-// The caller must stop all other SD users before begin, and synchronize and
-// uninitialize the USB raw backend before end. Local opens/scans are gated.
-uint32_t sdStorageFrequency();
-bool beginUsbStorageHandoff();
-bool endUsbStorageHandoff();
-bool sdOwnedByUsb();

@@ -2,7 +2,6 @@
 #include <Arduino.h>
 #include <M5Unified.h>
 #include "usb_transport.h"
-#include "usb_storage.h"
 #include <driver/gpio.h>
 #include <esp_sleep.h>
 #include <esp_timer.h>
@@ -120,7 +119,7 @@ void idlePower(bool stableScene, bool inputIdle, int stableCardLevel, bool radio
       (stats.powerSource & 3) || !(stats.powerSource & 4);
   bool cardStable = digitalRead(48) == stableCardLevel;
   auto plan = idlePolicy.plan(millis(),
-      {stableScene && cardStable, inputIdle, rawPowerKeys() != 0, sleepBlocked, radioActive,usb_storage::hostOwnsCard()});
+      {stableScene && cardStable, inputIdle, rawPowerKeys() != 0, sleepBlocked, radioActive});
   if (!plan.idle) {
     cpuFrequency(240);
     delay(10);

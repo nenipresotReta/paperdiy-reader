@@ -15,7 +15,6 @@
 #include "resume_store.h"
 #include "reader_typography.h"
 #include "storage_validation.h"
-#include "usb_storage.h"
 #include "usb_transport.h"
 #include "lan_service.h"
 #include "live_policy.h"
@@ -46,10 +45,6 @@ uint32_t errorUntil=0,lastBatteryRefresh=0;
 uint32_t lastCardCheck=0;
 int cardLevel=HIGH,pendingCardLevel=HIGH;
 bool shutdownRequested=false;
-bool usbWaiting=false;
-uint64_t usbLastWritten=0;
-uint64_t usbLastRead=0;
-uint32_t usbLastWriteAt=0;
 // ---- P: persistent STA receiver for live Push ------------------------------
 live_policy::Machine live;
 int liveBattery=-1;
@@ -108,7 +103,7 @@ void liveEnter(){
   const auto in=liveInputs();
   size_t senders=0;
   if(!networkStaConfigured())liveFail(live_policy::Reason::NoWifi);
-  else if(!sdOK||sdOwnedByUsb())liveFail(live_policy::Reason::NoCard);
+  else if(!sdOK)liveFail(live_policy::Reason::NoCard);
   else if(lan_service::pairedCount(senders)!=lan_service::RegistryStatus::Ok||!senders)liveFail(live_policy::Reason::NoSender);
   else {live.start(in);liveSaveSelected(true);liveApply();}
   liveLabels();liveLog();
@@ -137,62 +132,6 @@ void liveTick(){
     else if(screen==Screen::Reading)updateBookFooter();
   }
 }
-bool releaseUsb(){
-  if(!sdOwnedByUsb()){usbWaiting=false;return true;}
-  usb_storage::poll();
-  if(usb_storage::hostOwnsCard()){
-    usb_storage::requestExit();settingsUsbStatus="Eject on computer";
-    if(screen==Screen::Settings)updateSettingsNetwork();
-    return false;
-  }
-  if(!usb_storage::finish())return false;
-  usb_transport::setStorageOwned(false);
-  usbWaiting=false;
-  settingsUsbStatus=endUsbStorageHandoff()?"Ejected":"SD card mount failed";
-  lan_service::storageChanged();
-  return true;
-}
-void beginUsb(){
-  if(sdOwnedByUsb()||!usbWaiting||!usb_transport::hostConnected())return;
-  // U may have been armed on battery before a host arrives. Raise the clock
-  // before SD teardown/raw initialization and the first advertised callback.
-  powerActivity();
-  const uint32_t frequency=sdStorageFrequency();
-  lan_service::storageStop();
-  usb_transport::setStorageOwned(true);
-  usb_storage::diagnosticMark(usb_storage::DiagnosticStage::Prepare);
-  if(!beginUsbStorageHandoff()){
-    usb_transport::setStorageOwned(false);
-    usbWaiting=false;settingsUsbStatus="Cannot release SD";return;
-  }
-  if(!usb_storage::begin(frequency)){
-    if(!usb_storage::hostOwnsCard()){
-      usb_storage::finish();usb_transport::setStorageOwned(false);endUsbStorageHandoff();
-      lan_service::storageChanged();
-    }
-    usbWaiting=false;settingsUsbStatus="USB storage unavailable";return;
-  }
-  usbWaiting=false;usbLastWritten=0;usbLastRead=0;usbLastWriteAt=0;
-  settingsUsbStatus=usb_storage::ramTestMode()?"Test disk connected":"Connected";
-}
-void pollUsb(){
-  if(networkMode!=NetworkMode::Usb&&!sdOwnedByUsb())return;
-  const String before=settingsUsbStatus;
-  beginUsb();usb_storage::poll();
-  const auto state=usb_storage::status();
-  if(state.bytesWritten!=usbLastWritten||state.bytesRead!=usbLastRead)powerActivity();
-  usbLastRead=state.bytesRead;
-  if(state.bytesWritten!=usbLastWritten){usbLastWritten=state.bytesWritten;usbLastWriteAt=millis();}
-  if(state.state==usb_storage::State::Ejected&&!usb_storage::hostOwnsCard()){
-    releaseUsb();
-  }else if(state.state==usb_storage::State::Fault)settingsUsbStatus="Storage error; eject";
-  else if(state.state==usb_storage::State::ExitRequested)settingsUsbStatus="Eject on computer";
-  else if(state.state==usb_storage::State::HostOwned){
-    settingsUsbStatus=usbLastWriteAt&&uint32_t(millis()-usbLastWriteAt)<1000?"Writing":
-      !usb_transport::hostConnected()?"Eject on computer":usb_storage::ramTestMode()?"Test disk connected":"Connected";
-  }
-  if(before!=settingsUsbStatus&&screen==Screen::Settings)updateSettingsNetwork();
-}
 void IRAM_ATTR cardChanged(){storage_validation::signalCardEvent();}
 uint8_t keyMask(){
   uint8_t mask=(M5.BtnA.isPressed()?1:0)|(M5.BtnB.isPressed()?2:0);
@@ -207,15 +146,6 @@ bool loadingCancelProbe(){
   const auto action=buttons.update(keyMask(),millis(),false,false);
   if(action==controls::Action::Shutdown||M5.BtnPWR.wasClicked())shutdownRequested=true;
   return shutdownRequested;
-}
-void logUsbDiagnostics(){
-  const auto d=usb_storage::diagnostics();
-  Console.printf("USB_DIAG reset=%u previous_valid=%u previous_stage=%s previous_reads=%u previous_writes=%u previous_stack=%u stage=%s reads=%u writes=%u stack=%u\n",
-    unsigned(d.resetReason),unsigned(d.previousValid),
-    usb_storage::diagnosticStageName(usb_storage::DiagnosticStage(d.previous.stage)),
-    unsigned(d.previous.readCalls),unsigned(d.previous.writeCalls),unsigned(d.previous.usbStackLow),
-    usb_storage::diagnosticStageName(usb_storage::DiagnosticStage(d.current.stage)),
-    unsigned(d.current.readCalls),unsigned(d.current.writeCalls),unsigned(d.current.usbStackLow));
 }
 void discardLoadingInput(bool acceptPowerRequest=true){
   M5.update();buttons.discardUntilReleased(millis());
@@ -232,7 +162,6 @@ bool leaveReading(){
   showError("Progress not saved; try again");return false;
 }
 void library(bool scene=true){
-  if(!releaseUsb())return;
   // P is the one network mode that outlives Settings.
   if(networkMode!=NetworkMode::Live){networkStop();networkMode=NetworkMode::Off;}
   if(!leaveReading())return;
@@ -243,7 +172,6 @@ void library(bool scene=true){
 void shutdown(){
   powerActivity();
   shutdownRequested=false;
-  if(!releaseUsb()){discardLoadingInput(false);return;}
   if(screen==Screen::Reading&&!pageOffsets.empty()){
     // Snapshot the current book and text offset before drawing the sleep image.
     uint32_t offset=currentReadingOffset();
@@ -280,7 +208,7 @@ void finishOpen(SDOpenResult result){
   discardLoadingInput();
 }
 void openSelected(bool forceReflow=false){
-  if(sdOwnedByUsb()||screen==Screen::Loading||openSDPending())return;
+  if(screen==Screen::Loading||openSDPending())return;
   if(settingsSelected){screen=Screen::Settings;showSettings(true);return;}
   if(!leaveReading())return;
   if(!sdOK){showLoading();scanSD();library();discardLoadingInput();return;}
@@ -317,7 +245,6 @@ void dispatch(controls::Action action){
     if(action==Action::Confirm){library();return;}
     if(action==Action::Previous){
       NetworkMode next=nextNetworkMode(networkMode);
-      if(networkMode==NetworkMode::Usb&&!releaseUsb())return;
       if(networkMode==NetworkMode::Live)liveLeave();
       networkStop();
       cancelContentPrefetch();
@@ -368,22 +295,12 @@ void diagnosticCommand(const String& line){
   device_loop_trace::CommandScope traceCommand(line.c_str(),line.length());
   using controls::Action;
   if(screen==Screen::Loading&&line!="STATUS"&&line!="SCREEN"&&line!="POWER_STATUS"&&
-      line!="USB_STATUS"&&line!="CANCEL_OPEN"){
+      line!="CANCEL_OPEN"){
     Console.println("INPUT_IGNORED loading=1");return;
   }
   if(line=="CANCEL_OPEN"){
     if(openSDPending())cancelOpenSD();
     Console.println("OPEN_CANCEL_REQUESTED");return;
-  }
-  if(line=="USB_STATUS"){
-    const auto state=usb_storage::status();
-    Console.printf("USB_STATUS supported=%u ram=%u state=%u owned=%u connected=%u read=%llu written=%llu error=%u first_error=%u backend_reason=%s card_event=%u card_present=%u\n",
-      unsigned(usb_storage::available()),unsigned(usb_storage::ramTestMode()),unsigned(state.state),
-      unsigned(sdOwnedByUsb()),unsigned(usb_transport::hostConnected()),
-      (unsigned long long)state.bytesRead,(unsigned long long)state.bytesWritten,unsigned(state.error),
-      unsigned(state.firstError),usb_storage::backendReasonName(state.backendReason),
-      unsigned(storage_validation::cardEventPending()),unsigned(digitalRead(48)==LOW));
-    logUsbDiagnostics();return;
   }
   if(line=="LAN_STATUS"){lan_service::printStatus();return;}
   if(line=="LIVE_STATUS"){
@@ -392,20 +309,6 @@ void diagnosticCommand(const String& line){
       unsigned(networkMode),unsigned(live.state()),unsigned(live.reason()),unsigned(live.radioWanted()),unsigned(networkStaRunning()),
       unsigned(in.connected),unsigned(in.supply),in.battery,unsigned(live.retryIn(in.now)),unsigned(resume_state::liveSelected(prefs)));
     return;
-  }
-  if(line=="USB_ENTER"){
-    if(!usb_storage::available()){Console.println("USB_DISABLED experimental=0");return;}
-    if(!leaveReading())return;
-    if(networkMode==NetworkMode::Live)liveLeave();
-    networkStop();settingsSelected=true;settingsId=SettingsId::Network;screen=Screen::Settings;
-    networkMode=NetworkMode::Usb;usbWaiting=usb_storage::available();
-    settingsUsbStatus=usbWaiting?"Connect USB":"USB storage unavailable";beginUsb();showSettings(true);return;
-  }
-  if(line=="USB_EXIT"){if(releaseUsb()){networkStop();networkMode=NetworkMode::Off;showSettings(true);}return;}
-  // A block-device host owns the entire card until safe eject. Even explicit
-  // diagnostics may not access FAT, redraw SD artwork or remount it meanwhile.
-  if(sdOwnedByUsb()&&line!="STATUS"&&line!="SCREEN"&&line!="POWER_STATUS"){
-    Console.println("USB_BUSY eject_on_computer=1");return;
   }
 #ifdef PAPERDIY_NETWORK_TESTS
   if(network_device_test::command(line))return;
@@ -535,12 +438,10 @@ void diagnostics(){
 }
 void appSetup(){
   device_loop_trace::mark(device_loop_trace::Stage::Boot);
-  usb_storage::initializeDiagnostics();
   Serial.begin(115200);delay(300);
   auto cfg=M5.config();cfg.clear_display=false;cfg.internal_imu=false;cfg.internal_rtc=false;cfg.internal_mic=false;cfg.internal_spk=false;
   cfg.pmic_button=true;cfg.fallback_board=m5::board_t::board_M5PaperDIY;M5.begin(cfg);displayInit();
   Console.printf("BOOT PaperDIY-Reader " PAPERDIY_VERSION " board=%d screen=%dx%d psram=%u network=off\n",M5.getBoard(),M5.Display.width(),M5.Display.height(),ESP.getPsramSize());
-  logUsbDiagnostics();
   if(M5.getBoard()!=m5::board_t::board_M5PaperDIY||M5.Display.width()!=540||M5.Display.height()!=960){Console.println("FATAL board/display mismatch");while(true)delay(1000);}
   // Keep the original namespace and bookmark keys: app-only upgrades preserve progress.
   if(initializeProgress())reader_settings::load(prefs);
@@ -652,7 +553,6 @@ void appLoop(){
 #endif
     delay(1);return;
   }
-  device_loop_trace::mark(Stage::BeforeUsb);pollUsb();device_loop_trace::mark(Stage::AfterUsb);
   device_loop_trace::mark(Stage::BeforeStorage);lan_service::storagePoll();device_loop_trace::mark(Stage::AfterStorage);
   if(lan_service::takePushUpdated()){
     livePushUpdated();
@@ -676,7 +576,7 @@ void appLoop(){
       if(changed)updateSettingsNetwork();else if(delivery)updateSettingsDelivery();
     }
   }
-  if(!sdOwnedByUsb()&&millis()-lastCardCheck>=250){
+  if(millis()-lastCardCheck>=250){
     lastCardCheck=millis();int level=digitalRead(48);
     if(level!=cardLevel)powerActivity();
     if(level==pendingCardLevel&&(level!=cardLevel||storage_validation::cardEventPending())){

@@ -435,8 +435,6 @@ int main() {
   assert(nextNetworkMode(NetworkMode::Sta) == NetworkMode::Ap);
   assert(nextNetworkMode(NetworkMode::Ap) == NetworkMode::Live);
   assert(nextNetworkMode(NetworkMode::Live) == NetworkMode::Off);
-  // USB storage is diagnostics-only; A never enters it and leaves it for Off.
-  assert(nextNetworkMode(NetworkMode::Usb) == NetworkMode::Off);
   assert(bodyFontHasGlyph('&'));
 
   // One virtual settings book leads the library; real books 0..20 fill rows 1..21.

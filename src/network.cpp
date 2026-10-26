@@ -155,7 +155,7 @@ bool parseUnsigned(const String& value,uint32_t& number){
   }
   number=result;return true;
 }
-bool cardReady(){return sdOK&&!sdOwnedByUsb()&&digitalRead(48)==LOW&&SD.cardType()!=CARD_NONE;}
+bool cardReady(){return sdOK&&digitalRead(48)==LOW&&SD.cardType()!=CARD_NONE;}
 uint64_t freeBytes(){
   if(!cardReady())return 0;
   const uint64_t total=SD.totalBytes(),used=SD.usedBytes();

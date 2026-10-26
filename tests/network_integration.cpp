@@ -35,7 +35,6 @@ size_t selectedBook=0;
 String sdError;
 unsigned scans=0;
 bool scanSD(){++scans;return sdOK;}
-bool sdOwnedByUsb(){return false;}
 namespace lan_service {
 unsigned starts=0,stops=0;String lastAddress;bool canStart=true,lastLive=false;
 bool start(const char* address,bool live){++starts;lastAddress=address;lastLive=live;return canStart;}
@@ -382,7 +381,7 @@ void browserPrepareAssets(){
   const auto previous=cookie();networkApply(NetworkMode::Ap);
   for(const auto& asset:assets)assert(request(asset.path,previous).code==401);
   networkApply(NetworkMode::Sta);assert(!WebServer::current);
-  networkApply(NetworkMode::Usb);assert(!WebServer::current);
+  networkApply(NetworkMode::Live);assert(!WebServer::current);
   networkApply(NetworkMode::Off);assert(!WebServer::current);
   std::cout<<"network: browser preparation assets are AP-only, authenticated, immutable flash responses\n";
 }
@@ -558,7 +557,7 @@ void credentialsAndStation(){
   assert(WiFi.joinedSsid=="legacy network");
   networkStop();prefs.blobs=committed;prefs.shortRead=true;networkApply(NetworkMode::Sta);
   assert(WiFi.joinedSsid=="legacy network");
-  networkApply(NetworkMode::Usb);assert(!networkActive()&&!WebServer::current&&WiFi.currentMode==WIFI_OFF);
+  networkApply(NetworkMode::Off);assert(!networkActive()&&!WebServer::current&&WiFi.currentMode==WIFI_OFF);
   networkStop();prefs={};networkApply(NetworkMode::Sta);
   assert(!settingsStaConfigured&&!networkActive()&&!WebServer::current&&WiFi.currentMode==WIFI_OFF);
   std::cout<<"network: atomic credentials, legacy fallback and STA receiver lifecycle\n";
