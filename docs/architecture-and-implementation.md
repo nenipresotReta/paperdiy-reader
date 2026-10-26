@@ -258,7 +258,7 @@ The CPU uses 240 MHz for active work and 80 MHz in ordinary idle. External power
 
 ### AP WebUI
 
-Normal network state is explicit: Off, AP or STA/LAN. The AP supplies English settings, provisioning, uploads and optional preparation. Requests have bounded headers/bodies, authentication and upload state. New files are published without overwriting ordinary books. Incomplete transfers stay owned temporaries and are checked before publication.
+Normal network state is explicit: Off, AP, STA/LAN for N, or a persistent STA/LAN for P. The AP supplies English settings, provisioning, uploads and optional preparation. Requests have bounded headers/bodies, authentication and upload state. New files are published without overwriting ordinary books. Incomplete transfers stay owned temporaries and are checked before publication.
 
 Shutdown artwork conversion occurs in the browser: decode a local image, fit the display, generate bounded monochrome `PDI1` and preview it. The device validates dimensions/header/CRC, writes the inactive artwork slot, verifies it and then persists selection. Removal persists “none”; it does not modify a compiled private fallback.
 
@@ -266,7 +266,7 @@ Shutdown artwork conversion occurs in the browser: decode a local image, fit the
 
 The STA service opens only when selected. It uses a device P-256 certificate, TLS 1.2 ECDHE-ECDSA/AES-128-GCM and exact certificate-DER SHA-256 pinning before sender credentials or HTTP bytes. Bearer authorization is separate. AP cookies and provisioning routes do not apply to LAN clients.
 
-The receiver lives only on Settings with N active. Every delivery is an offered batch of 1–8 entries that the user accepts with one short A+B; uploads outside the accepted batch are refused, and the accepted set ends with the N session. An unknown sender's first batch pairs it through a commit/reveal short authentication string shown on the reader, so pairing needs no QR, camera or clipboard. The bounded packed-entry parser ([lan_batch.h](../src/lan_batch.h)) runs before authentication and is fuzzed. While N is active the reader answers mDNS for `paperdiy-<deviceId>.local` and `_paperdiy._tcp`; the device ID is the certificate fingerprint prefix. Paired senders are listed, removed or forgotten from the AP WebUI.
+In N the receiver lives only on Settings with N active. Every delivery is an offered batch of 1–8 entries that the user accepts with one short A+B; uploads outside the accepted batch are refused, and the accepted set ends with the N session. An unknown sender's first batch pairs it through a commit/reveal short authentication string shown on the reader, so pairing needs no QR, camera or clipboard. The bounded packed-entry parser ([lan_batch.h](../src/lan_batch.h)) runs before authentication and is fuzzed. While N is active the reader answers mDNS for `paperdiy-<deviceId>.local` and `_paperdiy._tcp`; the device ID is the certificate fingerprint prefix. Paired senders are listed, removed or forgotten from the AP WebUI. P keeps the same receiver running outside Settings, but only for Push from senders already paired in N; batches and pairing are refused there (see [LAN protocol](lan-protocol.md#p-live-push)).
 
 The separate `paperlan` namespace stores identity and at most four client verifiers. Only an explicit missing record permits creation; read/type/commit errors fail closed. Uncertain credential writes invalidate the RAM registry until a verified reload. Client labels are bounded UTF-8 and exclude control characters.
 
