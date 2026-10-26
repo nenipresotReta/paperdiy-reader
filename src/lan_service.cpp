@@ -23,6 +23,9 @@ using delivery_store::Code;using delivery_store::State;using delivery_store::Kin
 lan_nvs::Store credentials;
 lan_auth::Registry registry;
 bool running=false,storageInitialized=false,libraryChanged=false,credentialsDraining=false,promptDirty=false,mdnsRunning=false;
+// P: paired senders may replace Push without a batch; batches and pairing
+// belong to N and are refused.
+bool liveMode=false,pushUpdated=false;
 std::string epoch,address,pushPath,publishedPath,transferClient,transferRequest;
 delivery_store::Receipt lastPublished;
 delivery_store::Metadata shown;
@@ -89,7 +92,10 @@ bool permittedAttempt(){
   return badAttempts<8;
 }
 bool admission(const delivery_store::Metadata& m){return m.kind==Kind::Push||sdBooks.size()<LIBRARY_LIMIT;}
-void published(const delivery_store::Receipt& receipt,const char* path){lastPublished=receipt;publishedPath=path?path:"";shown=receipt.metadata;shownState="Done";}
+void published(const delivery_store::Receipt& receipt,const char* path){
+  lastPublished=receipt;publishedPath=path?path:"";shown=receipt.metadata;shownState="Done";
+  if(receipt.metadata.kind==Kind::Push)pushUpdated=true;
+}
 void publishLibraryRow(){
   if(publishedPath.empty())return;
   const String selected=selectedBook<sdBooks.size()?sdBooks[selectedBook]:String();
@@ -327,6 +333,8 @@ lan_tls::Response request(const BoundedHttpRequest& incoming){
   std::string client;const bool authenticated=registry.authenticate(header(incoming,"authorization"),hash,client);
   // The first bearer use proves the sender stored its token; drop the RAM copy.
   if(authenticated&&!batch.issuedToken.empty()&&client==batch.issuedClient)wipe(batch.issuedToken);
+  const bool batchPath=incoming.path=="/lan/v2/batch/offer"||incoming.path=="/lan/v2/pair/reveal"||incoming.path=="/lan/v2/batch/status";
+  if(liveMode&&batchPath){if(!authenticated)++badAttempts;return error(409,"live_mode");}
   if(incoming.path=="/lan/v2/batch/offer"&&incoming.post){
     if(!authenticated&&!header(incoming,"authorization").empty()){++badAttempts;return error(401,"unauthorized");}
     return offer(incoming,authenticated,client);
@@ -337,7 +345,7 @@ lan_tls::Response request(const BoundedHttpRequest& incoming){
   if(incoming.path=="/lan/v2/hello"&&!incoming.post){
     if(!authenticated)++badAttempts;
     if(!store.pushRecovered())return error(503,"recovering");
-    return {200,"{\"v\":2,\"deviceId\":"+quoted(lan_tls::deviceId())+",\"pushRevision\":"+std::to_string(store.pushMetadata().revision)+",\"batchEntries\":8}"};
+    return {200,"{\"v\":2,\"deviceId\":"+quoted(lan_tls::deviceId())+",\"pushRevision\":"+std::to_string(store.pushMetadata().revision)+",\"batchEntries\":8,\"live\":"+(liveMode?"true":"false")+"}"};
   }
   if(incoming.path=="/lan/v2/batch/status"&&!incoming.post)return status(incoming,authenticated,client);
   if(incoming.path=="/lan/v1/clients/revoke"&&incoming.post){
@@ -350,7 +358,7 @@ lan_tls::Response request(const BoundedHttpRequest& incoming){
   if(incoming.path=="/lan/v1/capabilities"&&!incoming.post){
     if(!store.pushRecovered())return error(503,"recovering");
     return {200,"{\"v\":2,\"deviceId\":"+quoted(lan_tls::deviceId())+",\"pushRevision\":"+std::to_string(store.pushMetadata().revision)+
-      ",\"epoch\":"+quoted(epoch)+",\"receiptCapacity\":16,\"receiptScope\":\"client\",\"batchEntries\":8,\"limits\":{\"chunkBytes\":4096,\"pushBytes\":16384,\"txtBytes\":4194304,\"epubBytes\":67108864,\"markdownBytes\":1048576}}"};
+      ",\"epoch\":"+quoted(epoch)+",\"receiptCapacity\":16,\"receiptScope\":\"client\",\"batchEntries\":8,\"limits\":{\"chunkBytes\":4096,\"pushBytes\":16384,\"txtBytes\":4194304,\"epubBytes\":67108864,\"markdownBytes\":1048576},\"live\":"+(liveMode?"true":"false")+"}"};
   }
   if(incoming.path=="/lan/v1/push"&&!incoming.post){
     if(!store.pushRecovered())return error(503,"recovering");const auto& push=store.pushMetadata();
@@ -362,10 +370,15 @@ lan_tls::Response request(const BoundedHttpRequest& incoming){
     const auto kind=field(incoming,"kind");if(kind!="push"&&kind!="file")return error(400,"invalid_metadata");m.kind=kind=="push"?Kind::Push:Kind::File;
     const auto base=field(incoming,"baseRevision");
     if(!number(field(incoming,"size"),m.size)||(m.kind==Kind::Push?!number(base,m.baseRevision):!base.empty()))return error(400,"invalid_metadata");
+    if(hasField(incoming,"position")){
+      const auto position=field(incoming,"position");
+      if(m.kind!=Kind::Push||(position!="top"&&position!="keep"))return error(400,"invalid_metadata");
+      m.position=position=="keep";
+    }
     // A replay of a finished request returns its receipt; anything new must be
-    // part of the batch the user accepted in this N session.
+    // part of the batch the user accepted in this N session, or a Push in P.
     const auto previous=store.receipt(client,m.requestId);
-    if(previous.state==State::Unknown){
+    if(previous.state==State::Unknown&&!(liveMode&&m.kind==Kind::Push)){
       const auto* entry=acceptedEntry(client,m.requestId);
       if(!entry||entry->metadata.fingerprint!=m.fingerprint)return error(409,"not_accepted");
     }
@@ -436,7 +449,7 @@ bool storageBusy(){return storageInitialized&&(!delivery_store_sd::store().recov
 bool pushReady(){return storageInitialized&&delivery_store_sd::store().pushRecovered();}
 void storageStop(){delivery_store_sd::unmount();storageInitialized=false;}
 void storageChanged(){delivery_store_sd::invalidate();storageInitialized=false;pushPath.clear();publishedPath.clear();}
-bool start(const char* ip){
+bool start(const char* ip,bool live){
   stop();if(!ip||!sdOK||sdOwnedByUsb())return false;
   // A publication/receipt I/O failure may have left a durable intent. Explicit
   // N restart replays bounded recovery against that same final target; it must
@@ -444,7 +457,7 @@ bool start(const char* ip){
   if(delivery_store_sd::store().activeState()==State::Uncertain){delivery_store_sd::unmount();storageInitialized=false;}
   storagePoll();if(!delivery_store_sd::mounted()){storageInitialized=false;storagePoll();}
   if(!delivery_store_sd::mounted()||!credentials.open()||!registry.load(credentials)||!lan_tls::begin(credentials,request))return false;
-  address=ip;epoch=randomHex(16);badWindow=lastUi=millis();badAttempts=0;running=true;credentialsDraining=false;
+  address=ip;epoch=randomHex(16);badWindow=lastUi=millis();badAttempts=0;running=true;credentialsDraining=false;liveMode=live;
   shown={};shownState="Ready";progressBytes=0;clearBatch();
   startMdns();
   promptDirty=true;
@@ -452,7 +465,7 @@ bool start(const char* ip){
 }
 void stop(){
   stopMdns();
-  lan_tls::stop();running=false;clearBatch();credentials.close();
+  lan_tls::stop();running=false;liveMode=false;clearBatch();credentials.close();
   delivery_store_sd::store().stop();shown={};shownState.clear();
   transferClient.clear();transferRequest.clear();progressBytes=0;credentialsDraining=false;
   settingsLanType="";settingsLanName="";settingsLanState="";
@@ -529,6 +542,8 @@ bool poll(){
   settingsLanType=type.c_str();settingsLanName=name.c_str();settingsLanState=state.c_str();lastUi=millis();return true;
 }
 bool takeLibraryChanged(){const bool changed=libraryChanged;libraryChanged=false;return changed;}
+bool takePushUpdated(){const bool updated=pushUpdated;pushUpdated=false;return updated;}
+bool pushKeepsPosition(){return storageInitialized&&delivery_store_sd::store().pushMetadata().metadata.position==1;}
 
 // ---- sender management (AP WebUI; LAN service is stopped in AP mode) -------
 namespace {
@@ -558,6 +573,14 @@ RegistryStatus revokeClient(const std::string& clientId){
     return local.revoke(store,clientId)?RegistryStatus::Ok:RegistryStatus::Unavailable;
   });
 }
+RegistryStatus pairedCount(size_t& count){
+  count=0;
+  if(running){if(!registry.valid())return RegistryStatus::Unreadable;count=registry.count();return RegistryStatus::Ok;}
+  return withRegistry([&](lan_nvs::Store&,lan_auth::Registry& local,bool loaded){
+    if(!loaded)return RegistryStatus::Unreadable;
+    count=local.count();return RegistryStatus::Ok;
+  });
+}
 RegistryStatus forgetClients(){
   return withRegistry([&](lan_nvs::Store& store,lan_auth::Registry& local,bool){
     // Explicit repair: replaces even an unreadable record with an empty one.
@@ -567,7 +590,7 @@ RegistryStatus forgetClients(){
 #ifdef PAPERDIY_DIAGNOSTICS
 void printStatus(){
   const auto& store=delivery_store_sd::store();
-  Console.printf("LAN_STATUS active=%u recovered=%u push_revision=%u clients=%u state=%u received=%u batch=%s\n",unsigned(active()),unsigned(store.recovered()),store.pushMetadata().revision,unsigned(registry.count()),unsigned(store.activeState()),unsigned(store.acceptedBytes()),phaseName());
+  Console.printf("LAN_STATUS active=%u live=%u recovered=%u push_revision=%u clients=%u state=%u received=%u batch=%s\n",unsigned(active()),unsigned(liveMode),unsigned(store.recovered()),store.pushMetadata().revision,unsigned(registry.count()),unsigned(store.activeState()),unsigned(store.acceptedBytes()),phaseName());
 }
 #endif
 }

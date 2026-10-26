@@ -37,8 +37,8 @@ unsigned scans=0;
 bool scanSD(){++scans;return sdOK;}
 bool sdOwnedByUsb(){return false;}
 namespace lan_service {
-unsigned starts=0,stops=0;String lastAddress;bool canStart=true;
-bool start(const char* address){++starts;lastAddress=address;return canStart;}
+unsigned starts=0,stops=0;String lastAddress;bool canStart=true,lastLive=false;
+bool start(const char* address,bool live){++starts;lastAddress=address;lastLive=live;return canStart;}
 void stop(){++stops;}
 bool poll(){return false;}
 void storageChanged(){}

@@ -477,8 +477,68 @@ void ownAcceptedBatchCanBeReplaced(){
   const auto refused=startRaw(client,b);assert(refused.code==409&&refused.json.find("not_accepted")!=std::string::npos);
   assert(lan_service::acceptPrompt());upload(client,b,"B body");assert(text(settingsLanState)=="Done · 1 file");
 }
+// P: a paired sender replaces Push with no batch; everything else stays in N.
+lan_tls::Response startLive(const Client& client,const delivery_store::Metadata& m,const char* position){
+  Fields fields={{"requestId",m.requestId},{"fingerprint",m.fingerprint},{"kind",m.kind==Kind::Push?"push":"file"},{"name",m.name},{"title",m.title},{"size",std::to_string(m.size)},{"sha256",m.sha256},{"baseRevision",m.kind==Kind::Push?std::to_string(m.baseRevision):""}};
+  if(position)fields.push_back({"position",position});
+  return request("/lan/v1/uploads/start",client.auth(),true,fields);
+}
+void finishLive(const Client& client,const delivery_store::Metadata& m,const std::string& body){
+  for(size_t at=0;at<body.size();at+=4096)assert(chunk(client,m,at,body.substr(at,4096)).code==200);
+  assert(request("/lan/v1/uploads/commit",client.auth(),true,{{"requestId",m.requestId}}).code==200);
+  for(unsigned i=0;i<100&&delivery_store_sd::store().activeState()==State::Checking;++i)tick();
+  assert(delivery_store_sd::store().receipt(client.id,m.requestId).state==State::Complete);
+  tick(1000);
+}
+void liveModeAdmitsPushOnly(){
+  reset();const Client client=pair();
+  assert(request("/lan/v2/hello").json.find("\"live\":false")!=std::string::npos);
+  assert(request("/lan/v1/capabilities",client.auth()).json.find("\"live\":false")!=std::string::npos);
+  lan_service::stop();
+  size_t count=0;assert(lan_service::pairedCount(count)==RegistryStatus::Ok&&count==1);
+  assert(lan_service::start("127.0.0.1",true));settle();
+  assert(lan_service::pairedCount(count)==RegistryStatus::Ok&&count==1);
+  assert(request("/lan/v2/hello").json.find("\"live\":true")!=std::string::npos);
+  assert(request("/lan/v1/capabilities",client.auth()).json.find("\"live\":true")!=std::string::npos);
+  lan_service::takePushUpdated();
+  const std::string body="Synthetic live Push";const auto keep=metadata(client,50,body);
+  const auto started=startLive(client,keep,"keep");assert(started.code==200&&!lan_service::promptPending());
+  finishLive(client,keep,body);
+  assert(lan_service::takePushUpdated()&&!lan_service::takePushUpdated()&&lan_service::pushKeepsPosition());
+  assert(sdBooks.size()==1&&lan_service::isPushPath(sdBooks.front().c_str()));
+  // A replay must repeat its hint; the receipt answers either way it matches.
+  assert(startLive(client,keep,"keep").json.find("\"complete\"")!=std::string::npos);
+  const auto changed=startLive(client,keep,"top");assert(changed.code==409&&changed.json.find("request_conflict")!=std::string::npos);
+  const auto omitted=startLive(client,keep,nullptr);assert(omitted.code==409&&omitted.json.find("request_conflict")!=std::string::npos);
+  // The default is the first page; the same body publishes nothing new.
+  const auto top=metadata(client,51,"Second synthetic Push",Kind::Push,1);
+  assert(startLive(client,top,nullptr).code==200);finishLive(client,top,"Second synthetic Push");
+  assert(lan_service::takePushUpdated()&&!lan_service::pushKeepsPosition());
+  const auto same=metadata(client,52,"Second synthetic Push",Kind::Push,2);
+  assert(startLive(client,same,"keep").code==200);finishLive(client,same,"Second synthetic Push");
+  assert(!lan_service::takePushUpdated());
+  const auto stale=metadata(client,53,"Stale",Kind::Push,1);
+  const auto conflict=startLive(client,stale,nullptr);assert(conflict.code==409&&conflict.json.find("revision_conflict")!=std::string::npos);
+  const auto bogus=metadata(client,54,"Bogus",Kind::Push,2);
+  assert(startLive(client,bogus,"middle").code==400&&startLive(client,bogus,"").code==400);
+  // Files, batches and pairing belong to N.
+  const auto file=metadata(client,55,"Synthetic file",Kind::File);
+  assert(startLive(client,file,"top").code==400);
+  const auto refused=startLive(client,file,nullptr);assert(refused.code==409&&refused.json.find("not_accepted")!=std::string::npos);
+  const auto batch=offer(client,{file});assert(batch.code==409&&batch.json.find("live_mode")!=std::string::npos);
+  const auto contacted=contact("Live stranger");assert(contacted.offer.code==409&&contacted.offer.json.find("live_mode")!=std::string::npos);
+  assert(!lan_service::promptPending());
+  // A self-revocation leaves no paired sender, which ends P in the app.
+  assert(request("/lan/v1/clients/revoke",client.auth(),true,{{"clientId",client.id}}).code==200);
+  assert(lan_service::pairedCount(count)==RegistryStatus::Ok&&count==0);
+  // Back in N, a Push again needs an accepted batch.
+  lan_service::stop();assert(lan_service::start("127.0.0.1"));settle();const Client again=pair("Second synthetic client");
+  const auto queued=metadata(again,56,"Queued",Kind::Push,2);
+  const auto gated=startRaw(again,queued);assert(gated.code==409&&gated.json.find("not_accepted")!=std::string::npos);
+}
 #ifndef PAPERDIY_LAN_WIRE
 int main(){
+  liveModeAdmitsPushOnly();
   ownAcceptedBatchCanBeReplaced();
   firstContactPairingAndAuthentication();wrongRevealExpiryAndCancel();rateAndCredentialFailure();savedPairWithFailedReadbackRemainsRecoverable();
   batchConsentGatesUploads();malformedOffers();firstContactWithEntriesPairsAndAccepts();senderManagementForWebUi();mdnsFollowsTheReceiver();
@@ -489,7 +549,7 @@ int main(){
 #else
 // Line protocol for tests/lan_client.py: the real Python sender drives these
 // real handlers with its exact request bytes. Responses are framed as lan_tls
-// frames them. Commands: REQ <hex>, ACCEPT, PROMPT, TICK <ms>, OFF, ON.
+// frames them. Commands: REQ <hex>, ACCEPT, PROMPT, TICK <ms>, OFF, ON, LIVE.
 #include <iostream>
 #include <string>
 namespace {
@@ -514,6 +574,7 @@ int main(){
     }else if(command=="TICK"){tick(uint32_t(std::stoul(argument)));std::cout<<"OK"<<std::endl;}
     else if(command=="OFF"){lan_service::stop();std::cout<<"OK"<<std::endl;}
     else if(command=="ON"){std::cout<<(lan_service::start("127.0.0.1")?"OK":"NO")<<std::endl;settle();}
+    else if(command=="LIVE"){std::cout<<(lan_service::start("127.0.0.1",true)?"OK":"NO")<<std::endl;settle();}
     else std::cout<<"ERR"<<std::endl;
   }
   lan_service::stop();
