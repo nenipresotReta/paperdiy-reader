@@ -46,6 +46,10 @@ bool saveReadingProgress();
 void retainReadingAnchor(uint32_t offset);
 // UINT32_MAX means no current readable page; normal redraw does not move it.
 uint32_t currentReadingOffset();
+// Before reopening a replaced Push: the next managed-Push index relocates to
+// the current page's context once, or starts at page 1 when it is gone.
+void retainLivePushPosition();
+void clearLivePushPosition();
 extern bool progressSaveFailed;
 extern bool bookEnglishHyphens;
 extern text_language::Language bookLanguage;

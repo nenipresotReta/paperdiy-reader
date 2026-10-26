@@ -268,6 +268,38 @@ void managedProgressRegression(){
  assert(!open(1,std::string(managed_progress::MAX_BYTES+1,'x'))&&prefs.values==ordinary);
  clearMarkdown();bookMarkdown=false;bookMarkupFallback=false;
 }
+void livePushRelocation(){
+ clearMarkdown();bookDocument.clear();reader_content::clear();prefs=Preferences{};assert(initializeProgress());
+ auto open=[&](unsigned slot,const std::string& source){
+  clearMarkdown();setBook(source);bookIdentity=slot?"/.paperdiy/lan/push1.md":"/.paperdiy/lan/push0.md";
+  bookMarkdown=true;bookMarkupFallback=false;bookEnglishHyphens=true;bookLanguage=text_language::Language::EnglishUS;
+  return indexBook(false,true,nullptr,true);
+ };
+ auto document=[](const std::string& lead){
+  std::string source="# Live board\n\n"+lead;
+  for(unsigned line=0;line<90;++line)source+="Entry "+std::to_string(1000+line)+" keeps a distinct synthetic sentence.\n\n";
+  return source;
+ };
+ const std::string first=document("");
+ assert(open(0,first));for(unsigned i=0;i<4;++i)assert(turnReaderPage(1));
+ const uint32_t old=currentReadingOffset();assert(old>0);
+ const std::string marker=first.substr(old,40);
+ // keep: an inserted lead paragraph moves the text; the reader follows it.
+ const std::string edited=document("A new synthetic paragraph arrives before every entry.\n\n");
+ retainLivePushPosition();assert(open(1,edited));
+ assert(currentReadingOffset()==edited.find(marker)&&currentReadingOffset()!=old);
+ // The anchor is one-shot: the next new body without it starts at page 1.
+ assert(open(0,document("Third revision.\n\n"))&&currentReadingOffset()==0);
+ // keep with the context gone, and top, both start at page 1.
+ for(unsigned i=0;i<3;++i)assert(turnReaderPage(1));
+ retainLivePushPosition();
+ std::string other="# Unrelated\n\n";for(unsigned line=0;line<60;++line)other+="Completely different synthetic words "+std::to_string(line)+".\n\n";
+ assert(open(1,other)&&currentReadingOffset()==0);
+ for(unsigned i=0;i<2;++i)assert(turnReaderPage(1));
+ retainLivePushPosition();clearLivePushPosition();
+ assert(open(0,document("Fourth revision.\n\n"))&&currentReadingOffset()==0);
+ clearMarkdown();bookMarkdown=false;bookMarkupFallback=false;
+}
 void workBudgetRegression(){
  // Model a 10 ms RTOS sleep and 30 seconds of many sub-8 ms pages. The same
  // work budget spans every page and measures from the actual wake-up time.
@@ -361,7 +393,7 @@ void settingsReflowRegression(){
  reader_settings::current()={};clearMarkdown();bookMarkdown=false;bookMarkupFallback=false;
 }
 int main(){
- managedProgressRegression();
+ managedProgressRegression();livePushRelocation();
  windowedContentRegression();
  progressiveIndexRegression();
  workBudgetRegression();
