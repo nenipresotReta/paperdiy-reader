@@ -4,6 +4,9 @@
 
 void networkApply(NetworkMode mode);
 void networkStop();
+// Saved STA credentials exist; reads NVS, does not touch the radio.
+bool networkStaConfigured();
+bool networkStaRunning();
 bool networkPoll();
 bool networkDeliveryChanged();
 bool networkApExpired();

@@ -695,11 +695,32 @@ void stationStorageRecovery(){
   assert(WiFi.currentMode==WIFI_STA&&!settingsStaConnected);
   WiFi.failOff=false;networkStop();assert(!networkActive()&&WiFi.currentMode==WIFI_OFF);
 }
+// P shares the STA radio but owns its deadlines and retries a failed receiver.
+void liveStation(){
+  reset();assert(!networkStaConfigured());
+  prefs.strings["wifiSsid"]="test network";prefs.strings["wifiPass"]="test-password";assert(networkStaConfigured());
+  networkApply(NetworkMode::Live);
+  assert(networkStaRunning()&&WiFi.currentMode==WIFI_STA&&WiFi.joinedSsid=="test network");
+  testClock+=60000;networkPoll();assert(networkStaRunning()&&settingsStaError.length()==0);
+  WiFi.connection=WL_CONNECTED;lan_service::canStart=false;const auto before=lan_service::starts;
+  assert(networkPoll());assert(lan_service::starts==before+1&&lan_service::lastLive);
+  testClock+=4999;networkPoll();assert(lan_service::starts==before+1);
+  testClock+=1;lan_service::canStart=true;networkPoll();assert(lan_service::starts==before+2);
+  testClock+=60000;networkPoll();assert(lan_service::starts==before+2);
+  WiFi.connection=WL_DISCONNECTED;assert(networkPoll());testClock+=120000;networkPoll();
+  assert(networkStaRunning()&&settingsStaError.length()==0);
+  networkStop();assert(!networkStaRunning()&&!networkActive());
+  // N keeps its own 20 s failure and reports receiver failures until reselected.
+  networkApply(NetworkMode::Sta);WiFi.connection=WL_CONNECTED;lan_service::canStart=false;
+  networkPoll();assert(!lan_service::lastLive);const auto nStarts=lan_service::starts;
+  testClock+=10000;networkPoll();assert(lan_service::starts==nStarts);
+  lan_service::canStart=true;networkStop();
+}
 }
 
 int main(){
  readerSettingsAndArtwork();preparedUploads();authenticationAndRandomness();browserPrepareAssets();qrAndTimeout();uploadsAndFilenames();uploadFailures();ownershipAndCatalog();
- credentialsAndStation();uploadRecovery();stationReconnectWindow();stationStorageRecovery();senderManagement();statusAndCleanup();networkStop();
+ credentialsAndStation();uploadRecovery();stationReconnectWindow();stationStorageRecovery();liveStation();senderManagement();statusAndCleanup();networkStop();
  assert(WebServer::constructions==WebServer::destructions);
  std::cout<<"network integration passed\n";
 }

@@ -3,7 +3,8 @@
 #include "settings_registry.h"
 #include "usb_features.h"
 
-enum class NetworkMode : uint8_t {Off,Sta,Ap,Usb};
+// Live is P: a persistent STA receiver that outlives Settings.
+enum class NetworkMode : uint8_t {Off,Sta,Ap,Usb,Live};
 
 inline NetworkMode nextNetworkMode(NetworkMode mode){
   switch(mode){
