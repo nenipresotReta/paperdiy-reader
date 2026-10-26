@@ -1,2 +1,2 @@
 #pragma once
-// This test adapter exercises application callbacks, not a USB stack/device.
+// This test exercises the application's USB connection logic, not a USB stack.

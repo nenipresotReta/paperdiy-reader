@@ -1,6 +1,8 @@
 #pragma once
-#include "usb_features.h"
 
+// USB is the serial console and the flashing path only. The SDK's 1200-baud
+// reboot into the ROM download mode stays enabled: it is how the reader is
+// flashed without the BOOT key.
 namespace usb_transport {
 struct Connection {
   bool configured=false,suspended=false;
@@ -10,10 +12,6 @@ struct Connection {
 // reset/deconfiguration cannot establish that a cable was physically removed.
 Connection connection();
 bool hostConnected();
-// Includes retained MSC ownership, even after host deconfiguration/suspend.
+// A configured or suspended host keeps the processor out of light sleep.
 bool blocksSleep();
-bool storageSupported();
-// Disable SDK 1200-baud/DTR reset shortcuts before handing SD to the host.
-// Re-enable only after safe eject has released raw media ownership.
-void setStorageOwned(bool owned);
 }
