@@ -70,6 +70,17 @@ size_t selectedIndex(const Record& value, const Books& books) {
     if (!std::strcmp(books[i].c_str(),value.path)) return i;
   return 0;
 }
+// P survives shutdown: it is restored on the next boot until the user leaves
+// it or it fails. Missing or unreadable values mean "not selected".
+template<class Preferences>
+bool liveSelected(Preferences& prefs) { return prefs.getUInt("liveP",0)==1; }
+template<class Preferences>
+bool saveLiveSelected(Preferences& prefs, bool selected) {
+  const uint32_t desired=selected?1:0;
+  if (prefs.getUInt("liveP",UINT32_MAX)==desired) return true;
+  return prefs.putUInt("liveP",desired)==sizeof(uint32_t) &&
+      prefs.getUInt("liveP",UINT32_MAX)==desired;
+}
 template<class Preferences>
 bool saveRotation(Preferences& prefs, bool rotated) {
   const uint32_t desired=rotated?1:0;

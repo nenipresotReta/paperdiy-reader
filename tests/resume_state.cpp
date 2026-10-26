@@ -50,6 +50,13 @@ int main(){
   prefs.failWrite=false;assert(saveRotation(prefs,true)&&prefs.getUInt("rot180",0)==1);
   writes=prefs.writes;assert(saveRotation(prefs,true)&&prefs.writes==writes);
   prefs.failRead=true;assert(!saveRotation(prefs,false));
+  prefs.failRead=false;assert(!liveSelected(prefs));
+  prefs.failWrite=true;assert(!saveLiveSelected(prefs,true)&&!liveSelected(prefs));
+  prefs.failWrite=false;assert(saveLiveSelected(prefs,true)&&liveSelected(prefs));
+  writes=prefs.writes;assert(saveLiveSelected(prefs,true)&&prefs.writes==writes);
+  assert(saveLiveSelected(prefs,false)&&!liveSelected(prefs));
+  prefs.values["liveP"]=7;assert(!liveSelected(prefs)); // only an exact 1 restores P
+  prefs.failRead=true;assert(!saveLiveSelected(prefs,true));
   Record tooLong;std::memset(tooLong.path,'a',sizeof(tooLong.path));
   assert(!save(prefs,tooLong));
   prefs.failRead=false;
