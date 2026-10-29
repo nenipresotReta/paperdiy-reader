@@ -60,9 +60,36 @@ The pinned M5Unified driver reads the power-button event from M5PM1 register
 PMIC event polling; it does not change the power button's independent hardware
 reset or power-off behavior.
 
-There is no automatic shutdown. Light sleep preserves the loaded book, page
-index, framebuffer, and navigation state. It must not restart the application,
-remount an unchanged SD card, or reload a book after each pause.
+Light sleep preserves the loaded book, page index, framebuffer, and navigation
+state. It must not restart the application, remount an unchanged SD card, or
+reload a book after each pause.
+
+### Automatic power-off
+
+On battery only, the reader powers off through the same path as an A+B
+shutdown: it saves the reading position and shutdown snapshot, draws the
+shutdown image and asks M5PM1 to cut power. The power key turns it on again.
+Two conditions trigger it (`auto_off.h`):
+
+- No activity for the selected time: 30 minutes by default, or 10, 15, 60 or
+  120 minutes, or never, chosen in the AP settings page. Key presses, card
+  changes, opening or refreshing a page and background indexing count as
+  activity; status-area refreshes and timer wakeups do not.
+- Three consecutive fuel-gauge readings at or below 5 %, taken 5 s apart. This
+  applies even when the timeout is set to never.
+
+Battery only means the checked `PWR_SRC` read that permits light sleep: a
+battery source, no 5VIN/5VINOUT and no USB host. External power never powers
+off automatically, and returning to battery restarts the timeout. P does not
+delay it. Loading a book, an open N or A radio, a delivery prompt or a running
+transfer postpones it until that work ends. A shutdown that does not complete
+(for example, when progress cannot be saved) is retried after 60 s.
+
+The timeout is byte 11 of the reader settings record, previously reserved zero.
+Its default code is 0, so a record with the default timeout is unchanged and
+older firmware still reads it; older firmware rejects a record with another
+timeout and uses default settings. Current draw in light sleep and after
+power-off has not been measured.
 
 ### Card interrupts across sleep
 
