@@ -6,6 +6,8 @@
 
 // A shutdown snapshot is one atomic NVS value. Legacy keys remain read-only
 // fallbacks until the first successful save; selected books are identified by path.
+// Wire version 3 is version 2 with the cursor on the Recent row; it is written
+// only then, so other snapshots stay readable by version 2 firmware.
 namespace resume_state {
 constexpr size_t MAX_PATH = 1024, HEADER = 8, MAX_BYTES = HEADER + MAX_PATH;
 constexpr const char* KEY = "resumeV2";
@@ -14,6 +16,7 @@ enum class ReadResult { Absent, Valid, Invalid };
 struct Record {
   uint8_t screen = 0;
   SettingsId settingsId = SettingsId::None;
+  bool recent = false; // the cursor is on Recent, which names path
   char path[MAX_PATH + 1] = {};
 };
 inline bool encode(const Record& value, uint8_t* bytes, size_t& size) {
@@ -21,7 +24,8 @@ inline bool encode(const Record& value, uint8_t* bytes, size_t& size) {
   if (!end || value.screen > 2 || !settings_registry::valid(value.settingsId)) return false;
   const size_t length = static_cast<const char*>(end) - value.path;
   if (length && value.path[0] != '/') return false;
-  bytes[0]='P'; bytes[1]='R'; bytes[2]='S'; bytes[3]=2;
+  if (value.recent && (!length || value.settingsId != SettingsId::None)) return false;
+  bytes[0]='P'; bytes[1]='R'; bytes[2]='S'; bytes[3]=value.recent?3:2;
   bytes[4]=value.screen; bytes[5]=uint8_t(value.settingsId);
   bytes[6]=uint8_t(length); bytes[7]=uint8_t(length >> 8);
   std::memcpy(bytes+HEADER,value.path,length); size=HEADER+length;
@@ -29,8 +33,9 @@ inline bool encode(const Record& value, uint8_t* bytes, size_t& size) {
 }
 inline bool decode(const uint8_t* bytes, size_t size, Record& value) {
   if (size<HEADER || size>MAX_BYTES || std::memcmp(bytes,"PRS",3) ||
-      (bytes[3]!=1 && bytes[3]!=2) || bytes[4]>2) return false;
+      bytes[3]<1 || bytes[3]>3 || bytes[4]>2) return false;
   if (bytes[3]==1 && bytes[5]>1) return false;
+  if (bytes[3]==3 && bytes[5]!=0) return false;
   // Older V2 snapshots may select the removed typography page. Restore the
   // remaining settings book without rewriting NVS or disturbing its book path.
   const auto id=bytes[3]==2 && bytes[5]==settings_registry::RETIRED_TYPOGRAPHY_ID
@@ -38,8 +43,8 @@ inline bool decode(const uint8_t* bytes, size_t size, Record& value) {
   if (!settings_registry::valid(id)) return false;
   const size_t length=size_t(bytes[6])|(size_t(bytes[7])<<8);
   if (length!=size-HEADER || (length && bytes[HEADER]!='/') ||
-      std::memchr(bytes+HEADER,0,length)) return false;
-  Record next; next.screen=bytes[4]; next.settingsId=id;
+      std::memchr(bytes+HEADER,0,length) || (bytes[3]==3 && !length)) return false;
+  Record next; next.screen=bytes[4]; next.settingsId=id; next.recent=bytes[3]==3;
   std::memcpy(next.path,bytes+HEADER,length); value=next;
   return true;
 }
@@ -51,7 +56,7 @@ ReadResult read(Preferences& prefs, Record& value) {
   if (!prefs.isKey(key)) return ReadResult::Absent;
   uint8_t bytes[MAX_BYTES]; const size_t size=prefs.getBytesLength(key);
   if (size<HEADER || size>sizeof(bytes) || prefs.getBytes(key,bytes,size)!=size ||
-      bytes[3]!=(newer?2:1) || !decode(bytes,size,value)) return ReadResult::Invalid;
+      (newer?bytes[3]<2:bytes[3]!=1) || !decode(bytes,size,value)) return ReadResult::Invalid;
   return ReadResult::Valid;
 }
 template<class Preferences>

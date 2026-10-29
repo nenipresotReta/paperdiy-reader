@@ -1,6 +1,6 @@
 #pragma once
 #include <Arduino.h>
-#include "settings_registry.h"
+#include "library_rows.h"
 
 // Values appear in STATUS/LIVE_STATUS output. 3 was USB storage (removed);
 // Live keeps 4 so logs stay comparable across versions.
@@ -17,6 +17,13 @@ inline NetworkMode nextNetworkMode(NetworkMode mode){
 
 extern bool settingsSelected,settingsRotated;
 extern SettingsId settingsId;
+// Recent repeats selectedBook while recentSelected; recentBookPath may name a
+// book that is not listed, which hides the row.
+extern bool recentSelected;
+extern String recentBookPath;
+library_rows::Layout libraryLayout();
+size_t libraryCursor();
+void selectLibraryCursor(size_t cursor);
 extern NetworkMode networkMode;
 extern String settingsApSsid,settingsApPassword,settingsApUrl;
 extern bool settingsApClientConnected;
@@ -30,7 +37,7 @@ extern String settingsLiveStatus;
 extern LiveIcon liveIcon;
 void updateSettingsDelivery();
 void showLibrary(bool sceneChange=true);
-void updateLibrarySelection(size_t oldSelection,bool oldSettings=false,SettingsId oldId=SettingsId::Network);
+void updateLibrarySelection(size_t oldCursor);
 void showBook(bool sceneChange=false);
 void updateBookFooter();
 void showSettings(bool sceneChange=true);

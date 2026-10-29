@@ -466,7 +466,7 @@ int main() {
   // In-page book selection refresh covers the two changed rows.
   selectedBook = 1;
   settingsSelected = false;
-  updateLibrarySelection(0, false);
+  updateLibrarySelection(1);
   assert(M5.Display.lastRefreshX == 16 && M5.Display.lastRefreshY == 95);
   assert(M5.Display.lastRefreshW == 508 && M5.Display.lastRefreshH == 78);
   selectedBook = 0;
@@ -479,7 +479,7 @@ int main() {
   assert(!black(17, 96));
   settingsSelected = false;
   selectedBook = 0;
-  updateLibrarySelection(0, true);
+  updateLibrarySelection(0);
   assert(M5.Display.lastRefreshX == 16 && M5.Display.lastRefreshY == 56);
   assert(M5.Display.lastRefreshW == 508 && M5.Display.lastRefreshH == 78);
 
@@ -492,6 +492,46 @@ int main() {
   selectedBook = 0;
   settingsSelected = false;
   showLibrary(true);
+
+  // Recent follows the settings book and repeats a listed book with a prefix;
+  // every list row moves down one, and the cursor follows the selected entry.
+  recentBookPath = sdBooks[4];
+  showLibrary(true);
+  assert(libraryLayout().hasRecent() && libraryLayout().count() == 27);
+  assert(libraryCursor() == 2);
+  assert(!black(17, 96) && black(17, 135));   // Recent row idle, book 0 selected
+  const int recentInk = countBlack(24, 96, 500, 133);
+  const int listedInk = countBlack(24, 291, 500, 328);  // list row 6, same book
+  assert(listedInk > 0 && recentInk > listedInk); // "Recent: " precedes the same name
+  writePGM("ui-simulation-library-recent.pgm");
+  selectLibraryCursor(1);
+  assert(recentSelected && !settingsSelected && selectedBook == 4 && libraryCursor() == 1);
+  updateLibrarySelection(2);
+  assert(black(17, 96) && !black(17, 135));
+  assert(M5.Display.lastRefreshX == 16 && M5.Display.lastRefreshY == 95);
+  assert(M5.Display.lastRefreshW == 508 && M5.Display.lastRefreshH == 78);
+  selectLibraryCursor(6);                     // the same book in the list
+  assert(!recentSelected && selectedBook == 4 && libraryCursor() == 6);
+  selectLibraryCursor(0);
+  assert(settingsSelected && !recentSelected && libraryCursor() == 0);
+  settingsSelected = false;
+  // Book 20 now starts page 2; page 1 ends with book 19.
+  selectLibraryCursor(22);
+  assert(selectedBook == 20);
+  showLibrary(true);
+  assert(black(17, 57) && countBlack(24, 57, 500, 94) > 0);
+  // A Recent book that is no longer listed hides the row; a stale selection
+  // falls back to the list row of the same book.
+  selectLibraryCursor(1);
+  recentBookPath = "/books/removed.epub";
+  assert(!libraryLayout().hasRecent() && libraryCursor() == 5);
+  recentBookPath = sdBooks[3];
+  assert(libraryCursor() == 6);               // flag set, but Recent names book 3
+  recentBookPath = "";
+  recentSelected = false;
+  selectedBook = 0;
+  showLibrary(true);
+  assert(black(17, 96));
 
   // Verify all complete settings scenes, including their actual physical panel
   // orientation. The network area is mirrored to y=448 when the controls move.
