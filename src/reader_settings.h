@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include "auto_off.h"
 
 // Independent, versioned NVS record. Never reuse Wi-Fi or bookmark keys.
 namespace reader_settings {
@@ -9,11 +10,13 @@ struct Config {
   bool punctuation=true,hyphenation=true,justify=true;
   uint8_t spacing=4,preset=1,refresh=1,ink=50,art=0;
   uint16_t doubleMs=200;
+  // Byte 11, once reserved zero: the default code keeps older records valid.
+  uint8_t autoOff=auto_off::DEFAULT_CODE;
 };
 inline Config& current(){static Config value;return value;}
 inline bool valid(const Config& c){
   return (c.spacing==0||c.spacing==2||c.spacing==4)&&c.preset<=2&&c.refresh<=2&&
-    c.ink<=100&&c.art<=3&&c.doubleMs>=100&&c.doubleMs<=400;
+    c.ink<=100&&c.art<=3&&c.doubleMs>=100&&c.doubleMs<=400&&auto_off::validCode(c.autoOff);
 }
 struct Geometry {int pixels,lineHeight,left,right;};
 inline Geometry geometry(){
@@ -27,16 +30,17 @@ inline void encode(const Config& c,uint8_t (&out)[WIRE_SIZE]){
   memset(out,0,sizeof(out));out[0]='P';out[1]='S';out[2]=1;
   out[3]=(c.punctuation?1:0)|(c.hyphenation?2:0)|(c.justify?4:0);
   out[4]=c.spacing;out[5]=c.preset;out[6]=c.refresh;out[7]=c.ink;out[8]=c.art;
-  out[9]=c.doubleMs&255;out[10]=c.doubleMs>>8;
+  out[9]=c.doubleMs&255;out[10]=c.doubleMs>>8;out[11]=c.autoOff;
   uint32_t sum=crc(out,16);for(int i=0;i<4;++i)out[16+i]=uint8_t(sum>>(8*i));
 }
 inline bool decode(const uint8_t* in,size_t size,Config& c){
   if(size!=WIRE_SIZE||in[0]!='P'||in[1]!='S'||in[2]!=1||(in[3]&~7u))return false;
-  for(int i=11;i<16;++i)if(in[i])return false;
+  for(int i=12;i<16;++i)if(in[i])return false;
   uint32_t sum=0;for(int i=0;i<4;++i)sum|=uint32_t(in[16+i])<<(8*i);
   if(crc(in,16)!=sum)return false;
   Config next;next.punctuation=in[3]&1;next.hyphenation=in[3]&2;next.justify=in[3]&4;
   next.spacing=in[4];next.preset=in[5];next.refresh=in[6];next.ink=in[7];next.art=in[8];next.doubleMs=in[9]|uint16_t(in[10])<<8;
+  next.autoOff=in[11];
   if(!valid(next))return false;c=next;return true;
 }
 template<class Store> bool load(Store& store){

@@ -7,11 +7,14 @@
 #include <esp_timer.h>
 #include "power.h"
 #include "idle_policy.h"
+#include "auto_off.h"
 #include "card_sleep.h"
 #include "storage_validation.h"
 
 namespace {
 idle_power::Policy idlePolicy;
+auto_off::Policy autoOffPolicy;
+int autoOffLevel = -1;
 IdlePowerStats stats;
 uint32_t lastSourceCheck = 0;
 bool sourceChecked = false;
@@ -95,9 +98,33 @@ uint8_t rawPowerKeys() {
 }
 
 void powerActivity() {
+  powerStatusWork();
+  autoOffPolicy.noteActivity(millis());
+}
+
+void powerStatusWork() {
   cpuFrequency(240);
   idlePolicy.noteActivity(millis());
 }
+
+auto_off::Trigger autoOffCheck(bool ready, uint32_t timeoutMs) {
+  checkPowerSource();
+  auto_off::Inputs in;
+  in.now = millis();
+  // The same checked battery-only condition that permits light sleep.
+  in.battery = !stats.usbHost && stats.sourceKnown &&
+      !(stats.powerSource & 3) && (stats.powerSource & 4);
+  in.ready = ready;
+  in.timeoutMs = timeoutMs;
+  if (autoOffPolicy.wantsSample(in)) {
+    autoOffLevel = M5.Power.getBatteryLevel();
+    autoOffPolicy.sample(in.now, autoOffLevel);
+  }
+  return autoOffPolicy.plan(in);
+}
+
+void autoOffFailed() { autoOffPolicy.noteFailedShutdown(millis()); }
+int autoOffBatteryLevel() { return autoOffLevel; }
 
 const IdlePowerStats& idlePowerStats() { return stats; }
 

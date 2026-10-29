@@ -147,17 +147,19 @@ void assertRejected(){
 void readerSettingsAndArtwork(){
  reset();
  assert(request("/api/settings","bad").code==401);
- auto result=request("/api/settings",cookie());assert(result.code==200&&result.body.indexOf("\"doubleMs\":200")>=0);
+ auto result=request("/api/settings",cookie());assert(result.code==200&&result.body.indexOf("\"doubleMs\":200")>=0&&result.body.indexOf("\"autoOff\":0")>=0);
  prefs.blobs["wifiCfgV1"]={1,2,3};prefs.strings["sdLast"]="book";
- std::map<std::string,String> values={{"punctuation","0"},{"spacing","2"},{"doubleMs","210"},{"preset","0"},{"hyphenation","0"},{"justify","0"},{"refresh","2"},{"ink","30"}};
+ std::map<std::string,String> values={{"punctuation","0"},{"spacing","2"},{"doubleMs","210"},{"preset","0"},{"hyphenation","0"},{"justify","0"},{"refresh","2"},{"ink","30"},{"autoOff","3"}};
  prefs.failWrite=true;assert(request("/api/settings",cookie(),HTTP_POST,values).code==500);assert(reader_settings::current().doubleMs==200);
  prefs.failWrite=false;assert(request("/api/settings",cookie(),HTTP_POST,values).code==200);
- assert(reader_settings::current().doubleMs==210&&reader_settings::current().preset==0);
+ assert(reader_settings::current().doubleMs==210&&reader_settings::current().preset==0&&reader_settings::current().autoOff==3);
  const auto saved=prefs.blobs;
- for(const auto& field:{"punctuation","spacing","doubleMs","preset","hyphenation","justify","refresh","ink"}){
+ for(const auto& field:{"punctuation","spacing","doubleMs","preset","hyphenation","justify","refresh","ink","autoOff"}){
   auto bad=values;bad[field]="256";if(std::string(field)=="doubleMs")bad[field]="401";
   assert(request("/api/settings",cookie(),HTTP_POST,bad).code==400&&prefs.blobs==saved);
+  bad.erase(field);assert(request("/api/settings",cookie(),HTTP_POST,bad).code==400&&prefs.blobs==saved);
  }
+ {auto bad=values;bad["autoOff"]="6";assert(request("/api/settings",cookie(),HTTP_POST,bad).code==400&&prefs.blobs==saved);}
  assert(prefs.blobs["wifiCfgV1"]==std::vector<uint8_t>({1,2,3})&&prefs.strings["sdLast"]=="book");
  reader_settings::current()={};assert(reader_settings::load(prefs));assert(reader_settings::current().doubleMs==210);
  const std::vector<String> books={"/Books/keep.epub"};sdBooks=books;SD.add("/Books/keep.epub","keep");

@@ -260,7 +260,7 @@ test('prepared upload requires its source EPUB before sending chunks', { timeout
 
 test('settings use saved values, retain edits on failure, and image actions are explicit', async () => {
   const elements = new Map();const el=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id)};
-  let config={punctuation:1,spacing:4,doubleMs:200,preset:1,hyphenation:1,justify:1,refresh:1,ink:50,art:0};
+  let config={punctuation:1,spacing:4,doubleMs:200,preset:1,hyphenation:1,justify:1,refresh:1,ink:50,art:0,autoOff:0};
   let fail=false;const posts=[];
   const context={document:{getElementById:el,createElement:()=>new Element()},history:{replaceState(){}},URLSearchParams,AbortController,crypto:webcrypto,Uint8Array,
     setTimeout(){return 1},clearTimeout(){},setInterval(){},
@@ -276,10 +276,12 @@ test('settings use saved values, retain edits on failure, and image actions are 
     }};
   vm.createContext(context);vm.runInContext(productionScript,context);await new Promise(setImmediate);
   assert.equal(el('doubleMs').value,'200');assert.equal(el('punctuation').checked,true);
+  assert.equal(el('autoOff0').checked,true);assert.ok(!el('autoOff3').checked);
+  el('autoOff0').checked=false;el('autoOff3').checked=true;
   el('doubleMs').value='210';el('spacing').value='2';el('punctuation').checked=false;
   const submit=el('settingsForm').handlers.get('submit');fail=true;await submit({preventDefault(){}});
   assert.equal(el('settingsMsg').textContent,'Storage unavailable');assert.equal(el('doubleMs').value,'210');assert.equal(config.doubleMs,200);assert.equal(el('settingsFields').disabled,false);
-  fail=false;await submit({preventDefault(){}});assert.equal(config.doubleMs,210);assert.equal(config.spacing,2);assert.equal(config.punctuation,0);
+  fail=false;await submit({preventDefault(){}});assert.equal(config.doubleMs,210);assert.equal(config.spacing,2);assert.equal(config.punctuation,0);assert.equal(config.autoOff,3);assert.equal(posts.at(-1).data.autoOff,'3');
   assert.equal(el('settingsMsg').textContent,'Saved.');assert.equal(posts.at(-1).url,'/api/settings');
   await el('artRemove').handlers.get('click')();assert.equal(config.art,3);assert.equal(el('artState').textContent,'No image');
   await el('artDefault').handlers.get('click')();assert.equal(config.art,0);

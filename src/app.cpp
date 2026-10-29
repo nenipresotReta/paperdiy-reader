@@ -575,6 +575,14 @@ void appSetup(){
   setSDOpenCancelProbe(loadingCancelProbe);
   powerActivity();
 }
+// Automatic power-off waits for foreground work, a transfer or an open N/A
+// radio to finish. P does not delay it.
+bool autoOffReady(){
+  return (screen==Screen::Library||screen==Screen::Reading||screen==Screen::Settings)&&
+    !shutdownRequested&&!openSDPending()&&buttons.idle()&&!rawPowerKeys()&&
+    pendingCardLevel==cardLevel&&!lan_service::storageBusy()&&!lan_service::promptPending()&&
+    networkMode!=NetworkMode::Sta&&networkMode!=NetworkMode::Ap;
+}
 void appLoop(){
   using device_loop_trace::Stage;
   device_loop_trace::mark(Stage::LoopBegin);
@@ -691,6 +699,15 @@ void appLoop(){
     }
   }
   if(screen==Screen::Error)cancelContentPrefetch();
+  const uint32_t offAfter=auto_off::timeoutMs(reader_settings::current().autoOff);
+  const auto offTrigger=autoOffCheck(autoOffReady(),offAfter);
+  if(offTrigger!=auto_off::Trigger::None){
+    if(offTrigger==auto_off::Trigger::Idle)Console.printf("SHUTDOWN_TRIGGER idle_min=%u\n",unsigned(offAfter/60000));
+    else Console.printf("SHUTDOWN_TRIGGER battery=%d\n",autoOffBatteryLevel());
+    shutdown();
+    autoOffFailed(); // only reached when the shutdown did not complete
+    return;
+  }
   device_loop_trace::mark(Stage::BeforeIdle);
   idlePower((screen==Screen::Library||screen==Screen::Reading||screen==Screen::Settings)&&
       pendingCardLevel==cardLevel&&
