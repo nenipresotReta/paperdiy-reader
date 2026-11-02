@@ -85,7 +85,7 @@ Header-only components expose storage, allocator, clock and glyph interfaces to 
 
 Boot validates the board and display, opens preferences, allocates the text buffer, scans the SD card and resolves the saved scene by book path. If the saved scene is reading, it restores the exact source position before replacing the retained shutdown overlay. Boot opening currently uses the synchronous wrapper; the normal loop-driven open path is cancellable at chapter boundaries.
 
-The library has 22 rows per screen. A/B moves through books or pages; a short A+B chord opens or returns; holding both for two seconds requests shutdown. Library double-click recognition defaults to a 200 ms release-to-release window. Reading clicks do not wait for that window. Single-key repeat starts after 600 ms and repeats every 350 ms where enabled.
+The library has 22 rows per screen. Below the settings entries, a Recent row repeats the most recently opened book other than Push. It is hidden while that book is not listed, and a shutdown with the cursor on it restores the cursor there. A/B moves through books or pages; a short A+B chord opens or returns; holding both for two seconds requests shutdown. Library double-click recognition defaults to a 200 ms release-to-release window. Reading clicks do not wait for that window. Single-key repeat starts after 600 ms and repeats every 350 ms where enabled.
 
 Rotation reverses library/reading navigation direction. Settings retain the physical N/A and R grouping; the default mode cycle is N → A → Off. New device settings belong in additional settings entries styled as books; detailed controls remain in the WebUI.
 

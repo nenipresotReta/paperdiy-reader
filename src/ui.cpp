@@ -19,6 +19,8 @@
 #endif
 bool settingsSelected=false,settingsRotated=false;
 SettingsId settingsId=SettingsId::Network;
+bool recentSelected=false;
+String recentBookPath;
 NetworkMode networkMode=NetworkMode::Off;
 String settingsApSsid,settingsApPassword,settingsApUrl;
 bool settingsApClientConnected=false;
@@ -235,16 +237,21 @@ void battery(){
   int raw=M5.Power.getBatteryLevel();bool charging=chargingNow();
   battery(batteryLevelForDisplay(raw,charging));
 }
-void row(size_t index,int rowIndex,bool chosen){
+String libraryName(size_t index){
+  String name=managed_progress::isPushPath(sdBooks[index].c_str())?String("Push"):sdBooks[index].substring(sdBooks[index].lastIndexOf('/')+1);
+  int dot=name.lastIndexOf('.');if(dot>0)name=name.substring(0,dot);
+  return name;
+}
+void nameRow(const String& name,int rowIndex,bool chosen){
   int y=TOP+rowIndex*ROW;
   M5.Display.fillRect(16,y,508,ROW,chosen?TFT_BLACK:TFT_WHITE);
   M5.Display.setTextColor(chosen?TFT_WHITE:TFT_BLACK,chosen?TFT_BLACK:TFT_WHITE);
-  String name=managed_progress::isPushPath(sdBooks[index].c_str())?String("Push"):sdBooks[index].substring(sdBooks[index].lastIndexOf('/')+1);
-  int dot=name.lastIndexOf('.');if(dot>0)name=name.substring(0,dot);
   M5.Display.setClipRect(16,y,508,ROW);
   bookName(name,24,y+2,488,chosen?TFT_WHITE:TFT_BLACK);
   M5.Display.clearClipRect();
 }
+void row(size_t index,int rowIndex,bool chosen){nameRow(libraryName(index),rowIndex,chosen);}
+void recentRow(size_t index,int rowIndex,bool chosen){nameRow(String("Recent: ")+libraryName(index),rowIndex,chosen);}
 void settingsRow(size_t index,int rowIndex,bool chosen){
   int y=TOP+rowIndex*ROW;
   M5.Display.fillRect(16,y,508,ROW,chosen?TFT_BLACK:TFT_WHITE);
@@ -253,45 +260,64 @@ void settingsRow(size_t index,int rowIndex,bool chosen){
   bookName(settings_registry::ENTRIES[index].title,24,y+2,488,chosen?TFT_WHITE:TFT_BLACK);
   M5.Display.clearClipRect();
 }
+void libraryRow(size_t cursor,bool chosen){
+  const auto layout=libraryLayout();
+  if(cursor>=layout.count())return;
+  const int r=int(cursor%controls::LIBRARY_ROWS);
+  const auto entry=library_rows::at(layout,cursor);
+  if(entry.kind==library_rows::Kind::Settings)settingsRow(entry.index,r,chosen);
+  else if(entry.kind==library_rows::Kind::Recent)recentRow(entry.index,r,chosen);
+  else row(entry.index,r,chosen);
+}
+}
+library_rows::Layout libraryLayout(){
+  return {sdBooks.size(),recent_book::index(recentBookPath.c_str(),sdBooks)};
+}
+size_t libraryCursor(){
+  const auto layout=libraryLayout();
+  using library_rows::Kind;
+  if(settingsSelected)return library_rows::cursor(layout,{Kind::Settings,settings_registry::index(settingsId)});
+  // A stale flag (the book moved or Recent changed) falls back to the list row.
+  if(recentSelected&&layout.hasRecent()&&selectedBook==layout.recent)
+    return library_rows::cursor(layout,{Kind::Recent,layout.recent});
+  return library_rows::cursor(layout,{Kind::Book,selectedBook});
+}
+void selectLibraryCursor(size_t cursor){
+  const auto entry=library_rows::at(libraryLayout(),cursor);
+  settingsSelected=entry.kind==library_rows::Kind::Settings;
+  recentSelected=entry.kind==library_rows::Kind::Recent;
+  if(settingsSelected)settingsId=settings_registry::ENTRIES[entry.index].id;
+  else selectedBook=entry.index;
 }
 void showLibrary(bool sceneChange){
   beginRefresh(sceneChange);M5.Display.fillScreen(TFT_WHITE);font();battery();
-  size_t cursor=settings_registry::libraryCursor(selectedBook,settingsSelected,settingsId);
+  const auto layout=libraryLayout();
+  size_t cursor=libraryCursor();
   size_t page=cursor/controls::LIBRARY_ROWS;
   size_t first=page*controls::LIBRARY_ROWS;
-  size_t firstBook=first>=settings_registry::COUNT?first-settings_registry::COUNT:0;
-  for(size_t r=0;r<controls::LIBRARY_ROWS;++r){
-    const size_t entry=first+r;
-    if(entry<settings_registry::COUNT)settingsRow(entry,int(r),entry==cursor);
-    else if(entry-settings_registry::COUNT<sdBooks.size())
-      row(entry-settings_registry::COUNT,int(r),entry==cursor);
-  }
+  const auto firstEntry=library_rows::at(layout,first);
+  size_t firstBook=firstEntry.kind==library_rows::Kind::Book?firstEntry.index:0;
+  for(size_t r=0;r<controls::LIBRARY_ROWS;++r)libraryRow(first+r,first+r==cursor);
   if(!sdOK){font();String text="sd card mount failed";M5.Display.setCursor((540-M5.Display.textWidth(text))/2,450);M5.Display.print(text);}
   liveIconCell();statusIcon();endRefresh("library",0,0,540,960);
   if(contentPrefetchFailed())showPrefetchFailureBanner();
-  Console.printf("LIBRARY books=%u selected=%u settings=%d first=%u rows=%u mounted=%d\n",(unsigned)sdBooks.size(),(unsigned)selectedBook,settingsSelected?1:0,(unsigned)firstBook,controls::LIBRARY_ROWS,sdOK);
+  Console.printf("LIBRARY books=%u selected=%u settings=%d first=%u rows=%u mounted=%d recent=%d\n",(unsigned)sdBooks.size(),(unsigned)selectedBook,settingsSelected?1:0,(unsigned)firstBook,controls::LIBRARY_ROWS,sdOK,layout.hasRecent()?int(layout.recent):-1);
 }
-void updateLibrarySelection(size_t oldSelection,bool oldSettings,SettingsId oldId){
-  size_t oldCursor=settings_registry::libraryCursor(oldSelection,oldSettings,oldId);
-  size_t newCursor=settings_registry::libraryCursor(selectedBook,settingsSelected,settingsId);
+void updateLibrarySelection(size_t oldCursor){
+  size_t newCursor=libraryCursor();
   if(oldCursor==newCursor)return;
   size_t page=newCursor/controls::LIBRARY_ROWS;
   if(oldCursor/controls::LIBRARY_ROWS!=page){showLibrary(false);return;}
   int oldRow=int(oldCursor%controls::LIBRARY_ROWS);
   int newRow=int(newCursor%controls::LIBRARY_ROWS);
   beginRefresh();font();
-  auto drawRow=[&](size_t cursor,bool chosen){
-    int r=int(cursor%controls::LIBRARY_ROWS);
-    if(cursor<settings_registry::COUNT){settingsRow(cursor,r,chosen);return;}
-    size_t book=cursor-settings_registry::COUNT;
-    if(book<sdBooks.size())row(book,r,chosen);
-  };
-  drawRow(oldCursor,false);drawRow(newCursor,true);
+  libraryRow(oldCursor,false);libraryRow(newCursor,true);
   int top=TOP+std::min(oldRow,newRow)*ROW;
   int height=(std::max(oldRow,newRow)-std::min(oldRow,newRow)+1)*ROW;
   endRefresh("selection",16,top,508,height);
   if(contentPrefetchFailed())showPrefetchFailureBanner();
-  Console.printf("SELECTION selected=%u settings=%d\n",(unsigned)selectedBook,settingsSelected?1:0);
+  const bool onRecent=library_rows::at(libraryLayout(),newCursor).kind==library_rows::Kind::Recent;
+  Console.printf("SELECTION selected=%u settings=%d recent=%d\n",(unsigned)selectedBook,settingsSelected?1:0,onRecent?1:0);
 }
 void showBook(bool sceneChange){
   if(pageOffsets.empty())return;

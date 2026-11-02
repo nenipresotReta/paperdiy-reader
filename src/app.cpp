@@ -184,6 +184,7 @@ void shutdown(){
   }
   uint32_t bootCode=screen==Screen::Reading?1:screen==Screen::Settings?2:0;
   resume_state::Record resume;resume.screen=uint8_t(bootCode);resume.settingsId=settingsSelected?settingsId:SettingsId::None;
+  resume.recent=library_rows::at(libraryLayout(),libraryCursor()).kind==library_rows::Kind::Recent;
   const String selected=selectedBook<sdBooks.size()?sdBooks[selectedBook]:String();
   if(selected.length()>resume_state::MAX_PATH){
     showError("Position not saved; try again");discardLoadingInput(false);return;
@@ -202,11 +203,20 @@ void shutdown(){
   Console.println("SHUTDOWN display_complete=1");Console.flush();
   M5.Power.powerOff();
 }
+// Opening a listed book other than Push makes it the Recent book. A failed
+// save keeps Recent for this session; the next open of another book retries.
+void rememberRecentBook(){
+  if(selectedBook>=sdBooks.size()||lan_service::isPushPath(sdBooks[selectedBook].c_str()))return;
+  const String& path=sdBooks[selectedBook];
+  if(path==recentBookPath)return;
+  recentBookPath=path;
+  if(!recent_book::save(prefs,path.c_str()))Console.println("RECENT_SAVE_FAILED");
+}
 void finishOpen(SDOpenResult result){
   if(result==SDOpenResult::Pending)return;
   const int turn=reopenTurn;reopenTurn=0;
   if(result==SDOpenResult::Ready){
-    screen=Screen::Reading;
+    screen=Screen::Reading;rememberRecentBook();
     if(turn)Console.printf("READER_REOPEN_TURN applied=%u\n",unsigned(turnReaderPage(turn)));
     saveReadingProgress();showBook(true);
   }
@@ -235,7 +245,7 @@ void livePushUpdated(){
   const bool keep=lan_service::pushKeepsPosition();
   if(keep)retainLivePushPosition();else clearLivePushPosition();
   Console.printf("LIVE_PUSH_REFRESH keep=%u\n",unsigned(keep));
-  settingsSelected=false;selectedBook=index;openSelected();
+  settingsSelected=false;recentSelected=false;selectedBook=index;openSelected();
   if(screen!=Screen::Loading)clearLivePushPosition();
 }
 void dispatch(controls::Action action){
@@ -276,14 +286,10 @@ void dispatch(controls::Action action){
   if(action==Action::Confirm){if(screen==Screen::Library)openSelected();else library();return;}
   int direction=(action==Action::Previous||action==Action::PreviousScreen)?-1:1;
   if(screen==Screen::Library){
-    size_t old=selectedBook;bool oldSettings=settingsSelected;const auto oldId=settingsId;
-    size_t cursor=settings_registry::libraryCursor(selectedBook,settingsSelected,settingsId);
+    const size_t old=libraryCursor();
     bool whole=action==Action::PreviousScreen||action==Action::NextScreen;
-    cursor=controls::moveSelection(cursor,sdBooks.size()+settings_registry::COUNT,direction,whole);
-    settingsSelected=cursor<settings_registry::COUNT;
-    if(settingsSelected)settingsId=settings_registry::ENTRIES[cursor].id;
-    else selectedBook=cursor-settings_registry::COUNT;
-    updateLibrarySelection(old,oldSettings,oldId);
+    selectLibraryCursor(controls::moveSelection(old,libraryLayout().count(),direction,whole));
+    updateLibrarySelection(old);
   }else if(screen==Screen::Reading&&!pageOffsets.empty()){
     if(turnReaderPage(direction)){saveReadingProgress();showBook();}
     else if(reader_content::leaseInvalidated()){
@@ -408,7 +414,7 @@ void diagnosticCommand(const String& line){
     const bool reflow=line.startsWith("OPEN_REFLOW ");
     char* end=nullptr;const char* number=line.c_str()+(reflow?12:5);
     unsigned long n=strtoul(number,&end,10);
-    if(end!=number&&*end==0&&n<sdBooks.size()){settingsSelected=false;selectedBook=n;openSelected(reflow);}
+    if(end!=number&&*end==0&&n<sdBooks.size()){settingsSelected=false;recentSelected=false;selectedBook=n;openSelected(reflow);}
   }
 }
 void diagnostics(){
@@ -465,6 +471,13 @@ void appSetup(){
   attachInterrupt(digitalPinToInterrupt(48),cardChanged,CHANGE);
   cardLevel=pendingCardLevel=digitalRead(48);
   String lastBook=prefs.getString("sdLast","");
+  // Without a Recent record, the last ordinary book seeds it once, so a later
+  // Push read (which moves sdLast) does not lose it.
+  if(prefs.isKey(recent_book::KEY))recentBookPath=prefs.getString(recent_book::KEY,"");
+  else if(!lastBook.isEmpty()&&!lan_service::isPushPath(lastBook.c_str())){
+    recentBookPath=lastBook;
+    if(!recent_book::save(prefs,lastBook.c_str()))Console.println("RECENT_SAVE_FAILED");
+  }
   if(lan_service::isPushPath(lastBook.c_str())){
     // Only the two short managed slots precede Push resume. Recovery of an
     // interrupted ordinary upload continues later in bounded background work.
@@ -483,6 +496,7 @@ void appSetup(){
       selectedBook=resumeResult==resume_state::ReadResult::Valid?resume_state::selectedIndex(resume,sdBooks):0;
       settingsSelected=resumeResult==resume_state::ReadResult::Valid&&resume.settingsId!=SettingsId::None;
       settingsId=settingsSelected?resume.settingsId:SettingsId::Network;
+      recentSelected=resumeResult==resume_state::ReadResult::Valid&&resume.recent;
       return;
     }
     uint32_t savedBook=prefs.getUInt("selBook",lastIndex<sdBooks.size()?lastIndex:0);
@@ -504,7 +518,7 @@ void appSetup(){
     screen=Screen::Loading;showLoading();
     Console.printf("BOOT_RESUME_BEGIN book=%s\n",lastBook.c_str());
     if(openSD(lastIndex)){
-      screen=Screen::Reading;saveReadingProgress();showBook(true);
+      screen=Screen::Reading;rememberRecentBook();saveReadingProgress();showBook(true);
       Console.printf("BOOT_RESUMED page=%u offset=%u anchor_offset=%u\n",(unsigned)pageNumber+1,pageOffsets[pageNumber],currentReadingOffset());
     }else {
       Console.printf("BOOT_RESUME_FAILED error=%s\n",sdError.c_str());
@@ -594,7 +608,7 @@ void appLoop(){
       networkStorageChanged();
       cancelSDBackground();
       storage_validation::invalidate();storage_validation::acknowledgeCardEvent();
-      cardLevel=level;sdOK=false;SD.end();sdBooks.clear();selectedBook=0;settingsSelected=screen==Screen::Settings;
+      cardLevel=level;sdOK=false;SD.end();sdBooks.clear();selectedBook=0;settingsSelected=screen==Screen::Settings;recentSelected=false;
       if(level==LOW)resetSDSpeed();
       if(screen==Screen::Library||screen==Screen::Settings){
         if(level==LOW){

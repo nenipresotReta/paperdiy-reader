@@ -21,7 +21,4 @@ inline size_t index(SettingsId id) {
   for(size_t i=0;i<COUNT;++i)if(ENTRIES[i].id==id)return i;
   return 0;
 }
-inline size_t libraryCursor(size_t bookIndex,bool settings,SettingsId id) {
-  return settings?index(id):COUNT+bookIndex;
-}
 }
