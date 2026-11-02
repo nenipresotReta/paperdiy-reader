@@ -45,6 +45,8 @@ uint32_t errorUntil=0,lastBatteryRefresh=0;
 uint32_t lastCardCheck=0;
 int cardLevel=HIGH,pendingCardLevel=HIGH;
 bool shutdownRequested=false;
+// Direction of a page turn that reopened the book; 0 when none is waiting.
+int reopenTurn=0;
 // ---- P: persistent STA receiver for live Push ------------------------------
 live_policy::Machine live;
 int liveBattery=-1;
@@ -202,7 +204,12 @@ void shutdown(){
 }
 void finishOpen(SDOpenResult result){
   if(result==SDOpenResult::Pending)return;
-  if(result==SDOpenResult::Ready){screen=Screen::Reading;saveReadingProgress();showBook(true);}
+  const int turn=reopenTurn;reopenTurn=0;
+  if(result==SDOpenResult::Ready){
+    screen=Screen::Reading;
+    if(turn)Console.printf("READER_REOPEN_TURN applied=%u\n",unsigned(turnReaderPage(turn)));
+    saveReadingProgress();showBook(true);
+  }
   else if(result==SDOpenResult::Cancelled){screen=Screen::Library;showLibrary(true);}
   else {screen=Screen::Error;showError(sdError.length()?sdError:"Cannot open book");errorUntil=millis()+3500;}
   discardLoadingInput();
@@ -281,10 +288,11 @@ void dispatch(controls::Action action){
     if(turnReaderPage(direction)){saveReadingProgress();showBook();}
     else if(reader_content::leaseInvalidated()){
       // A page-window source whose lease expired after sleep or a storage
-      // change cannot read the next block. Reopen at the saved anchor rather
-      // than leaving the page turn silently stuck.
-      Console.println("READER_REOPEN reason=stale_lease");
-      openSelected();
+      // change cannot read the next block. Reopen at the saved anchor, then
+      // apply the turn, rather than leaving the page turn silently stuck.
+      Console.printf("READER_REOPEN reason=stale_lease turn=%d\n",direction);
+      reopenTurn=direction;openSelected();
+      if(screen!=Screen::Loading)reopenTurn=0; // finished, or never started
     }
   }
 }
