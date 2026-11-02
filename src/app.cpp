@@ -184,7 +184,8 @@ void shutdown(){
   }
   uint32_t bootCode=screen==Screen::Reading?1:screen==Screen::Settings?2:0;
   resume_state::Record resume;resume.screen=uint8_t(bootCode);resume.settingsId=settingsSelected?settingsId:SettingsId::None;
-  resume.recent=library_rows::at(libraryLayout(),libraryCursor()).kind==library_rows::Kind::Recent;
+  // Recent is a library cursor; reading and settings snapshots stay version 2.
+  resume.recent=bootCode==0&&library_rows::at(libraryLayout(),libraryCursor()).kind==library_rows::Kind::Recent;
   const String selected=selectedBook<sdBooks.size()?sdBooks[selectedBook]:String();
   if(selected.length()>resume_state::MAX_PATH){
     showError("Position not saved; try again");discardLoadingInput(false);return;
