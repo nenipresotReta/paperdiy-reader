@@ -559,7 +559,10 @@ void appLoop(){
     if(screen==Screen::Loading){delay(1);return;}
   }
   if(networkMode==NetworkMode::Live)liveTick();
-  if(contentPrefetchPending()&&(networkActive()||lan_service::storageBusy()))cancelContentPrefetch();
+  // Network work cancels the fill. Busy storage, such as delivery recovery
+  // after boot, only pauses it: the step below waits for storage, and nothing
+  // restarts a cancelled fill while the book stays open.
+  if(contentPrefetchPending()&&networkActive())cancelContentPrefetch();
   if(lan_service::takeLibraryChanged()&&screen==Screen::Library)showLibrary(false);
   if(screen==Screen::Settings&&settingsId==SettingsId::Network){
     if(networkMode==NetworkMode::Ap){
