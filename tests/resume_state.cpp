@@ -100,17 +100,19 @@ int main(){
   assert(!settings_registry::valid(static_cast<SettingsId>(2)));
   assert(prefs.values["book-progress"]==123&&prefs.values["wifi-marker"]==456);
 
-  // V3 is V2 with the cursor on Recent. Only that snapshot uses it; every
-  // other snapshot keeps the V2 wire format.
+  // V3 is V2 with the library cursor on Recent. Only that snapshot uses it;
+  // every other snapshot keeps the V2 wire format.
   prefs.blobs.clear();saved=Record{};std::strcpy(saved.path,"/Books/数学.md");
   assert(save(prefs,saved)&&prefs.blobs[KEY][3]==2);
   saved.recent=true;assert(save(prefs,saved)&&prefs.blobs[KEY][3]==3);
   assert(read(prefs,loaded)==ReadResult::Valid&&loaded.recent);
   assert(loaded.screen==0&&loaded.settingsId==SettingsId::None&&!std::strcmp(loaded.path,saved.path));
-  saved.screen=1;assert(save(prefs,saved)&&read(prefs,loaded)==ReadResult::Valid);
-  assert(loaded.recent&&loaded.screen==1);
-  saved.recent=false;assert(save(prefs,saved)&&prefs.blobs[KEY][3]==2);
-  assert(read(prefs,loaded)==ReadResult::Valid&&!loaded.recent);
+  before=prefs.blobs;
+  saved.screen=1;assert(!save(prefs,saved)&&prefs.blobs==before); // a reading snapshot stays V2
+  saved.screen=2;assert(!save(prefs,saved)&&prefs.blobs==before);
+  saved.screen=1;saved.recent=false;assert(save(prefs,saved)&&prefs.blobs[KEY][3]==2);
+  assert(read(prefs,loaded)==ReadResult::Valid&&!loaded.recent&&loaded.screen==1);
+  saved.screen=0;
   before=prefs.blobs;
   saved.recent=true;saved.settingsId=SettingsId::Network;
   assert(!save(prefs,saved)&&prefs.blobs==before); // Recent is never a settings book
@@ -119,6 +121,7 @@ int main(){
   std::strcpy(saved.path,"/Books/数学.md");assert(save(prefs,saved));
   prefs.blobs[KEY][5]=1;assert(read(prefs,loaded)==ReadResult::Invalid);
   prefs.blobs[KEY]={'P','R','S',3,0,0,0,0};assert(read(prefs,loaded)==ReadResult::Invalid);
+  prefs.blobs[KEY]={'P','R','S',3,1,0,1,0,'/'};assert(read(prefs,loaded)==ReadResult::Invalid);
   prefs.blobs[KEY]={'P','R','S',4,0,0,0,0};assert(read(prefs,loaded)==ReadResult::Invalid);
   prefs.blobs.erase(KEY);prefs.blobs[LEGACY_KEY]={'P','R','S',3,0,0,1,0,'/'};
   assert(read(prefs,loaded)==ReadResult::Invalid); // V1 key never holds V3
