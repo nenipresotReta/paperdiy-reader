@@ -275,7 +275,7 @@ void sendSettings(){
   const auto& c=reader_settings::current();
   sendJson("{\"punctuation\":"+String(unsigned(c.punctuation))+",\"spacing\":"+String(c.spacing)+
     ",\"doubleMs\":"+String(c.doubleMs)+",\"preset\":"+String(c.preset)+",\"hyphenation\":"+String(unsigned(c.hyphenation))+
-    ",\"justify\":"+String(unsigned(c.justify))+",\"refresh\":"+String(c.refresh)+",\"ink\":"+String(c.ink)+",\"art\":"+String(c.art)+"}");
+    ",\"justify\":"+String(unsigned(c.justify))+",\"refresh\":"+String(c.refresh)+",\"ink\":"+String(c.ink)+",\"art\":"+String(c.art)+",\"autoOff\":"+String(c.autoOff)+"}");
 }
 void handleSettingsGet(){if(requireAuth())sendSettings();}
 // Paired LAN senders. AP and N are exclusive, so the receiver is stopped here;
@@ -312,13 +312,13 @@ void handleSendersForget(){
 void handleSettingsSave(){
   if(!requireAuth())return;
   if(upload.active){sendError(409,"Wait for the upload to finish.");return;}
-  const char* fields[]={"punctuation","spacing","doubleMs","preset","hyphenation","justify","refresh","ink"};
-  uint32_t v[8];
-  for(unsigned i=0;i<8;++i)if(!web->hasArg(fields[i])||!parseUnsigned(web->arg(fields[i]),v[i])||v[i]>400){sendError(400,"Invalid settings.");return;}
+  const char* fields[]={"punctuation","spacing","doubleMs","preset","hyphenation","justify","refresh","ink","autoOff"};
+  uint32_t v[9];
+  for(unsigned i=0;i<9;++i)if(!web->hasArg(fields[i])||!parseUnsigned(web->arg(fields[i]),v[i])||v[i]>400){sendError(400,"Invalid settings.");return;}
   if(v[0]>1||v[4]>1||v[5]>1){sendError(400,"Invalid settings.");return;}
-  auto next=reader_settings::current();next.punctuation=v[0];next.spacing=v[1];next.doubleMs=v[2];next.preset=v[3];next.hyphenation=v[4];next.justify=v[5];next.refresh=v[6];next.ink=v[7];
+  auto next=reader_settings::current();next.punctuation=v[0];next.spacing=v[1];next.doubleMs=v[2];next.preset=v[3];next.hyphenation=v[4];next.justify=v[5];next.refresh=v[6];next.ink=v[7];next.autoOff=v[8];
   // Check before narrowing: values like 256 must never become a valid zero.
-  if(v[1]>4||v[3]>2||v[6]>2||v[7]>100||!reader_settings::valid(next)){sendError(400,"Invalid settings.");return;}
+  if(v[1]>4||v[3]>2||v[6]>2||v[7]>100||v[8]>auto_off::NEVER_CODE||!reader_settings::valid(next)){sendError(400,"Invalid settings.");return;}
   if(!reader_settings::save(prefs,next)){sendError(500,"Could not save settings. Please retry.");return;}
   touchAp();sendSettings();
 }

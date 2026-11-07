@@ -6,6 +6,8 @@
 #include "power.h"
 static RefreshPolicy policy;
 static bool full;
+// A status-area refresh is not activity for automatic power-off.
+static bool statusOnly;
 static uint32_t started;
 static int normalRotation=0;
 void displayInit(){
@@ -22,7 +24,8 @@ void displaySetRotated(bool rotated){
   Console.printf("DISPLAY_ROTATION base=%d target=%d size=%dx%d\n",normalRotation,target,M5.Display.width(),M5.Display.height());
 }
 bool beginRefresh(bool sceneChange,bool reading,bool indicator){
-  powerActivity();
+  statusOnly=indicator;
+  if(statusOnly)powerStatusWork();else powerActivity();
   M5.Display.waitDisplay();started=millis();full=!indicator&&policy.choose(sceneChange,reading);
   M5.Display.setEpdMode(full?epd_mode_t::epd_quality:epd_mode_t::epd_fast);
   M5.Display.startWrite();return full;
@@ -33,7 +36,7 @@ void endRefresh(const char* reason,int x,int y,int w,int h){
   else if(w>0&&h>0)M5.Display.display(x,y,w,h);
   else M5.Display.display();
   M5.Display.waitDisplay();
-  powerActivity();
+  if(statusOnly)powerStatusWork();else powerActivity();
   Console.printf("REFRESH reason=%s mode=%s rect=%d,%d,%d,%d ms=%u partials=%u\n",reason,full?"quality":"fast",full?0:x,full?0:y,full?540:w,full?960:h,(unsigned)(millis()-started),policy.partials);
 }
 void logDisplayStatus(){Console.printf("DISPLAY fulls=%u partials_since_full=%u\n",policy.fulls,policy.partials);}

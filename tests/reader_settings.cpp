@@ -16,6 +16,25 @@ int main(){
  const auto snapshot=store.blobs;const auto writes=store.writes;assert(save(store,c)&&store.writes==writes);
  assert(store.blobs["wifiCfgV1"]==std::vector<uint8_t>({1,2,3})&&store.strings["sdLast"]=="keep");
  store.blobs["readerCfgV1"][5]^=1;current()=Config{};assert(!load(store)&&current().preset==1);store.blobs=snapshot;
+ // Byte 11 holds the auto power-off code. The default stays 0, so a default
+ // record is unchanged; codes beyond Never and the remaining reserved bytes
+ // are rejected without touching the loaded settings.
+ {
+  uint8_t wire[WIRE_SIZE];Config d;encode(d,wire);assert(wire[11]==0);
+  for(uint8_t code=0;code<=auto_off::NEVER_CODE;++code){
+   Config e=c;e.autoOff=code;encode(e,wire);assert(wire[11]==code);
+   Config back;assert(decode(wire,WIRE_SIZE,back)&&back.autoOff==code&&back.doubleMs==210);
+  }
+  Config e=c;e.autoOff=auto_off::NEVER_CODE+1;assert(!valid(e));
+  encode(c,wire);wire[11]=auto_off::NEVER_CODE+1;
+  uint32_t sum=crc(wire,16);for(int i=0;i<4;++i)wire[16+i]=uint8_t(sum>>(8*i));
+  Config back;assert(!decode(wire,WIRE_SIZE,back));
+  encode(c,wire);wire[12]=1;sum=crc(wire,16);for(int i=0;i<4;++i)wire[16+i]=uint8_t(sum>>(8*i));
+  assert(!decode(wire,WIRE_SIZE,back));
+  current()=c;e=c;e.autoOff=3;assert(save(store,e)&&store.blobs["readerCfgV1"][11]==3);
+  current()=Config{};assert(load(store)&&current().autoOff==3);
+  store.blobs=snapshot;current()=c;
+ }
  for(unsigned interval:{100u,200u,210u,400u}){
   current().doubleMs=interval;
   for(unsigned gap:{interval-1,interval,interval+1}){

@@ -89,6 +89,7 @@ void drawBodyGlyph(const char* text, size_t bytes, int x, int y, uint16_t foregr
 bool simulatedCharging=false;
 bool chargingNow() { return simulatedCharging; }
 void powerActivity() {}
+void powerStatusWork() {}
 
 namespace {
 std::vector<char> textBuffer;
