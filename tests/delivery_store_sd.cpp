@@ -220,6 +220,37 @@ void startRereadsOnlyAfterSleep(bool live){
   calls=SD.calls;
   assert(lan_service::start(ADDRESS,live));assert(store().recovered()&&SD.calls==calls);lan_service::stop();
 }
+
+void publishResumesFromStageAfterSleep(){
+  boot();const std::string body="Interrupted publication";const auto m=metadata(20,body,Kind::File);
+  SD.failReceiptRecord=true;send(m,body);SD.failReceiptRecord=false;
+  assert(store().activeState()==State::Uncertain);
+  // Put the card in the state of a failed move: intent on card, target gone, stage intact.
+  std::filesystem::rename(onCard("/Books/synthetic.md"),onCard("/.paperdiy/lan/upload.bin"));
+  sleepOnce();lan_service::storagePoll();assert(store().activeState()==State::Uncertain);
+  assert(!std::filesystem::exists(onCard("/Books/synthetic.md")));
+  assert(lan_service::start(ADDRESS));settle();lan_service::storagePoll();
+  assert(store().activeState()==State::Unknown&&receiptState(m)==State::Complete);
+  assert(std::filesystem::exists(onCard("/Books/synthetic.md"))&&std::filesystem::file_size(onCard("/Books/synthetic.md"))==body.size());
+  lan_service::stop();
+}
+void stoppedUploadLeavesProofsAndSleeps(){
+  boot();const std::string body="Upload during reading";const auto m=metadata(21,body,Kind::File);
+  const auto lease=storage_validation::lease();const auto custody=storage_validation::custody();
+  assert(store().begin(m).code==Code::Ok);
+  assert(store().chunk(m.clientId,m.requestId,0,reinterpret_cast<const uint8_t*>(body.data()),body.size()).code==Code::Ok);
+  assert(storage_validation::lease()==lease&&storage_validation::custody()==custody&&delivery_store_sd::mounted());
+  // The sender went quiet: the upload stops and the mount stays, with no receipt.
+  store().stop();
+  assert(storage_validation::lease()==lease&&delivery_store_sd::mounted()&&receiptState(m)==State::Unknown);
+  assert(!std::filesystem::exists(onCard("/.paperdiy/lan/upload.bin")));
+  const auto calls=SD.calls;
+  sleepOnce();lan_service::storagePoll();
+  assert(SD.calls==calls&&delivery_store_sd::mounted()&&!lan_service::storageBusy()&&!delivery_store_sd::metadataCurrent());
+  assert(lan_service::start(ADDRESS));settle();assert(delivery_store_sd::metadataCurrent());
+  deliver(m,body);assert(receiptState(m)==State::Complete&&std::filesystem::exists(onCard("/Books/synthetic.md")));
+  lan_service::stop();
+}
 // P owns the radio, so it never sleeps while up. It only sleeps while paused
 // with the radio off (battery below the threshold) and then starts again.
 void pushSurvivesPauseAndRestart(){
@@ -255,6 +286,8 @@ int main(){
   startRereadsOnlyAfterSleep(false);
   startRereadsOnlyAfterSleep(true);
   pushSurvivesPauseAndRestart();
+  publishResumesFromStageAfterSleep();
+  stoppedUploadLeavesProofsAndSleeps();
   assert(SD.openFiles==0);
   std::filesystem::remove_all(testCardRoot);
 }

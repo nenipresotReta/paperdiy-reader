@@ -131,6 +131,8 @@ bool indexBook(bool,bool,const bookmarks::Anchor*,bool,bool){assert(bookLength>0
 bool saveReadingProgress(){assert(bookLength>0&&!pageOffsets.empty());++savedProgress;return true;}
 void queueBackground(BookCache&,bool){++queued;}
 void rememberResident(){}
+static bool writesHeld=false;
+static bool cacheWritesHeld(){return writesHeld;}
 #include "sd_open_job.h"
 static SDOpenResult settleJob(sd_open::Job& job){
  SDOpenResult result=SDOpenResult::Pending;
@@ -259,6 +261,14 @@ int main(){
   assert(settleJob(job)==SDOpenResult::Ready&&job.checkpointDisabled&&indexed==1&&savedProgress==1);
   assert(std::string(book,bookLength)==expected);
  }SD.resetFaults();
+ // During a LAN batch a cold open still works but writes no journal, so a write
+ // failure here cannot revoke the SD trust an upload depends on.
+ removeJournal();bookLength=0;pageOffsets.clear();indexed=savedProgress=0;writesHeld=true;
+ {BookCache c("/synthetic.epub",true);sd_open::Job job(std::move(c),0,true,false,{},millis(),nullptr);
+  assert(settleJob(job)==SDOpenResult::Ready&&job.checkpointDisabled&&!job.checkpoint&&indexed==1&&savedProgress==1);
+  assert(std::string(book,bookLength)==expected);
+  for(const char* suffix:{".ext0",".ext1",".exttext"})assert(!SD.exists(path+suffix));
+ }writesHeld=false;
  writeSource(path+".ext0",original);writeSource(path+".exttext",spool);
  failPsSize=original.size()-extraction_checkpoint::HEADER_BYTES;bookLength=0;pageOffsets.clear();
  {BookCache c("/synthetic.epub",true);sd_open::Job job(std::move(c),0,true,false,{},millis(),nullptr);

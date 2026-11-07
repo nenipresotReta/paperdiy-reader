@@ -30,7 +30,7 @@ std::string epoch,address,pushPath,publishedPath,transferClient,transferRequest;
 delivery_store::Receipt lastPublished;
 delivery_store::Metadata shown;
 std::string shownState;
-uint32_t badWindow=0,badAttempts=0,lastUi=0,lastProgress=0,transferStarted=0;
+uint32_t badWindow=0,badAttempts=0,lastUi=0,lastProgress=0,transferStarted=0,lastRequest=0;
 uint32_t progressBytes=0;
 constexpr uint32_t TRANSFER_IDLE_MS=45000,TRANSFER_TOTAL_MS=30u*60*1000;
 // A progress refresh holds up the main loop, and with it the next chunk.
@@ -335,6 +335,7 @@ lan_tls::Response request(const BoundedHttpRequest& incoming){
   std::string client;const bool authenticated=registry.authenticate(header(incoming,"authorization"),hash,client);
   // The first bearer use proves the sender stored its token; drop the RAM copy.
   if(authenticated&&!batch.issuedToken.empty()&&client==batch.issuedClient)wipe(batch.issuedToken);
+  if(authenticated)lastRequest=millis();
   const bool batchPath=incoming.path=="/lan/v2/batch/offer"||incoming.path=="/lan/v2/pair/reveal"||incoming.path=="/lan/v2/batch/status";
   if(liveMode&&batchPath){if(!authenticated)++badAttempts;return error(409,"live_mode");}
   if(incoming.path=="/lan/v2/batch/offer"&&incoming.post){
@@ -490,12 +491,29 @@ bool acceptPrompt(){
   batch.phase=Phase::Accepted;
   shownPrompt=Prompt{};promptDirty=true;
   shown={};shownState=batch.admitted?"Accepted":"Paired · "+batch.label;
+  lastRequest=millis();
   return true;
 }
+transfer_policy::Batch batchState(){
+  using transfer_policy::Batch;
+  auto& store=delivery_store_sd::store();
+  if(!running||batch.phase!=Phase::Accepted||store.activeState()==State::Uncertain)return Batch::Failed;
+  if(!batchFinished())return Batch::Pending;
+  for(const auto& entry:batch.entries){
+    if(entry.admission=="ok"&&store.receipt(batch.clientId,entry.metadata.requestId).state!=State::Complete)return Batch::Failed;
+  }
+  return Batch::Finished;
+}
+bool batchPending(){return batch.admitted&&batchState()==transfer_policy::Batch::Pending;}
+uint32_t lastRequestAt(){return lastRequest;}
 bool transferring(){
   if(!running)return false;
   const auto state=delivery_store_sd::store().activeState();
   return state==State::Receiving||state==State::Checking;
+}
+void holdTransfer(){
+  lastRequest=millis();
+  if(transferring())lastProgress=lastRequest;
 }
 bool poll(){
   if(!running)return false;
@@ -513,7 +531,11 @@ bool poll(){
     // the physical panel always describes the actual active transaction.
     const auto current=store.activeMetadata();note(store.status(current.clientId,current.requestId));
     if((store.activeState()==State::Receiving&&uint32_t(millis()-lastProgress)>=TRANSFER_IDLE_MS)||uint32_t(millis()-transferStarted)>=TRANSFER_TOTAL_MS){
-      const auto m=store.activeMetadata();note(store.cancel(m.clientId,m.requestId));
+      // The sender went quiet or ran out of time; it did not cancel. A cancelled
+      // receipt would refuse this request for good, so the upload and its batch
+      // end without one, and offering the file again asks for a new A+B.
+      store.stop();clearBatch();transferClient.clear();transferRequest.clear();progressBytes=0;
+      shownState="Transfer stopped";
     }
     if(store.activeState()==State::Checking)shownState="Checking";
   }else if(store.activeState()==State::Uncertain)shownState="Transfer uncertain";

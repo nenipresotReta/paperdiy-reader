@@ -50,7 +50,7 @@ struct Job {
  }
  bool initialize(){
   if(!prepare())return false;initialized=true;
-  if(!importer.flattenedForMemory&&structure.status()!=epub::structure::Status::Allocation&&cache.enabled)
+  if(!importer.flattenedForMemory&&structure.status()!=epub::structure::Status::Allocation&&cache.enabled&&!cacheWritesHeld())
    checkpoint.reset(new(std::nothrow) ExtractionCheckpoint(cache,importer,structure));
   if(!checkpoint){checkpointDisabled=true;restoreFinished=true;}
   return true;

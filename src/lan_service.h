@@ -1,4 +1,5 @@
 #pragma once
+#include "transfer_policy.h"
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -39,8 +40,15 @@ bool promptPending();
 const Prompt& prompt();
 bool acceptPrompt();
 
+// An accepted batch outlives Settings until it ends (transfer_policy.h).
+bool batchPending();
+transfer_policy::Batch batchState();
+uint32_t lastRequestAt();
 // A file is moving. The main loop runs at full speed while this is true.
 bool transferring();
+// The reader was busy elsewhere and the sender could not get through, so that
+// time does not count against the sender.
+void holdTransfer();
 
 // Sender management for the AP WebUI. Refuses while the LAN receiver runs.
 enum class RegistryStatus:uint8_t {Ok,Busy,Unavailable,Unreadable,Invalid};

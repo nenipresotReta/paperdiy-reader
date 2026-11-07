@@ -33,10 +33,13 @@ namespace {
 // P status outside Settings: a 28 px cell mirroring the status icon, at the
 // bottom-left of both the library and the reader. Rows 8..20 of the cell,
 // bit 27 is the left column: dot + arc, dot only, and dot + arc struck out.
+// A background N transfer uses rows 5..19: dot + two arcs.
 constexpr int LIVE_ICON_X=8,LIVE_ICON_Y=928,LIVE_ICON_SIZE=28,LIVE_ICON_TOP=8,LIVE_ICON_ROWS=13;
 constexpr uint32_t LIVE_ONLINE[LIVE_ICON_ROWS]={0,0,0x000f800,0x003fe00,0x0030600,0,0,0x0007000,0x000f800,0x000f800,0x000f800,0x0007000,0};
 constexpr uint32_t LIVE_CONNECTING[LIVE_ICON_ROWS]={0,0,0,0,0,0,0,0x0007000,0x000f800,0x000f800,0x000f800,0x0007000,0};
 constexpr uint32_t LIVE_OFF[LIVE_ICON_ROWS]={0x00c0000,0x0060000,0x0037800,0x001be00,0x002c600,0x0006000,0x0003000,0x0005800,0x000ec00,0x000f600,0x000fb00,0x0007180,0x00000c0};
+constexpr int LIVE_TRANSFER_TOP=5,LIVE_TRANSFER_ROWS=15;
+constexpr uint32_t LIVE_TRANSFER[LIVE_TRANSFER_ROWS]={0x001fc00,0x00fff80,0x01c01c0,0x0300060,0,0x000f800,0x003fe00,0x0030600,0,0,0x0007000,0x000f800,0x000f800,0x000f800,0x0007000};
 bool liveIconDrawn=false;
 constexpr int TOP=56,ROW=39;
 constexpr int BATTERY_CELL_X=504,BATTERY_CELL_Y=8,BATTERY_CELL_W=28,BATTERY_CELL_H=28;
@@ -207,11 +210,13 @@ void livePanel(){
 // Clears the cell and draws the current P state; None leaves it blank.
 void liveIconCell(){
   M5.Display.fillRect(LIVE_ICON_X,LIVE_ICON_Y,LIVE_ICON_SIZE,LIVE_ICON_SIZE,TFT_WHITE);
-  const uint32_t* rows=liveIcon==LiveIcon::Online?LIVE_ONLINE:liveIcon==LiveIcon::Connecting?LIVE_CONNECTING:
+  const bool transfer=liveIcon==LiveIcon::Transfer;
+  const uint32_t* rows=transfer?LIVE_TRANSFER:liveIcon==LiveIcon::Online?LIVE_ONLINE:liveIcon==LiveIcon::Connecting?LIVE_CONNECTING:
     liveIcon==LiveIcon::Off?LIVE_OFF:nullptr;
   if(!rows)return;
-  for(int r=0;r<LIVE_ICON_ROWS;++r)for(int c=0;c<LIVE_ICON_SIZE;++c)
-    if(rows[r]&(1u<<(LIVE_ICON_SIZE-1-c)))M5.Display.drawPixel(LIVE_ICON_X+c,LIVE_ICON_Y+LIVE_ICON_TOP+r,TFT_BLACK);
+  const int top=transfer?LIVE_TRANSFER_TOP:LIVE_ICON_TOP,count=transfer?LIVE_TRANSFER_ROWS:LIVE_ICON_ROWS;
+  for(int r=0;r<count;++r)for(int c=0;c<LIVE_ICON_SIZE;++c)
+    if(rows[r]&(1u<<(LIVE_ICON_SIZE-1-c)))M5.Display.drawPixel(LIVE_ICON_X+c,LIVE_ICON_Y+top+r,TFT_BLACK);
 }
 void statusIcon(bool busy=false){
   M5.Display.fillRect(504,928,28,28,TFT_WHITE);

@@ -19,8 +19,8 @@
                           ◀───────  每项一个回执 → "Done · 3 files"
 ```
 
-- **N 只在设置页接收。** N 的接收端、其路由与 mDNS 通告仅在设置页且 N 激活时存在。唯一例外是 [P](#p实时-push)：它在设置页之外也保持接收端，但只接受此前在 N 里配对过的发送端发来的 Push。
-- **每批都须在设备上同意。** 一次短按 A+B（2 秒内松开）接受整批。A 保持原义（下一模式），因此会关闭 N 并取消；B 旋转并重绘；离开设置页取消；60 秒无操作过期；按住 A+B 2 秒关机，永不接受。未经接受，卡上不写任何内容。
+- **N 只在设置页接收。** N 的接收端、其路由与 mDNS 通告仅在设置页且 N 激活时存在。有两个例外：已接受的批次离开设置页后继续，直到结束（见[后台传输](#后台传输)）；[P](#p实时-push) 在设置页之外也保持接收端，但只接受此前在 N 里配对过的发送端发来的 Push。
+- **每批都须在设备上同意。** 一次短按 A+B（2 秒内松开）接受整批。A 保持原义（下一模式），因此会关闭 N 并取消；B 旋转并重绘；接受前离开设置页取消；60 秒无操作过期；按住 A+B 2 秒关机，永不接受。未经接受，卡上不写任何内容。
 - **首次投递即配对。** 未知发送端的第一批带有承诺保护的短验证码（SAS）；一次 A+B 同时配对并接受。单独配对就是不带条目的同一请求。
 
 CLI 不安装守护进程、不启用网络、不修改主机网络、不扫描子网、不使用中继。`queued` 表示发送端保存了内容，`delivered` 表示已验证匹配的提交回执；两者都不代表设备已显示内容或用户已阅读。
@@ -83,6 +83,16 @@ GET  /lan/v2/batch/status?batchId=…   （Bearer）
 ## 上传操作
 
 POST 使用 `application/x-www-form-urlencoded`，双方均限制最多 16 个字段、编码后 17000 字节，可容纳 4096 字节 base64 分块及 8 个最坏条目的百分号编码。响应是带 Content-Length 的有界 JSON。发送端拒绝 chunked 响应、重复头/JSON 键、重定向、超过 8192 字节的头和超过 16384 字节的 JSON。错误以稳定 snake_case `code` 为准。
+
+### 后台传输
+
+A+B 接受含至少一个文件的批次后，离开设置时接收端继续运行，书库和阅读界面左下角显示一个点加两条弧线。打开书时接收端暂停，直到书准备好；发送端对传输的每一步最多重试 120 秒。文件发布后，正在阅读的书可能在下一个未缓存页重新打开一次。
+
+最后一个文件结束 10 秒后 N 停止，让发送端有时间读取结果；打开书会让这段等待重新计时。发送端 60 秒没有请求时也会停止。批次没有完成时，图标变为划掉的弧线，直到下次打开设置。回到设置会重新显示传输；此时按 A 会停止传输。
+
+批次进行期间不写书的缓存及其日志，因为缓存写入失败也会终止上传。在批次期间首次打开的书，如果随后有文件发布，下次打开时要重新导入。
+
+上传 45 秒没有新数据，或 30 分钟后仍未完成时，上传连同所在批次一起结束，不留回执。发送端会重新提供该文件，需要再按一次 A+B。只有 `uploads/cancel` 才会留下取消回执。
 
 每个请求通常使用自己的 TLS 连接。分块请求可以发送 `Connection: keep-alive`。如果连接继续留给下一块，阅读器回复相同的头；响应不是 2xx、有其他客户端在等待或接收端正在停止时，回复 `Connection: close`。阅读器对每个请求都检查授权，仍然拒绝 pipelining，连接空闲 5 秒后关闭。发送端在发其他请求之前先关闭这条连接。复用失败时，发送端在新连接上重发一次该分块；阅读器会确认内容相同且已接受的分块。
 
@@ -184,9 +194,12 @@ python3 tools/paperdiy_lan.py status
 | 等待结束时仍待 A+B | `queued` | `awaiting_acceptance` / `awaiting_pairing_confirmation` | 0 |
 | 未被接受（取消、过期、连接中断） | `queued` | `not_accepted` | 0 |
 | `commit` 之前中断 | `queued` | `transfer_interrupted` / `budget_exhausted` | 0 |
+| 阅读器已不持有该传输，也没有回执 | `queued` | `transfer_interrupted` | 0 |
 | 已发送提交但无确定答复 | `uncertain` | `commit_unconfirmed` / `receipt_unknown` | 2 |
 | 匹配的回执 | `delivered` | — | 0 |
 | 预检或上传时拒绝 | `blocked` | 具体原因 | 2 |
+
+阅读器上的取消回执只影响对应条目，该条目变为 `cancelled`。
 
 其他状态：`cancelled`、`abandoned`、`superseded`。本地与用法错误为 `{"state":"error","code":…}`，退出码 2：`label_required`、`no_paired_device`、`ambiguous_device`、`unknown_device`、`multiple_devices`、`unauthorized`、`pin_mismatch`、`source_unreadable`、`invalid_utf8`、`size_limit`、`state_dir_unavailable`、`state_dir_permissions`、`lock_held`、`store_corrupt`。
 

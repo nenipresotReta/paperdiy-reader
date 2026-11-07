@@ -21,8 +21,9 @@ on-device document reader. Add authenticated discovery and TLS transport around
 that transaction. Do not expose the AP page, Wi-Fi settings, filesystem browsing,
 bookmarks, arbitrary deletion, firmware updates or command execution over N.
 
-Keep networking tied to the existing settings lifecycle: leaving settings,
-selecting Off/A/P, shutdown and reboot stop the N service. USB power alone never
+Keep networking tied to the existing settings lifecycle: leaving settings
+without an accepted batch, selecting Off/A/P, shutdown and reboot stop the N
+service. USB power alone never
 starts it. Opening a received document consequently stops N in the first version.
 Receiving while reading would require a separately reviewed lifecycle change;
 removing `networkStop()` on navigation is not an acceptable shortcut.

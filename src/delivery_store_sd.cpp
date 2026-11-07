@@ -10,6 +10,7 @@
 #include "console.h"
 #include "storage_validation.h"
 #include "markdown_document.h"
+#include "managed_progress.h"
 
 // Arduino SD's default VFS mount point; host tests use a directory.
 #ifndef PAPERDIY_SD_VFS_ROOT
@@ -30,6 +31,11 @@ struct Context {
 } context;
 bool ready(void*){return context.enabled&&context.custody&&context.custody==storage_validation::custody()&&!storage_validation::cardEventPending();}
 void mutation(){storage_validation::sourceChanged();context.custody=storage_validation::custody();}
+bool owned(const char* path){constexpr char prefix[]="/.paperdiy/lan/";return path&&std::strncmp(path,prefix,sizeof(prefix)-1)==0;}
+// The stage and record files are never read as books. A write to them must not
+// revoke the proof an open book relies on, or reading during a transfer would
+// reopen the book again and again. Only Push slots and the library can change.
+void mutationOf(const char* path){if(!owned(path)||managed_progress::isPushPath(path))mutation();}
 Entry statFile(void*,const char* path,uint32_t* size){
   if(!ready(nullptr))return Entry::Error;
   struct stat info;const std::string full=std::string(PAPERDIY_SD_VFS_ROOT)+path;
@@ -45,26 +51,25 @@ bool readFile(void*,const char* path,uint32_t at,uint8_t* bytes,size_t count){
   return ok&&ready(nullptr);
 }
 bool writeFile(void*,const char* path,uint32_t at,const uint8_t* bytes,size_t count,bool truncate){
-  if(!ready(nullptr))return false;mutation();
+  if(!ready(nullptr))return false;mutationOf(path);
   File file=SD.open(path,truncate?"w":"r+");
   const bool ok=file&&!file.isDirectory()&&file.seek(at)&&(!count||file.write(bytes,count)==count);
   if(file)file.flush();file.close();return ok&&ready(nullptr);
 }
-bool owned(const char* path){constexpr char prefix[]="/.paperdiy/lan/";return path&&std::strncmp(path,prefix,sizeof(prefix)-1)==0;}
 void writeRetry(void*,unsigned attempt){Console.printf("LAN_WRITE_RETRY attempt=%u\n",attempt);delay(attempt*50);}
 bool renameFile(void*,const char* from,const char* to,bool replaceOwned){
   if(!ready(nullptr)||!owned(from)||(replaceOwned&&!owned(to)))return false;
   uint32_t size;const auto entry=statFile(nullptr,to,&size);
   if(!replaceOwned&&entry!=Entry::Missing)return false;
   if(replaceOwned&&entry!=Entry::Missing&&entry!=Entry::File)return false;
-  if(replaceOwned&&entry==Entry::File){mutation();if(!SD.remove(to)||!ready(nullptr))return false;}
-  mutation();return SD.rename(from,to)&&ready(nullptr);
+  if(replaceOwned&&entry==Entry::File){mutationOf(to);if(!SD.remove(to)||!ready(nullptr))return false;}
+  mutationOf(to);return SD.rename(from,to)&&ready(nullptr);
 }
 bool removeFile(void*,const char* path){
   if(!ready(nullptr)||!owned(path))return false;
   uint32_t size;const auto entry=statFile(nullptr,path,&size);
   if(entry==Entry::Missing)return true;if(entry!=Entry::File)return false;
-  mutation();return SD.remove(path)&&ready(nullptr);
+  mutationOf(path);return SD.remove(path)&&ready(nullptr);
 }
 bool syncFile(void*,const char* path){
   if(!ready(nullptr))return false;

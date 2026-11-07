@@ -202,7 +202,7 @@ void malformedBase64AndProgressLease(){
   for(const auto& data:{"eA=", "eB==", "eA==AAAA", "====", "eA==\n"})assert(request("/lan/v1/uploads/chunk",client.auth(),true,{{"requestId",m.requestId},{"offset","0"},{"data",data}}).code==400);
   assert(delivery_store_sd::store().acceptedBytes()==0);
   tick(44000);assert(status(client,m).code==200);tick(1001);
-  assert(delivery_store_sd::store().status(client.id,m.requestId).state==State::Cancelled);
+  assert(delivery_store_sd::store().status(client.id,m.requestId).code==Code::Unknown&&!lan_service::transferring());
 }
 void statusTrafficCannotResetLeaseUsingOldReceipt(){
   reset();const Client client=pair();const auto old=metadata(client,6,"A complete old file",Kind::File);deliver(client,old,"A complete old file");
@@ -211,7 +211,7 @@ void statusTrafficCannotResetLeaseUsingOldReceipt(){
   assert(request("/lan/v1/receipts",client.auth(),false,{{"requestId",old.requestId}}).code==200);
   assert(status(client,pending).code==200);
   tick(16000);
-  assert(delivery_store_sd::store().status(client.id,pending.requestId).state==State::Cancelled);
+  assert(delivery_store_sd::store().status(client.id,pending.requestId).code==Code::Unknown);
 }
 void sameBodyNoopGetsTerminalUiWithoutClientPolling(){
   reset();const Client client=pair();const std::string body="Same synthetic Push";auto original=metadata(client,8,body);deliver(client,original,body);
@@ -248,12 +248,12 @@ void totalLeaseBoundsProgressAndChecking(){
   reset();const Client client=pair();const auto m=metadata(client,12,std::string(100,'x'),Kind::File);
   assert(begin(client,m).code==200);
   for(unsigned i=0;i<45;++i){assert(chunk(client,m,i,"x").code==200);tick(40000);}
-  assert(delivery_store_sd::store().status(client.id,m.requestId).state==State::Cancelled);
+  assert(delivery_store_sd::store().status(client.id,m.requestId).code==Code::Unknown);
   reset();const Client second=pair();const std::string body="Checking synthetic file";const auto check=metadata(second,13,body,Kind::File);
   assert(begin(second,check).code==200&&chunk(second,check,0,body).code==200);
   assert(request("/lan/v1/uploads/commit",second.auth(),true,{{"requestId",check.requestId}}).code==200);
   testClock+=30u*60u*1000u;lan_service::poll(); // deliberately do not advance store checker
-  assert(delivery_store_sd::store().status(second.id,check.requestId).state==State::Cancelled);
+  assert(delivery_store_sd::store().status(second.id,check.requestId).code==Code::Unknown);
   assert(!files.count("/Books/synthetic.md"));
 }
 using lan_service::RegistryStatus;
@@ -478,6 +478,60 @@ void ownAcceptedBatchCanBeReplaced(){
   const auto refused=startRaw(client,b);assert(refused.code==409&&refused.json.find("not_accepted")!=std::string::npos);
   assert(lan_service::acceptPrompt());upload(client,b,"B body");assert(text(settingsLanState)=="Done · 1 file");
 }
+// A sender that went quiet did not cancel: no receipt may refuse its next offer.
+void expiredTransferLeavesNoReceipt(){
+  reset();const Client client=pair();const std::string body(5000,'x');
+  const auto m=metadata(client,14,body,Kind::File);
+  assert(begin(client,m).code==200&&chunk(client,m,0,body.substr(0,4096)).code==200);
+  tick(45000);
+  auto& store=delivery_store_sd::store();
+  assert(store.receipt(client.id,m.requestId).code==Code::Unknown&&store.activeState()==State::Unknown);
+  assert(!lan_service::batchPending()&&lan_service::batchState()==transfer_policy::Batch::Failed);
+  assert(text(settingsLanState)=="Transfer stopped");
+  // The batch ended with it: the sender cannot go on without a new A+B.
+  assert(startRaw(client,m).code==409);
+  const auto again=offer(client,{m});
+  assert(again.code==200&&admissionOf(again.json,m.requestId)=="ok"&&lan_service::promptPending());
+  assert(lan_service::acceptPrompt()&&startRaw(client,m).code==200);
+  // It counts as a new transfer, so the expired lease does not end it at once.
+  tick(10);assert(lan_service::transferring());
+  upload(client,m,body);assert(store.receipt(client.id,m.requestId).state==State::Complete);
+}
+void acceptedBatchStateForBackgroundTransfer(){
+  using transfer_policy::Batch;
+  reset();const Client client=pair();
+  // Pairing alone has nothing to wait for.
+  assert(!lan_service::batchPending());
+  const std::string body(5000,'x');
+  const auto m=metadata(client,50,body,Kind::File);
+  const auto offered=offer(client,{m});assert(offered.code==200);
+  // Leaving before A+B still cancels.
+  assert(lan_service::promptPending()&&!lan_service::batchPending()&&lan_service::batchState()==Batch::Failed);
+  tick(5);assert(lan_service::acceptPrompt());
+  assert(lan_service::lastRequestAt()==testClock);
+  assert(lan_service::batchPending()&&lan_service::batchState()==Batch::Pending&&!lan_service::transferring());
+  assert(startRaw(client,m).code==200&&lan_service::transferring());
+  tick(10);assert(chunk(client,m,0,body.substr(0,4096)).code==200&&lan_service::lastRequestAt()==testClock);
+  // An unauthenticated probe cannot keep the radio up.
+  const uint32_t authenticated=lan_service::lastRequestAt();
+  tick(10);assert(request("/lan/v2/hello","",false).code==200&&lan_service::lastRequestAt()==authenticated);
+  // A long book open does not count against the sender.
+  tick(44000);lan_service::holdTransfer();assert(lan_service::lastRequestAt()==testClock);
+  tick(44000);assert(lan_service::batchState()==Batch::Pending);
+  assert(chunk(client,m,4096,body.substr(4096)).code==200);
+  assert(request("/lan/v1/uploads/commit",client.auth(),true,{{"requestId",m.requestId}}).code==200);
+  assert(lan_service::transferring()&&lan_service::batchPending());
+  for(unsigned i=0;i<100&&delivery_store_sd::store().activeState()==State::Checking;++i)tick();
+  assert(!lan_service::transferring()&&!lan_service::batchPending()&&lan_service::batchState()==Batch::Finished);
+  lan_service::stop();assert(lan_service::batchState()==Batch::Failed&&!lan_service::transferring());
+
+  reset();const Client other=pair();
+  const auto cancelled=metadata(other,51,std::string(5000,'y'),Kind::File);
+  assert(begin(other,cancelled).code==200);
+  request("/lan/v1/uploads/cancel",other.auth(),true,{{"requestId",cancelled.requestId}});
+  assert(delivery_store_sd::store().receipt(other.id,cancelled.requestId).state==State::Cancelled);
+  assert(!lan_service::batchPending()&&lan_service::batchState()==Batch::Failed);
+}
 // P: a paired sender replaces Push with no batch; everything else stays in N.
 lan_tls::Response startLive(const Client& client,const delivery_store::Metadata& m,const char* position){
   Fields fields={{"requestId",m.requestId},{"fingerprint",m.fingerprint},{"kind",m.kind==Kind::Push?"push":"file"},{"name",m.name},{"title",m.title},{"size",std::to_string(m.size)},{"sha256",m.sha256},{"baseRevision",m.kind==Kind::Push?std::to_string(m.baseRevision):""}};
@@ -539,6 +593,8 @@ void liveModeAdmitsPushOnly(){
 }
 #ifndef PAPERDIY_LAN_WIRE
 int main(){
+  acceptedBatchStateForBackgroundTransfer();
+  expiredTransferLeavesNoReceipt();
   liveModeAdmitsPushOnly();
   ownAcceptedBatchCanBeReplaced();
   firstContactPairingAndAuthentication();wrongRevealExpiryAndCancel();rateAndCredentialFailure();savedPairWithFailedReadbackRemainsRecoverable();

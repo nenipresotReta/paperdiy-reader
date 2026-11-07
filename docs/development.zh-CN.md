@@ -116,7 +116,7 @@ AP 准入检查名称、格式、大小、存储、目录容量、generation 和
 
 N 只在显式选择期间存在。设备专属 P-256 TLS 1.2 使用 ECDHE-ECDSA/AES-128-GCM；发送端在任何 HTTP、token 或配对秘密之前验证精确证书 DER 的 SHA-256。Bearer 授权独立于 AP cookie/Wi-Fi。锁定 SDK 上两个 16 KiB record 容量需要 33,434 字节内部缓冲，另加 TLS/密码上下文；PSRAM 不能替代这些内部堆。握手、空闲和绝对截止时间是协作式检查，不会抢占密码运算。
 
-有界 store 同时一个事务，使用精确偏移 4 KiB 块、8 KiB 验证步骤和十六个客户端隔离的共享回执槽。分块写入失败时最多尝试三次，之后才结束传输。普通文件不覆盖书籍。Push 为最多 16 KiB Markdown，使用两个自有 SD 槽；固定 `pushRead0`/`pushRead1` 进度记录绑定摘要/长度，避免每版本增加 NVS 键。Push 绕过普通页面缓存/驻留复用。回执重放先于版本检查；已验证且内容相同的 Push 是无操作，保留版本/锚点。发布结果不明则保持 Uncertain，靠保存字节恢复，不宣称 FAT exactly-once。协议、CLI 和实机范围见 [LAN 协议](lan-protocol.zh-CN.md)。
+有界 store 同时一个事务，使用精确偏移 4 KiB 块、8 KiB 验证步骤和十六个客户端隔离的共享回执槽。写入暂存文件、记录文件或最终路径失败时最多尝试三次，之后才结束传输。普通文件不覆盖书籍。Push 为最多 16 KiB Markdown，使用两个自有 SD 槽；固定 `pushRead0`/`pushRead1` 进度记录绑定摘要/长度，避免每版本增加 NVS 键。Push 绕过普通页面缓存/驻留复用。回执重放先于版本检查；已验证且内容相同的 Push 是无操作，保留版本/锚点。发布结果不明则保持 Uncertain，靠保存字节恢复，不宣称 FAT exactly-once。恢复时用校验过的暂存文件完成被中断的移动；暂存文件不完整且最终文件不存在时，说明没有发布，直接结束这个意图。协议、CLI 和实机范围见 [LAN 协议](lan-protocol.zh-CN.md)。
 
 ## 固定 USB DCD 修正
 
