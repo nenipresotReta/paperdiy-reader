@@ -164,6 +164,8 @@ void backgroundTransferTick(){
   networkStop();networkMode=NetworkMode::Off;
   liveIcon=failed?LiveIcon::Off:LiveIcon::None;
   refreshStatusIcon();
+  // The reader may have been left alone throughout. Show the result before auto-off.
+  powerActivity();
 }
 void IRAM_ATTR cardChanged(){storage_validation::signalCardEvent();}
 uint8_t keyMask(){

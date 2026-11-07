@@ -82,7 +82,8 @@ Battery only means the checked `PWR_SRC` read that permits light sleep: a
 battery source, no 5VIN/5VINOUT and no USB host. External power never powers
 off automatically, and returning to battery restarts the timeout. P does not
 delay it. Loading a book, an open N or A radio, a delivery prompt or a running
-transfer postpones it until that work ends. A shutdown that does not complete
+transfer postpones it until that work ends, and the timeout restarts when a
+background transfer ends. A shutdown that does not complete
 (for example, when progress cannot be saved) is retried after 60 s.
 
 The timeout is byte 11 of the reader settings record, previously reserved zero.
