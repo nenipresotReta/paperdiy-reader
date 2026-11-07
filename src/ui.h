@@ -32,6 +32,7 @@ extern bool settingsStaConfigured,settingsStaConnected;
 extern String settingsLanType,settingsLanName,settingsLanState;
 // P: Settings status line, and the icon at the bottom-left of the library and
 // the reader while P is selected: online, connecting/retrying, or paused/stopped.
+// Transfer marks an accepted N batch continuing outside Settings.
 enum class LiveIcon : uint8_t {None,Online,Connecting,Off,Transfer};
 extern String settingsLiveStatus;
 extern LiveIcon liveIcon;

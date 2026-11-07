@@ -24,7 +24,7 @@ bookmarks, arbitrary deletion, firmware updates or command execution over N.
 Keep networking tied to the existing settings lifecycle: leaving settings
 without an accepted batch, selecting Off/A/P, shutdown and reboot stop the N
 service. USB power alone never
-starts it. Opening a received document consequently stops N in the first version.
+starts it. Opening a received document with no batch in progress therefore stops N.
 Receiving while reading would require a separately reviewed lifecycle change;
 removing `networkStop()` on navigation is not an acceptable shortcut.
 

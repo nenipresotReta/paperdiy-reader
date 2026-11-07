@@ -14,7 +14,8 @@ On USB or other external power, only lower the CPU frequency; keep the processor
 awake so USB enumeration, serial access, and firmware upload remain available.
 An active AP or STA also blocks manual light sleep, which would suspend Wi-Fi;
 idle CPU throttling remains enabled. Leaving settings disables the radio and
-restores the ordinary battery sleep policy, except in P.
+restores the ordinary battery sleep policy, except in P and during an accepted
+batch.
 
 P keeps its STA outside Settings, so on battery it blocks manual light sleep
 for as long as it runs, while reading too. Its policy (`live_policy.h`) is the

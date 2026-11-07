@@ -93,6 +93,11 @@ def clean_name(value):
     return value
 
 
+def same_open_file(item, other):
+    return (item["kind"] == "file" and other["kind"] == "file" and item["state"] in ("queued", "uncertain")
+            and (item["sha256"], item["name"]) == (other["sha256"], other["name"]))
+
+
 def clean_sender_label(value):
     if not value:
         raise Failure("label_required")
@@ -840,13 +845,23 @@ class Store:
         if previous and (previous["startSent"] or previous.get("batchId")):
             raise Failure("resolve_previous_push")
         count, size = self.object_usage()
-        staged = []
+        staged, chosen, repeated = [], [], []
         try:
             for source in sources:
                 if len(records) + len(staged) >= ARCHIVE_COUNT or count + len(staged) >= ARCHIVE_COUNT:
                     raise Failure("archive_full")
                 item = self.stage(source, kind, title)
+                # A retry continues its open entry, so the reader's accept screen
+                # never lists one file twice.
+                same = next((i for i in pending + staged if same_open_file(i, item)), None)
+                if same:
+                    self.discard(self.body(item))
+                    repeated.append(same)
+                    if same not in chosen:
+                        chosen.append(same)
+                    continue
                 staged.append(item)
+                chosen.append(item)
                 size += item["size"]
                 if size > ARCHIVE_BYTES:
                     raise Failure("archive_full")
@@ -864,8 +879,12 @@ class Store:
             if previous:
                 previous["state"] = "superseded"; previous.pop("code", None)
             records.extend(staged)
+            # Asking for this file again is the intent a re-offer needs.
+            for item in repeated:
+                if item.get("code") == "not_accepted":
+                    item.pop("code")
             self.save()
-            return staged
+            return chosen
         except BaseException:
             for item in staged:
                 if item not in records:
@@ -1639,13 +1658,13 @@ class Session:
 ADVICE = {
     "device_not_found": "On the reader: Settings, then press A until N.",
     "device_unreachable": "On the reader: Settings, then press A until N.",
-    "awaiting_acceptance": "On the reader, short-press A+B to accept, then stay until it shows Done.",
-    "awaiting_pairing_confirmation": "If the reader shows the same number, short-press A+B and stay until Done; otherwise switch off N.",
+    "awaiting_acceptance": "On the reader, short-press A+B to accept. You can leave Settings after that.",
+    "awaiting_pairing_confirmation": "If the reader shows the same number, short-press A+B; otherwise switch off N.",
     "not_accepted": "It was not accepted on the reader (cancelled, timed out, or the connection dropped).",
     "transfer_interrupted": "The transfer stopped before completion; nothing was published. Return to N to continue.",
     "budget_exhausted": "The transfer stopped before completion; nothing was published. Return to N to continue.",
     "uncertain": "The reader may or may not have published an entry. Return to N to check its receipt.",
-    "batch_busy": "The reader is busy with another sender's files.",
+    "batch_busy": "The reader still holds a transfer, possibly one of ours that stopped. Try again in about a minute.",
     "multiple_devices": "More than one reader answered. Use --host with the IP shown on the reader's N screen.",
     "live_unavailable": "The reader is not on P. On the reader: Settings, then press A until P.",
     "live_mode": "The reader is on P, which only takes live Push. For files or pairing: Settings, then press A until N.",
