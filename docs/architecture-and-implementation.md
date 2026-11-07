@@ -75,9 +75,10 @@ These limits do not guarantee that every maximum fits simultaneously. The import
 | [network.cpp](../src/network.cpp), [web_page.h](../src/web_page.h) | Explicit AP/STA lifecycle and English WebUI |
 | [lan_service.cpp](../src/lan_service.cpp), [lan_tls.cpp](../src/lan_tls.cpp), [lan_nvs.cpp](../src/lan_nvs.cpp) | Paired TLS service and fail-closed credential persistence |
 | [live_policy.h](../src/live_policy.h) | P lifecycle: connection deadlines, external-power backoff, low-battery pause |
+| [transfer_policy.h](../src/transfer_policy.h) | When an accepted N batch stops outside Settings |
 | [delivery_store.h](../src/delivery_store.h), [delivery_store_sd.cpp](../src/delivery_store_sd.cpp) | Non-overwriting files, bounded Push replacement and receipts |
 | [usb_transport.cpp](../src/usb_transport.cpp) | USB host connection state for the sleep policy |
-| [power.cpp](../src/power.cpp), [card_sleep.h](../src/card_sleep.h) | CPU profiles, wake sources, card interrupt restoration and charging LED |
+| [power.cpp](../src/power.cpp), [card_sleep.h](../src/card_sleep.h), [auto_off.h](../src/auto_off.h) | CPU profiles, wake sources, card interrupt restoration, charging LED and automatic power-off |
 
 Header-only components expose storage, allocator, clock and glyph interfaces to native fault-injection tests. Global current-document state remains a coupling point. A future `DocumentSession`/`CacheStore` split should preserve these existing ownership boundaries rather than introduce concurrent FAT access.
 
@@ -87,7 +88,7 @@ Boot validates the board and display, opens preferences, allocates the text buff
 
 The library has 22 rows per screen. Below the settings entries, a Recent row repeats the most recently opened book other than Push. It is hidden while that book is not listed, and a shutdown with the cursor on it restores the cursor there. A/B moves through books or pages; a short A+B chord opens or returns; holding both for two seconds requests shutdown. Library double-click recognition defaults to a 200 ms release-to-release window. Reading clicks do not wait for that window. Single-key repeat starts after 600 ms and repeats every 350 ms where enabled.
 
-Rotation reverses library/reading navigation direction. Settings retain the physical N/A and R grouping; the default mode cycle is N → A → Off. New device settings belong in additional settings entries styled as books; detailed controls remain in the WebUI.
+Rotation reverses library/reading navigation direction. Settings retain the physical N/A and R grouping; the mode cycle is N → A → P → Off. New device settings belong in additional settings entries styled as books; detailed controls remain in the WebUI.
 
 During `Loading`, ordinary navigation is consumed and discarded. The footer icon shows work without a central loading message. A power request is latched; the open job closes its handles and, when the optional journal is available, verifies a completed-chapter checkpoint before shutdown proceeds. Completion applies a separate 200 ms released-input guard, so clicks made during loading cannot become page turns afterward.
 
@@ -246,13 +247,14 @@ Native/WASM tests compare complete PDT bytes and decoded semantic meaning. A loo
 | English hyphenation / alignment | On / justified; left alignment available |
 | Refresh policy | Balanced; Clarity / Less flashing alternatives |
 | Shutdown retained ink | 50%; 0–100% |
+| Auto power off on battery | 30 min; 10/15/60/120 min or never |
 | Artwork | Firmware fallback, two upload slots or none |
 
 `resumeV2` stores scene, stable settings ID and a bounded path. Corrupt V2 does not revive stale V1. Rotation has checked persistence. `wifiCfgV1` stores Wi-Fi separately; endpoints do not return its password. Application NVS is not encrypted.
 
 Partial refresh is the normal page path. Scene changes and periodic cleanup retain necessary full refreshes. Status areas (P icon, battery, loading icon, reader footer, delivery progress lines) always refresh fast and neither count toward nor trigger the periodic full refresh; geometry/settings changes invalidate the relevant refresh baseline. Panel completion is awaited before shutdown.
 
-The CPU uses 240 MHz for active work and 80 MHz in ordinary idle. External power, live radio, USB and unstable input/storage block manual light sleep. Button/card wake sources are rearmed after wake; the LED follows charging status. These are software policies. No measured standby current or battery-life claim is available. See [power](power.md) for the tested wake boundary.
+The CPU uses 240 MHz for active work and 80 MHz in ordinary idle. It stays at 240 MHz while a file is receiving or being checked. External power, live radio, USB and unstable input/storage block manual light sleep. A sleep window expires book proofs but keeps storage custody, so the delivery store is not remounted on wake. On battery, an idle timeout or a low charge powers the reader off through the A+B path. Button/card wake sources are rearmed after wake; the LED follows charging status. These are software policies. No measured standby current or battery-life claim is available. See [power](power.md) for the tested wake boundary.
 
 ## 11. Networking and USB
 
@@ -266,11 +268,11 @@ Shutdown artwork conversion occurs in the browser: decode a local image, fit the
 
 The STA service opens only when selected. It uses a device P-256 certificate, TLS 1.2 ECDHE-ECDSA/AES-128-GCM and exact certificate-DER SHA-256 pinning before sender credentials or HTTP bytes. Bearer authorization is separate. AP cookies and provisioning routes do not apply to LAN clients.
 
-In N the receiver lives only on Settings with N active. Every delivery is an offered batch of 1–8 entries that the user accepts with one short A+B; uploads outside the accepted batch are refused, and the accepted set ends with the N session. An unknown sender's first batch pairs it through a commit/reveal short authentication string shown on the reader, so pairing needs no QR, camera or clipboard. The bounded packed-entry parser ([lan_batch.h](../src/lan_batch.h)) runs before authentication and is fuzzed. While N is active the reader answers mDNS for `paperdiy-<deviceId>.local` and `_paperdiy._tcp`; the device ID is the certificate fingerprint prefix. Paired senders are listed, removed or forgotten from the AP WebUI. P keeps the same receiver running outside Settings, but only for Push from senders already paired in N; batches and pairing are refused there (see [LAN protocol](lan-protocol.md#p-live-push)).
+In N the receiver lives on Settings with N active, and continues outside Settings only for a batch the user accepted, until that batch ends. Every delivery is an offered batch of 1–8 entries that the user accepts with one short A+B; uploads outside the accepted batch are refused, and the accepted set ends with the N session. An unknown sender's first batch pairs it through a commit/reveal short authentication string shown on the reader, so pairing needs no QR, camera or clipboard. The bounded packed-entry parser ([lan_batch.h](../src/lan_batch.h)) runs before authentication and is fuzzed. While N is active the reader answers mDNS for `paperdiy-<deviceId>.local` and `_paperdiy._tcp`; the device ID is the certificate fingerprint prefix. Paired senders are listed, removed or forgotten from the AP WebUI. P keeps the same receiver running outside Settings, but only for Push from senders already paired in N; batches and pairing are refused there (see [LAN protocol](lan-protocol.md#p-live-push)).
 
 The separate `paperlan` namespace stores identity and at most four client verifiers. Only an explicit missing record permits creation; read/type/commit errors fail closed. Uncertain credential writes invalidate the RAM registry until a verified reload. Client labels are bounded UTF-8 and exclude control characters.
 
-The store permits one transaction, chunks up to 4 KiB, verification up to 8 KiB per poll and sixteen client-scoped receipts. Ordinary delivery creates a new book. Push is at most 16 KiB Markdown in two owned slots; revisions overwrite rather than accumulate. Only two fixed digest-bound progress records exist, and Push bypasses ordinary per-revision caches. The sender retains history. Ambiguous publication is reported as Uncertain and recovered by checking bytes. Protocol and skill integration are in [LAN protocol](lan-protocol.md).
+The store permits one transaction, chunks up to 4 KiB over one reused TLS connection, write retries, verification up to 8 KiB per poll and sixteen client-scoped receipts. Ordinary delivery creates a new book. Push is at most 16 KiB Markdown in two owned slots; revisions overwrite rather than accumulate. Only two fixed digest-bound progress records exist, and Push bypasses ordinary per-revision caches. The sender retains history. Ambiguous publication is reported as Uncertain and recovered by checking bytes. Protocol and skill integration are in [LAN protocol](lan-protocol.md).
 
 ### USB
 

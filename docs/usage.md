@@ -4,7 +4,7 @@
 
 ## Library and files
 
-Use a FAT32 microSD card. Copy files onto it, safely eject it, then insert it into the reader; the AP page also accepts uploads. The flat library has 22 rows per screen, with a settings entry and 21 books on the first screen, and at most 256 books. Folder navigation and web folder management are not implemented.
+Use a FAT32 microSD card. Copy files onto it, safely eject it, then insert it into the reader; the AP page also accepts uploads. The flat library has 22 rows per screen, with a settings entry and 21 books on the first screen, and at most 256 books. Below the settings entry, a Recent row repeats the book you opened last, other than Push, while that book is still listed. Folder navigation and web folder management are not implemented.
 
 | Format | Source-file limit | Notes |
 | --- | --- | --- |
@@ -59,7 +59,7 @@ P is meant for a reader on external power. On battery it keeps the radio awake w
 
 USB is for the serial console and firmware flashing only; the reader never shows its card to a computer. Transfer books through A, N/P or a safely removed SD card.
 
-Inactive entries carry `¬`. Leaving settings closes N and A; P keeps running. After reboot, restored settings start with N/A inactive. USB attachment enables neither book transfer nor networking. Reading settings and shutdown-image management are available only through A.
+Inactive entries carry `¬`. Leaving settings closes A. It also closes N, unless a batch you accepted is still in progress. P keeps running. After reboot, restored settings start with N/A inactive. USB attachment enables neither book transfer nor networking. Reading settings and shutdown-image management are available only through A.
 
 N and P use the [LAN client](lan-protocol.md) on macOS, Linux or Windows (P: `push SOURCE --live`); an AI agent can use the [delivery skill](skills/paperdiy-delivery/SKILL.md). Each delivery asks first:
 
@@ -84,6 +84,8 @@ Supported EPUB content declaring `vertical-rl` flows top-to-bottom and right-to-
 
 Hold A+B for at least two seconds, then release after the shutdown scene appears. Shutdown saves progress first; a save failure leaves the reader on for retry.
 
+On battery, the reader also shuts down the same way after 30 minutes without activity, or when the battery reaches 5 %. The power key turns it on again. You can change the time or turn it off in the WebUI settings; the 5 % shutdown always applies. External power never shuts it down, and a transfer or an open N or A postpones it.
+
 Startup restores the prior reading scene, library selection or settings; a first boot opens the library. Reading resumes by saved text position, so page numbers can change with layout. Public firmware has no private shutdown image. A private build may supply `PAPERDIY_SHUTDOWN_HEADER` outside the repository.
 
 The library shows battery state, and the bottom icon shows device state. Conditional idle sleep should execute the first press directly. Active networking blocks manual light sleep. The charging LED follows charging state. See [power behavior](power.md) for evidence and limits; electrical current still requires measurement.
@@ -103,6 +105,7 @@ book is added on the reader. Save explicitly; settings persist offline.
 | Double-click interval | 100–400 ms, default 200 ms; measured between releases |
 | Screen refresh | Clarity / Balanced (default) / Less flashing |
 | Sleep background ink | 0–100%, default 50%; monochrome ordered dithering approximates intermediate values |
+| Auto power off on battery | 10 / 15 / 30 (default) / 60 / 120 min / Never; the 5 % shutdown still applies |
 
 Presets affect prose, not interface labels or the native 24 px code font. Math
 keeps its native 28/20/14 px sizes. Typography changes apply when a book is next

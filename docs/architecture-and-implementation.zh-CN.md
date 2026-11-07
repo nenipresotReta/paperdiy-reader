@@ -75,9 +75,10 @@ flowchart TD
 | [network.cpp](../src/network.cpp)、[web_page.h](../src/web_page.h) | 显式 AP/STA 生命周期、英文 WebUI |
 | [lan_service.cpp](../src/lan_service.cpp)、[lan_tls.cpp](../src/lan_tls.cpp)、[lan_nvs.cpp](../src/lan_nvs.cpp) | 配对 TLS 服务及遇错关闭的凭据持久化 |
 | [live_policy.h](../src/live_policy.h) | P 生命周期：连接时限、外接电源退避、低电量暂停 |
+| [transfer_policy.h](../src/transfer_policy.h) | 已接受的 N 批次在设置页之外何时停止 |
 | [delivery_store.h](../src/delivery_store.h)、[delivery_store_sd.cpp](../src/delivery_store_sd.cpp) | 不覆盖文件、有界 Push 替换、回执 |
 | [usb_transport.cpp](../src/usb_transport.cpp) | 供睡眠策略使用的 USB 主机连接状态 |
-| [power.cpp](../src/power.cpp)、[card_sleep.h](../src/card_sleep.h) | CPU 档位、唤醒源、卡中断恢复、充电 LED |
+| [power.cpp](../src/power.cpp)、[card_sleep.h](../src/card_sleep.h)、[auto_off.h](../src/auto_off.h) | CPU 档位、唤醒源、卡中断恢复、充电 LED、自动关机 |
 
 仅头文件组件向主机故障注入测试暴露存储、分配、时钟和字形接口。全局当前文档仍有耦合。未来拆为 `DocumentSession`/`CacheStore` 时应保留现有所有权边界，不能引入并发 FAT 访问。
 
@@ -87,7 +88,7 @@ flowchart TD
 
 书库每屏 22 行。设置项下面是 Recent 行，重复最近打开的非 Push 书；那本书不在书库时隐藏，光标停在它上面关机，开机后仍停在它上面。A/B 移动书或页；短 A+B 打开/返回；同时按住两秒请求关机。书库双击默认是 release-to-release 200 ms；阅读点击不等该窗口。启用单键重复时，600 ms 后开始、每 350 ms 重复。
 
-旋转反转书库/阅读导航方向；设置保留物理 N/A 与 R 分组，默认模式循环为 N → A → 关闭。新设备设置应加入书籍样式设置项，详细控制留 WebUI。
+旋转反转书库/阅读导航方向；设置保留物理 N/A 与 R 分组，模式循环为 N → A → P → 关闭。新设备设置应加入书籍样式设置项，详细控制留 WebUI。
 
 `Loading` 消费并丢弃普通导航。页脚图标表示工作，不显示中央 loading 文案。电源请求被锁存；打开任务关闭句柄并在日志可用时完成有效检查点后才继续关机。完成另有 200 ms 输入释放门禁，加载期间点击不能变成随后翻页。
 
@@ -246,13 +247,14 @@ WebUI 先上传原书，再按服务端确认名称上传旁车，准备运行�
 | 英文断词 / 对齐 | 开 / 两端；可左对齐 |
 | 刷新策略 | 均衡；清晰 / 少闪可选 |
 | 关机保留 ink | 50%；0–100% |
+| 电池自动关机 | 30 分钟；10/15/60/120 分钟或从不 |
 | 图片 | 固件回退、两个上传槽或无 |
 
 `resumeV2` 保存场景、稳定设置 ID、有界路径；V2 损坏不复活旧 V1。旋转有校验持久化。`wifiCfgV1` 独立保存 Wi-Fi，端点不返回密码；应用 NVS 未加密。
 
 翻页正常使用局刷；场景变化/周期清理保留必要全刷。状态区域（P 图标、电量、加载图标、阅读页脚、投递进度行）始终快速局刷，不计入也不触发周期全刷；几何/设置变化失效相应刷新基线。关机前等待面板完成。
 
-CPU 活动工作 240 MHz、普通空闲 80 MHz。外电、无线、USB、输入/存储不稳定时阻止手动 light sleep。唤醒后重设按键/卡源，LED 跟随充电状态。这是软件策略，尚无待机电流/续航实测；唤醒边界见[电源](power.zh-CN.md)。
+CPU 活动工作 240 MHz、普通空闲 80 MHz；接收或校验文件时保持 240 MHz。外电、无线、USB、输入/存储不稳定时阻止手动 light sleep。睡眠窗口让书的证明过期，但保留存储 custody，所以醒来不重新挂载投递存储。使用电池时，空闲超时或低电量会走 A+B 路径关机。唤醒后重设按键/卡源，LED 跟随充电状态。这是软件策略，尚无待机电流/续航实测；唤醒边界见[电源](power.zh-CN.md)。
 
 ## 11. 网络与 USB
 
@@ -266,11 +268,11 @@ CPU 活动工作 240 MHz、普通空闲 80 MHz。外电、无线、USB、输入/
 
 STA 仅显式选择时开服务。设备 P-256 证书、TLS 1.2 ECDHE-ECDSA/AES-128-GCM，发送凭据/HTTP 前精确 pin 证书 DER 的 SHA-256。Bearer 独立；AP cookie/配网路由不适用于 LAN。
 
-N 的接收端只在设置页且 N 激活时存在。每次投递是 1–8 项的批次，用户短按一次 A+B 接受；不在已接受批次中的上传被拒绝，已接受集合随 N 会话结束。未知发送端的第一批通过阅读器上显示的承诺/揭示短验证码完成配对，因此配对不需要二维码、摄像头或剪贴板。有界的打包条目解析器（[lan_batch.h](../src/lan_batch.h)）在认证前运行并经过模糊测试。N 期间阅读器应答 `paperdiy-<deviceId>.local` 与 `_paperdiy._tcp` 的 mDNS 查询；设备 ID 是证书指纹前缀。已配对发送端在热点网页中列出、移除或全部遗忘。P 在设置页之外也保持同一个接收端运行，但只接受此前在 N 里配对过的发送端发来的 Push，批次和配对一律拒绝（见 [LAN 协议](lan-protocol.zh-CN.md#p实时-push)）。
+N 的接收端在设置页且 N 激活时存在，只有用户已接受的批次会在设置页之外继续，直到批次结束。每次投递是 1–8 项的批次，用户短按一次 A+B 接受；不在已接受批次中的上传被拒绝，已接受集合随 N 会话结束。未知发送端的第一批通过阅读器上显示的承诺/揭示短验证码完成配对，因此配对不需要二维码、摄像头或剪贴板。有界的打包条目解析器（[lan_batch.h](../src/lan_batch.h)）在认证前运行并经过模糊测试。N 期间阅读器应答 `paperdiy-<deviceId>.local` 与 `_paperdiy._tcp` 的 mDNS 查询；设备 ID 是证书指纹前缀。已配对发送端在热点网页中列出、移除或全部遗忘。P 在设置页之外也保持同一个接收端运行，但只接受此前在 N 里配对过的发送端发来的 Push，批次和配对一律拒绝（见 [LAN 协议](lan-protocol.zh-CN.md#p实时-push)）。
 
 独立 `paperlan` 保存身份及最多四个客户端 verifier；只有明确缺失才允许创建，读取/类型/提交错误关闭准入。不确定写使 RAM registry 失效，直到验证重载。标签有界 UTF-8，不含控制字符。
 
-store 同时一个事务、块最多 4 KiB、验证每 poll 最多 8 KiB、十六个客户端隔离回执。普通传输新建书；Push 最多 16 KiB Markdown，用两个自有槽覆盖版本而不累计。只有两个固定摘要进度记录，绕过普通逐版本缓存；历史由发送端保留。模糊发布报告 Uncertain，以字节核验恢复。协议/skill 见 [LAN 协议](lan-protocol.zh-CN.md)。
+store 同时一个事务、块最多 4 KiB 并复用一条 TLS 连接、写入可重试、验证每 poll 最多 8 KiB、十六个客户端隔离回执。普通传输新建书；Push 最多 16 KiB Markdown，用两个自有槽覆盖版本而不累计。只有两个固定摘要进度记录，绕过普通逐版本缓存；历史由发送端保留。模糊发布报告 Uncertain，以字节核验恢复。协议/skill 见 [LAN 协议](lan-protocol.zh-CN.md)。
 
 ### USB
 
