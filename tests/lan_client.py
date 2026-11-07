@@ -567,6 +567,13 @@ class StoreTests(unittest.TestCase):
             [item] = store.enqueue(None, [str(good)], "file")
             self.assertEqual(item["name"], "a.md")
             self.assertEqual(len(list((self.state / "objects").iterdir())), 1)
+            [again] = store.enqueue(None, [str(good), str(good)], "file")
+            self.assertIs(again, item)
+            self.assertEqual(len(list((self.state / "objects").iterdir())), 1)
+            item["state"] = "uncertain"
+            self.assertIs(store.enqueue(None, [str(good)], "file")[0], item)
+            item["state"] = "blocked"
+            self.assertIsNot(store.enqueue(None, [str(good)], "file")[0], item)
 
 
 # ------------------------------------------------------------ delivery flows
@@ -748,6 +755,37 @@ class Paired(World):
         self.reader.accept_at = self.clock() + 1
         code, result = self.run_cli("sync", "--reoffer", "--json", "--wait", "30")
         self.assertEqual(result["summary"]["delivered"], 1)
+
+    def test_sending_the_same_file_again_keeps_one_entry(self):
+        path = self.source("a.md", b"same body")
+        code, first = self.run_cli("send", path, "--json", "--wait", "0")
+        code, second = self.run_cli("send", path, path, "--json", "--wait", "0")
+        self.assertEqual([i["requestId"] for i in second["items"]], [first["items"][0]["requestId"]])
+        self.reader.accept_at = self.clock() + 1
+        code, result = self.run_cli("send", path, "--json", "--wait", "30")
+        self.assertEqual((result["summary"]["delivered"], result["summary"]["total"]), (1, 1), result)
+        offers = [e[3] for e in self.net.log if e[2] == "/lan/v2/batch/offer" and "label" not in e[3]]
+        self.assertEqual([len(o) for o in offers], [1])
+
+    def test_sending_a_refused_file_again_offers_it(self):
+        path = self.source("a.md", b"same body")
+        self.run_cli("send", path, "--json", "--wait", "5")
+        self.reader.switch_off(); self.reader.switch_on()
+        code, result = self.run_cli("sync", "--json", "--wait", "5")
+        self.assertEqual(result["items"][0]["code"], "not_accepted")
+        self.reader.accept_at = self.clock() + 1
+        code, result = self.run_cli("send", path, "--json", "--wait", "30")
+        self.assertEqual((result["summary"]["delivered"], result["summary"]["total"]), (1, 1), result)
+
+    def test_finished_or_renamed_files_get_their_own_entry(self):
+        path = self.source("a.md", b"same body")
+        self.reader.accept_at = self.clock() + 1
+        code, delivered = self.run_cli("send", path, "--json", "--wait", "30")
+        self.assertEqual(delivered["summary"]["delivered"], 1, delivered)
+        code, again = self.run_cli("send", path, "--json", "--wait", "0")
+        self.assertNotEqual(again["items"][0]["requestId"], delivered["items"][0]["requestId"])
+        code, renamed = self.run_cli("send", self.source("b.md", b"same body"), "--json", "--wait", "0")
+        self.assertNotEqual(renamed["items"][0]["requestId"], again["items"][0]["requestId"])
 
     def test_one_offer_per_entry_per_command_even_with_reoffer(self):
         self.run_cli("send", self.source("a.md"), "--json", "--wait", "1")

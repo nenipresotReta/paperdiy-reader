@@ -160,8 +160,8 @@ sender keeps retrying each step of the transfer for up to 120 s. Publishing a
 file may make the open book reopen once at its next uncached page.
 
 N stops 10 s after the last file ends, which leaves time for the sender to read
-its result; opening a book restarts that wait. It also stops after 60 s with no
-request from the sender. If the batch did not finish, the icon changes to a
+its result; opening a book restarts that wait. An upload with no progress for 45 s ends, and
+N stops 10 s later. N also stops after 60 s with no request from the sender. If the batch did not finish, the icon changes to a
 struck-out arc until Settings is next opened. Returning to Settings shows the
 transfer again; A then stops it.
 

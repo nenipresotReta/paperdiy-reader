@@ -9,9 +9,10 @@ library only; macOS, Linux including containers, Windows). Run it as
 `docs/lan-protocol.md` in that checkout. Never replace it with curl or another
 client.
 
-The reader receives only while it is on **Settings with N active**, and nothing
-is written until the user **short-presses A+B** on the reader to accept the
-batch. Your job is to send, tell the user exactly what to do on the reader,
+An offer reaches the reader only while it is on **Settings with N active**, and
+nothing is written until the user **short-presses A+B** on the reader to accept
+the batch. After that the reader can leave Settings and the transfer continues.
+Your job is to send, tell the user exactly what to do on the reader,
 and report receipts.
 
 ## Happy path
@@ -30,9 +31,9 @@ and report receipts.
    |---|---|---|
    | `device_not_found`, `device_unreachable` | "On the reader: Settings → press A until N." | the same command again, or `sync --json --wait 300` |
    | `multiple_devices` | "I see more than one reader. Which IP does yours show on its N screen?" | retry with `--host IP` |
-   | `awaiting_acceptance` | "On the reader, short-press A+B to accept the files from LABEL, and stay until it shows Done." | `sync --batch-id ID --json --wait 300` |
-   | `awaiting_pairing_confirmation` | "The reader should show *New sender LABEL · SAS* and the files. If the number matches, short-press A+B and stay until Done. If it doesn't, switch off N." | `sync --batch-id ID --json --wait 300` |
-   | `batch_busy` | "The reader is accepting another sender's files; try again when it shows Done." | `sync --json --wait 300` |
+   | `awaiting_acceptance` | "On the reader, short-press A+B to accept the files from LABEL. You can leave Settings after that." | `sync --batch-id ID --json --wait 300` |
+   | `awaiting_pairing_confirmation` | "The reader should show *New sender LABEL · SAS* and the files. If the number matches, short-press A+B. If it doesn't, switch off N." | `sync --batch-id ID --json --wait 300` |
+   | `batch_busy` | "The reader still holds a transfer, possibly one of ours that stopped. I'll keep trying for a few minutes." If it persists and no other sender is active: "Leave N and enter it again." | `sync --json --wait 300` |
 
    Relay `sas` exactly as returned (e.g. `506 740`).
 
@@ -40,7 +41,7 @@ and report receipts.
 
    | Result | Say |
    |---|---|
-   | every entry `delivered` | "Delivered N files — the reader confirmed each. It should show Done; you can leave Settings." |
+   | every entry `delivered` | "Delivered N files — the reader confirmed each." |
    | some `delivered` | "Delivered K of N; "name" is CODE." |
    | `queued` + `not_accepted` | "It wasn't accepted on the reader (cancelled, timed out, or the connection dropped). Do you want me to offer it again?" Only if yes: `sync --reoffer --json --wait 300`. |
    | `queued` + `transfer_interrupted` / `budget_exhausted` | "The transfer stopped before completion; nothing was published. Return to N and I'll offer the rest again." → `sync` |
@@ -50,6 +51,23 @@ and report receipts.
    When more than 8 entries are queued, they go in batches of 8; each batch
    needs its own A+B. Say "This was batch 1 of 2; accept it and I'll send the
    next."
+
+## Long transfers
+
+A foreground `send` or `sync` can hold back your reply, so the user never sees
+the A+B instruction, and a host tool timeout can kill it mid-upload. If your host
+has either limit, send with a short `--wait`, relay `next`, then run
+`sync --batch-id ID --json --wait 300` as a background process with a completion
+notification, and report from its receipts.
+
+- A killed `send` or `sync` is not a dead offer. Run `status --json`. An entry
+  with a `batchId` may still be live on the reader, so resume it with
+  `sync --batch-id ID`. The reader gives up on a silent upload after 45 s, and
+  the next run then offers the file again, which needs a new A+B.
+- Sending the same file under the same name continues its open entry instead of
+  adding a copy, and it offers again a file that was `not_accepted`.
+- `--budget` is at most 600 s, about 16 MB at the speeds seen so far. After
+  `budget_exhausted`, run `sync` within 45 s to continue the same upload.
 
 ## Live Push (reader on P)
 
@@ -91,10 +109,18 @@ python3 tools/paperdiy_lan.py push board.md --title "Today" --live --position ke
   state: `label_required`, `source_unreadable`, `invalid_utf8`, `size_limit`,
   `lock_held` (another run is active), `state_dir_permissions`,
   `store_corrupt`, `ambiguous_device`, `unauthorized` (this sender was removed
-  on the reader; ask before pairing again).
+  on the reader; ask before pairing again), `invalid_name`.
+- The source filename is what the user reads on the accept screen. Use the book's
+  real title in its own language, never a romanization, or a short
+  `Title - Author.epub`; copy the file rather than changing the original. A name
+  has at most 96 UTF-8 bytes, no control characters, none of `/ \ : < > " | ? *`,
+  no leading dot, and no trailing dot or space.
 
 ## Readers and senders
 
+- `status` reads only this sender's local state and never contacts a reader. Its
+  `devices` are paired readers, so it says nothing about whether one is reachable.
+  To find out, send and act on `next`.
 - With one paired reader nothing more is needed. With several, add
   `--device DEVICE_ID` (from `status`); `ambiguous_device` means you must ask
   which one.
