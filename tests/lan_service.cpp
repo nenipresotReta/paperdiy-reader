@@ -146,6 +146,7 @@ void setHooks(delivery_store::SDHooks value){hooks=value;}
 bool mount(){lease=storage_validation::lease();enabled=sdOK&&lease;store().beginRecovery();return enabled;}
 void unmount(){store().stop();enabled=false;lease=0;}
 bool mounted(){return accessible();}
+bool metadataCurrent(){return accessible();}
 void poll(){if(enabled)store().poll();}
 void invalidate(){enabled=false;lease=0;store().stop();}
 }

@@ -80,14 +80,24 @@ the storage lease is revoked. A changed physical level requests the usual card
 debounce; ordinary timer/key wakes do not synthesize insertion events.
 
 Each sleep attempt also drops in-memory source fingerprints and resident-open
-proofs with `sourceChanged()`. This conservative rule covers a remove/reinsert
+proofs with `revokeProofs()`. This conservative rule covers a remove/reinsert
 pair while the edge ISR is disabled. The loaded page and its page table remain
 usable; reopening a book after sleep requires source validation again. Keeping
 validation proofs across sleep is intentionally deferred until hardware can
 identify every card transition during that interval.
 
+The delivery store keeps its records across sleep. It binds to storage custody,
+which a sleep window does not move, so waking neither remounts nor repeats its
+recovery and the next sleep is not held off. A remount, removal, `invalidate()`
+or a write from outside the store still moves custody and forces full recovery.
+`lan_service::start()` rereads the records if any sleep window has passed since
+they were read, so N and P never answer a sender from records older than the
+last sleep. A store left Uncertain also waits for that start.
+
 Host `card_sleep` tests cover both card levels, normal/cancelled/failed windows,
-each GPIO adapter failure, cleanup ordering and proof invalidation. The built
+each GPIO adapter failure, cleanup ordering and proof invalidation. Host
+`delivery_store_sd` runs the real SD adapter and storage lifecycle across sleep
+windows on a directory standing in for the card. The built
 card callback contains only a DRAM atomic-byte store in IRAM, with no allocation
 or runtime initialization calls. The pinned Arduino GPIO dispatcher itself is
 flash-resident, so this does not claim an entirely IRAM-resident GPIO service.

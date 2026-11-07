@@ -23,7 +23,7 @@ struct CardSleepBackend {
   bool restoreEdge(){return gpio_set_intr_type(GPIO_NUM_48,GPIO_INTR_ANYEDGE)==ESP_OK;}
   bool enableInterrupt(){return gpio_intr_enable(GPIO_NUM_48)==ESP_OK;}
   int level(){return digitalRead(48);}
-  void revokeProofs(){storage_validation::sourceChanged();}
+  void revokeProofs(){storage_validation::revokeProofs();}
   void revokeTrust(){storage_validation::invalidate();}
   void signalChange(){storage_validation::signalCardEvent();}
 };

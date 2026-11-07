@@ -16,7 +16,7 @@ struct Pins {
   bool restoreEdge(){calls+='e';if(fail=='e')return false;trigger=Edge;return true;}
   bool enableInterrupt(){calls+='i';assert(trigger==Edge);if(fail=='i')return false;interrupt=true;return true;}
   int level(){return pin;}
-  void revokeProofs(){calls+='p';storage_validation::sourceChanged();}
+  void revokeProofs(){calls+='p';storage_validation::revokeProofs();}
   void revokeTrust(){calls+='r';storage_validation::invalidate();}
   void signalChange(){calls+='s';storage_validation::signalCardEvent();}
 };
@@ -25,7 +25,7 @@ int main(){
   // Normal sleep, a cancelled attempt and sleep/configuration failures share
   // this adapter. Every path restores ANYEDGE before enabling the card ISR.
   for(int initial:{0,1})for(int outcome=0;outcome<3;++outcome){
-    storage_validation::beginExclusive();const auto old=storage_validation::lease();
+    storage_validation::beginExclusive();const auto old=storage_validation::lease(),custody=storage_validation::custody();
     uint8_t key[32]={},digest[32]={},out[32];
     storage_validation::remember(old,key,12,34,digest);storage_validation::rememberGraph(old,key,digest);
     Pins pins;pins.pin=initial;
@@ -40,6 +40,7 @@ int main(){
     }
     assert(pins.interrupt&&!pins.wake&&pins.trigger==Pins::Edge&&pins.calls=="pdawei");
     assert(!storage_validation::cardEventPending()); // Never fake an insertion.
+    assert(storage_validation::custody()==custody); // Proofs expire; the mount does not.
   }
   for(char failure:{'d','a','w','e','i'}){
     storage_validation::beginExclusive();Pins pins;pins.fail=failure;
@@ -47,7 +48,7 @@ int main(){
       card_sleep::Window<Pins> window(pins,0);
       const bool began=window.begin();assert(began==(failure!='d'&&failure!='a'));
       const bool restored=window.finish();assert(restored==(failure=='d'||failure=='a'));
-      if(!restored)assert(!storage_validation::lease());
+      if(!restored)assert(!storage_validation::lease()&&!storage_validation::custody());
     }
     if(failure=='e')assert(!pins.interrupt&&pins.calls.find('i')==std::string::npos);
     assert(pins.calls.find('w')!=std::string::npos&&pins.calls.find('e')!=std::string::npos);
@@ -55,9 +56,18 @@ int main(){
   for(int initial:{0,1}){
     storage_validation::beginExclusive();Pins pins;pins.pin=initial;
     card_sleep::Window<Pins> window(pins,initial);assert(window.begin());pins.pin=!initial;
-    assert(window.finish()&&storage_validation::cardEventPending()&&!storage_validation::lease());
+    assert(window.finish()&&storage_validation::cardEventPending()&&!storage_validation::lease()&&!storage_validation::custody());
     assert(pins.calls=="pdaweis");
   }
+  // Everything except a sleep window moves custody with the lease.
+  storage_validation::acknowledgeCardEvent();storage_validation::beginExclusive();
+  auto custody=storage_validation::custody();
+  storage_validation::sourceChanged();assert(storage_validation::custody()&&storage_validation::custody()!=custody);
+  custody=storage_validation::custody();
+  storage_validation::beginExclusive();assert(storage_validation::custody()&&storage_validation::custody()!=custody);
+  custody=storage_validation::custody();
+  storage_validation::invalidate();assert(!storage_validation::custody());
+  storage_validation::beginExclusive();assert(storage_validation::custody()!=custody);
   storage_validation::beginExclusive();Pins untouched;
   {card_sleep::Window<Pins> window(untouched,0);}
   assert(untouched.calls.empty()&&untouched.interrupt);

@@ -454,7 +454,9 @@ bool start(const char* ip,bool live){
   // A publication/receipt I/O failure may have left a durable intent. Explicit
   // N restart replays bounded recovery against that same final target; it must
   // not strand the live Store in a non-polling Uncertain state indefinitely.
-  if(delivery_store_sd::store().activeState()==State::Uncertain){delivery_store_sd::unmount();storageInitialized=false;}
+  // Sleep keeps the Store without any card I/O, but cannot prove which card it
+  // woke up with, so reread the records before a sender can depend on them.
+  if(delivery_store_sd::store().activeState()==State::Uncertain||!delivery_store_sd::metadataCurrent()){delivery_store_sd::unmount();storageInitialized=false;}
   storagePoll();if(!delivery_store_sd::mounted()){storageInitialized=false;storagePoll();}
   if(!delivery_store_sd::mounted()||!credentials.open()||!registry.load(credentials)||!lan_tls::begin(credentials,request))return false;
   address=ip;epoch=randomHex(16);badWindow=lastUi=millis();badAttempts=0;running=true;credentialsDraining=false;liveMode=live;

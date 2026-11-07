@@ -7,7 +7,7 @@ struct SDHooks {
 };
 Store& sdStore();
 // App task, after local FAT mount and before exposing the N receiver. Captures
-// its storage lease, creates only fixed owned directories and starts recovery.
+// its storage custody, creates only fixed owned directories and starts recovery.
 bool beginSDStore(SDHooks hooks=SDHooks());
 void pollSDStore();
 // Stop before network/USB handoff. Uncommitted stage only may be removed;
@@ -23,6 +23,9 @@ void setHooks(delivery_store::SDHooks hooks);
 bool mount();
 void unmount();
 bool mounted();
+// No sleep window since this mount read its records. mounted() stays true
+// across sleep, so anything a sender relies on must check this first.
+bool metadataCurrent();
 void poll();
 void invalidate();
 }
