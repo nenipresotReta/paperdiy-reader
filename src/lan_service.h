@@ -39,6 +39,9 @@ bool promptPending();
 const Prompt& prompt();
 bool acceptPrompt();
 
+// A file is moving. The main loop runs at full speed while this is true.
+bool transferring();
+
 // Sender management for the AP WebUI. Refuses while the LAN receiver runs.
 enum class RegistryStatus:uint8_t {Ok,Busy,Unavailable,Unreadable,Invalid};
 struct ClientInfo {std::string clientId,label;};

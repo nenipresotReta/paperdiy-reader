@@ -492,6 +492,11 @@ bool acceptPrompt(){
   shown={};shownState=batch.admitted?"Accepted":"Paired · "+batch.label;
   return true;
 }
+bool transferring(){
+  if(!running)return false;
+  const auto state=delivery_store_sd::store().activeState();
+  return state==State::Receiving||state==State::Checking;
+}
 bool poll(){
   if(!running)return false;
   lan_tls::poll();

@@ -6,7 +6,8 @@ This document describes the implemented idle policy and its technical limits. So
 
 ## Policy
 
-After one second without activity, lower the CPU from 240 MHz to 80 MHz.
+After one second without activity, lower the CPU from 240 MHz to 80 MHz. A LAN
+transfer keeps 240 MHz until the file is published or the transfer ends.
 
 On battery power, also enter manual light sleep with a one-second timer fallback.
 On USB or other external power, only lower the CPU frequency; keep the processor

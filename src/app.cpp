@@ -657,6 +657,7 @@ void appLoop(){
   idlePower((screen==Screen::Library||screen==Screen::Reading||screen==Screen::Settings)&&
       pendingCardLevel==cardLevel&&
       idle_power::backgroundAllowsSleep(sdBackgroundPending(),contentPrefetchPending(),screen==Screen::Settings)&&
-      !lan_service::storageBusy(),buttons.idle(),cardLevel,networkActive()||usb_transport::blocksSleep());
+      !lan_service::storageBusy(),buttons.idle(),cardLevel,networkActive()||usb_transport::blocksSleep(),
+      lan_service::transferring());
   device_loop_trace::mark(Stage::AfterIdle);
 }
