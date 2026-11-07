@@ -84,6 +84,8 @@ GET  /lan/v2/batch/status?batchId=…   （Bearer）
 
 POST 使用 `application/x-www-form-urlencoded`，双方均限制最多 16 个字段、编码后 17000 字节，可容纳 4096 字节 base64 分块及 8 个最坏条目的百分号编码。响应是带 Content-Length 的有界 JSON。发送端拒绝 chunked 响应、重复头/JSON 键、重定向、超过 8192 字节的头和超过 16384 字节的 JSON。错误以稳定 snake_case `code` 为准。
 
+每个请求通常使用自己的 TLS 连接。分块请求可以发送 `Connection: keep-alive`。如果连接继续留给下一块，阅读器回复相同的头；响应不是 2xx、有其他客户端在等待或接收端正在停止时，回复 `Connection: close`。阅读器对每个请求都检查授权，仍然拒绝 pipelining，连接空闲 5 秒后关闭。发送端在发其他请求之前先关闭这条连接。复用失败时，发送端在新连接上重发一次该分块；阅读器会确认内容相同且已接受的分块。
+
 | 操作 | 请求与结果 |
 | --- | --- |
 | `GET /lan/v1/capabilities` | `v:2`、`deviceId`、`pushRevision`、32 位十六进制 `epoch`、`receiptCapacity:16`、`receiptScope:"client"`、`batchEntries:8`、`limits`、`live`（仅 P 下为 `true`）。 |

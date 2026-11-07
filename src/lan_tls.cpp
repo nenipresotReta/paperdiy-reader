@@ -87,7 +87,7 @@ class Server {
   Handler handler=nullptr;
   std::unique_ptr<BoundedHttpRequest> request;
   std::string response;size_t sent=0;
-  uint32_t started=0,activity=0;bool serving=false,handshake=false,writing=false,draining=false;
+  uint32_t started=0,activity=0;bool serving=false,handshake=false,writing=false,draining=false,keep=false;
   Server(){mbedtls_ssl_config_init(&configuration);mbedtls_ssl_init(&tls);}
   ~Server(){close();listener.end();mbedtls_ssl_config_free(&configuration);}
   bool begin(lan_nvs::Store& preferences,Handler callback){
@@ -107,7 +107,7 @@ class Server {
   }
   void close(){
     client.stop();mbedtls_ssl_free(&tls);mbedtls_ssl_init(&tls);
-    request.reset();response.clear();sent=0;serving=handshake=writing=false;
+    request.reset();response.clear();sent=0;serving=handshake=writing=keep=false;
   }
   static int sendBytes(void* context,const unsigned char* data,size_t length){
     auto& self=*static_cast<Server*>(context);const int socket=self.client.fd();if(socket<0)return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
@@ -123,10 +123,19 @@ class Server {
     if(n<0)return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
     if(n)self.activity=millis();return n;
   }
-  void reply(Response value){
+  // Upload chunks may reuse the connection, which saves a handshake per chunk.
+  // Another waiting client ends the reuse: this server has one connection slot.
+  void reply(Response value,bool reuse=false){
     if(value.json.size()>RESPONSE_LIMIT)value={500,"{\"code\":\"response_limit\"}"};
-    response="HTTP/1.1 "+std::to_string(value.code)+" Response\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\nContent-Length: "+std::to_string(value.json.size())+"\r\n\r\n"+value.json;
+    keep=reuse&&value.code>=200&&value.code<300&&!draining&&!listener.hasClient();
+    response="HTTP/1.1 "+std::to_string(value.code)+" Response\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: "+(keep?"keep-alive":"close")+"\r\nContent-Length: "+std::to_string(value.json.size())+"\r\n\r\n"+value.json;
     writing=true;sent=0;
+  }
+  // The next request gets its own parser and deadlines on the same TLS session.
+  void nextRequest(){
+    request.reset(new(std::nothrow) BoundedHttpRequest);
+    if(!request){close();return;}
+    response.clear();sent=0;writing=keep=false;started=activity=millis();
   }
   void poll(){
     if(draining&&!serving)return;
@@ -148,7 +157,7 @@ class Server {
     }
     if(writing){
       const int n=mbedtls_ssl_write(&tls,reinterpret_cast<const uint8_t*>(response.data()+sent),response.size()-sent);
-      if(n>0){sent+=size_t(n);if(sent==response.size())close();}
+      if(n>0){sent+=size_t(n);if(sent==response.size()){if(keep&&!draining)nextRequest();else close();}}
       else if(n!=MBEDTLS_ERR_SSL_WANT_READ&&n!=MBEDTLS_ERR_SSL_WANT_WRITE)close();
       return;
     }
@@ -160,7 +169,8 @@ class Server {
       if(state==BoundedHttpRequest::State::Ready){
         // No pipelining: trailing bytes cannot be smuggled into a second call.
         if(i+1!=n){reply({400,"{\"code\":\"unexpected_bytes\"}"});return;}
-        reply(handler(*request));return;
+        const bool reuse=request->path=="/lan/v1/uploads/chunk"&&request->wantsKeepAlive();
+        reply(handler(*request),reuse);return;
       }
     }
   }

@@ -80,6 +80,14 @@ int main() {
   rejected("GET / HTTP/1.1\rX", 400);
   rejected("GET / HTTP/1.1\r\nHost: x\r\n folded: value\r\n\r\n", 400);
 
+  // Connection reuse needs an explicit HTTP/1.1 keep-alive and nothing else.
+  assert(!parse(post("x=v")).wantsKeepAlive());
+  assert(parse(post("x=v", "Connection: keep-alive\r\n")).wantsKeepAlive());
+  assert(parse(post("x=v", "connection: Keep-Alive\r\n")).wantsKeepAlive());
+  assert(!parse(post("x=v", "Connection: close\r\n")).wantsKeepAlive());
+  assert(!parse(post("x=v", "Connection: keep-alive\r\nConnection: close\r\n")).wantsKeepAlive());
+  assert(!parse("GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n").wantsKeepAlive());
+
   // Bytes after the declared request never become a second parsed request.
   request = parse(post("x=v") + "POST /evil HTTP/1.1\r\n\r\n");
   assert(request.state == BoundedHttpRequest::State::Ready && request.arguments.size() == 1);

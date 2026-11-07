@@ -1281,6 +1281,67 @@ class TLSFixture:
         assert not self.thread.is_alive(), "loopback fixture exceeded deadline"
 
 
+class ReusableTLSFixture:
+    """Answers every request on a connection until the plan says otherwise.
+    Each plan entry is one connection: (requests to answer, advertise keep-alive,
+    hold it open afterwards until the sender ends it)."""
+
+    def __init__(self, certificate, key, plan):
+        self.socket = socket.socket()
+        self.socket.bind(("127.0.0.1", 0)); self.socket.listen(4); self.socket.settimeout(3)
+        self.port = self.socket.getsockname()[1]
+        self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.context.load_cert_chain(certificate, key)
+        self.plan, self.requests, self.error = plan, [], None
+        self.thread = threading.Thread(target=self.run)
+
+    def read(self, stream):
+        data = b""
+        while b"\r\n\r\n" not in data:
+            block = stream.recv(8192)
+            if not block:
+                return None
+            data += block
+        head, body = data.split(b"\r\n\r\n", 1)
+        length = next(int(line.split(b":", 1)[1]) for line in head.split(b"\r\n")[1:]
+                      if line.lower().startswith(b"content-length:"))
+        while len(body) < length:
+            block = stream.recv(8192)
+            if not block:
+                return None
+            body += block
+        return head
+
+    def run(self):
+        try:
+            for connection, (answers, keep, hold) in enumerate(self.plan):
+                raw, _ = self.socket.accept()
+                with raw, self.context.wrap_socket(raw, server_side=True) as stream:
+                    stream.settimeout(3)
+                    for _ in range(answers):
+                        head = self.read(stream)
+                        if head is None:
+                            break
+                        self.requests.append((connection, head))
+                        stream.sendall(b'HTTP/1.1 200 OK\r\nConnection: %s\r\nContent-Length: 11\r\n\r\n{"ok":true}'
+                                       % (b"keep-alive" if keep else b"close"))
+                    else:
+                        if hold:
+                            self.read(stream)
+        except Exception as error:
+            self.error = error
+        finally:
+            self.socket.close()
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.thread.join(5)
+        assert not self.thread.is_alive(), "loopback fixture exceeded deadline"
+
+
 class TLSTests(unittest.TestCase):
     CREDENTIALS = ("b" * 16, "c" * 64)
 
@@ -1347,6 +1408,54 @@ class TLSTests(unittest.TestCase):
             with self.subTest(response=response[:20]), TLSFixture(self.cert, self.key, response) as server:
                 with self.assertRaisesRegex(lan.Failure, "invalid_response"):
                     self.request(server)
+
+    def send(self, http, server, path=lan.CHUNK_PATH):
+        result, observed = http.request(("127.0.0.1", server.port), "POST", path, {"offset": "0"}, pin=self.pin,
+                                        credentials=self.CREDENTIALS, deadline=lan.time.monotonic() + 5)
+        self.assertEqual((result, observed), ({"ok": True}, self.pin))
+
+    def test_chunks_share_a_connection_and_other_requests_end_it(self):
+        http = lan.HTTPS()
+        with ReusableTLSFixture(self.cert, self.key, [(3, True, True), (1, False, False)]) as server:
+            for _ in range(3):
+                self.send(http, server)
+            self.send(http, server, "/lan/v1/uploads/commit")
+        self.assertIsNone(server.error)
+        self.assertEqual([connection for connection, _ in server.requests], [0, 0, 0, 1])
+        self.assertIsNone(http.kept)
+        for connection, head in server.requests:
+            self.assertIn(b"Authorization: Bearer " + b"b" * 16 + b":" + b"c" * 64, head)
+            self.assertIn(b"Connection: keep-alive" if connection == 0 else b"Connection: close", head)
+
+    def test_reader_answering_close_gets_a_new_connection_per_chunk(self):
+        http = lan.HTTPS()
+        with ReusableTLSFixture(self.cert, self.key, [(1, False, False), (1, False, False)]) as server:
+            self.send(http, server)
+            self.assertIsNone(http.kept)
+            self.send(http, server)
+        self.assertIsNone(server.error)
+        self.assertEqual([connection for connection, _ in server.requests], [0, 1])
+
+    def test_dropped_kept_connection_resends_the_chunk_once(self):
+        http = lan.HTTPS()
+        # The first connection promises reuse, then closes after its answer.
+        with ReusableTLSFixture(self.cert, self.key, [(1, True, False), (1, False, False)]) as server:
+            self.send(http, server)
+            self.assertIsNotNone(http.kept)
+            self.send(http, server)
+        self.assertIsNone(server.error)
+        self.assertEqual([connection for connection, _ in server.requests], [0, 1])
+        self.assertIsNone(http.kept)
+
+    def test_chunk_never_reuses_a_connection_for_another_pin(self):
+        http = lan.HTTPS()
+        with ReusableTLSFixture(self.cert, self.key, [(1, True, True), (0, False, False)]) as server:
+            self.send(http, server)
+            with self.assertRaisesRegex(lan.Failure, "pin_mismatch"):
+                http.request(("127.0.0.1", server.port), "POST", lan.CHUNK_PATH, {"offset": "0"}, pin="0" * 64,
+                             credentials=self.CREDENTIALS, deadline=lan.time.monotonic() + 3)
+        self.assertIsNone(http.kept)
+        self.assertEqual(len(server.requests), 1)
 
     def test_remote_error_code_is_bounded(self):
         response = b'HTTP/1.1 409 Conflict\r\nContent-Length: 24\r\n\r\n{"code":"not_accepted"}\n'

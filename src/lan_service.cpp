@@ -33,6 +33,8 @@ std::string shownState;
 uint32_t badWindow=0,badAttempts=0,lastUi=0,lastProgress=0,transferStarted=0;
 uint32_t progressBytes=0;
 constexpr uint32_t TRANSFER_IDLE_MS=45000,TRANSFER_TOTAL_MS=30u*60*1000;
+// A progress refresh holds up the main loop, and with it the next chunk.
+constexpr uint32_t RECEIVING_UI_MS=3000;
 constexpr uint64_t SPACE_MARGIN=64u*1024;
 constexpr size_t LIBRARY_LIMIT=256;
 
@@ -539,7 +541,7 @@ bool poll(){
   }
   const bool changed=promptDirty||settingsLanType!=type.c_str()||settingsLanName!=name.c_str()||settingsLanState!=state.c_str();
   if(!changed)return false;
-  if(!promptDirty&&state.find("Receiving ")==0&&uint32_t(millis()-lastUi)<750)return false;
+  if(!promptDirty&&state.find("Receiving ")==0&&uint32_t(millis()-lastUi)<RECEIVING_UI_MS)return false;
   promptDirty=false;
   settingsLanType=type.c_str();settingsLanName=name.c_str();settingsLanState=state.c_str();lastUi=millis();return true;
 }

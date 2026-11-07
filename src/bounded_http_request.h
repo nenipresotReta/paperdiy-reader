@@ -25,6 +25,18 @@ class BoundedHttpRequest {
   std::vector<Field> headers, arguments;
   size_t contentLength = 0;
 
+  // Reuse is an explicit HTTP/1.1 opt-in; any other Connection value closes.
+  bool wantsKeepAlive() const {
+    if (!http11) return false;
+    bool wanted = false;
+    for (const auto& header : headers) {
+      if (header.first != "connection") continue;
+      if (lower(header.second) != "keep-alive") return false;
+      wanted = true;
+    }
+    return wanted;
+  }
+
   State feed(char byte) {
     if (state != State::Reading) return state;
     if (byte == '\0') return fail(400);

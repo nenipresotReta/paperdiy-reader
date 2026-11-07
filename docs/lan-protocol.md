@@ -148,6 +148,15 @@ are bounded JSON with Content-Length. The sender rejects chunked responses,
 duplicate headers or JSON keys, redirects, headers over 8192 bytes and JSON
 over 16384 bytes. Errors use a stable snake_case `code`.
 
+Each request normally has its own TLS connection. A chunk request may send
+`Connection: keep-alive`. The reader answers with the same header when the
+connection stays open for the next chunk, and with `Connection: close` after a
+non-2xx response, when another client is waiting, or when the receiver is
+stopping. It checks authorization on every request, still rejects pipelining,
+and closes a connection idle for 5 s. The sender closes the connection before
+any other request. If reuse fails, it resends the chunk once on a new
+connection; the reader acknowledges an identical accepted chunk.
+
 | Operation | Request and result |
 | --- | --- |
 | `GET /lan/v1/capabilities` | `v:2`, `deviceId`, `pushRevision`, 32-hex `epoch`, `receiptCapacity:16`, `receiptScope:"client"`, `batchEntries:8`, `limits`, `live` (`true` only in P). |
