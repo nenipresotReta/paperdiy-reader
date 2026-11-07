@@ -1,6 +1,6 @@
 #pragma once
 #include "console_policy.h"
-#ifdef ARDUINO
+#if defined(ARDUINO) && !defined(PAPERDIY_HOST_SERIAL)
 #include <Arduino.h>
 
 // Native TX bypasses USBCDC::write's unbounded full-FIFO loop. RX and hardware

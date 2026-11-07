@@ -67,7 +67,7 @@ target_link_libraries(lan_service_wire PRIVATE OpenSSL::Crypto)
 target_compile_options(lan_service_wire PRIVATE -Wno-deprecated-declarations)
 # The real SD adapter and storage lifecycle, on a directory standing in for the card.
 add_executable(delivery_store_sd tests/delivery_store_sd.cpp src/delivery_store_sd.cpp src/lan_service.cpp src/lan_nvs.cpp)
-set_source_files_properties(src/delivery_store_sd.cpp PROPERTIES COMPILE_DEFINITIONS "ARDUINO=10800;PAPERDIY_SD_VFS_ROOT=testCardRoot")
+set_source_files_properties(src/delivery_store_sd.cpp PROPERTIES COMPILE_DEFINITIONS "ARDUINO=10800;PAPERDIY_HOST_SERIAL=1;PAPERDIY_SD_VFS_ROOT=testCardRoot")
 target_include_directories(delivery_store_sd BEFORE PRIVATE tests/delivery_sd_stubs tests/network_stubs tests/nvs_stubs tests/stubs)
 target_compile_definitions(delivery_store_sd PRIVATE PAPERDIY_NVS_TEST=1)
 target_link_libraries(delivery_store_sd PRIVATE markdown_core OpenSSL::Crypto)

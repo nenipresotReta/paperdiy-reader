@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cerrno>
+#include "console.h"
 #include "storage_validation.h"
 #include "markdown_document.h"
 
@@ -50,6 +51,7 @@ bool writeFile(void*,const char* path,uint32_t at,const uint8_t* bytes,size_t co
   if(file)file.flush();file.close();return ok&&ready(nullptr);
 }
 bool owned(const char* path){constexpr char prefix[]="/.paperdiy/lan/";return path&&std::strncmp(path,prefix,sizeof(prefix)-1)==0;}
+void writeRetry(void*,unsigned attempt){Console.printf("LAN_WRITE_RETRY attempt=%u\n",attempt);delay(attempt*50);}
 bool renameFile(void*,const char* from,const char* to,bool replaceOwned){
   if(!ready(nullptr)||!owned(from)||(replaceOwned&&!owned(to)))return false;
   uint32_t size;const auto entry=statFile(nullptr,to,&size);
@@ -84,7 +86,7 @@ bool hashUpdate(void*,const uint8_t* bytes,size_t count){return mbedtls_sha256_u
 bool hashFinish(void*,uint8_t out[32]){return mbedtls_sha256_finish_ret(&context.hash,out)==0;}
 bool digest(void*,const uint8_t* bytes,size_t count,uint8_t out[32]){return mbedtls_sha256_ret(bytes,count,out,0)==0;}
 IO makeIO(){
-  IO io;io.stat=statFile;io.read=readFile;io.write=writeFile;io.rename=renameFile;io.remove=removeFile;io.sync=syncFile;
+  IO io;io.stat=statFile;io.read=readFile;io.write=writeFile;io.writeRetry=writeRetry;io.rename=renameFile;io.remove=removeFile;io.sync=syncFile;
   io.ready=ready;io.admit=admit;io.validatePush=validatePush;io.published=published;return io;
 }
 Hash makeHash(){Hash hash;hash.begin=hashBegin;hash.update=hashUpdate;hash.finish=hashFinish;hash.digest=digest;return hash;}

@@ -287,7 +287,8 @@ on the pinned SDK, plus TLS/crypto contexts. PSRAM cannot supply that internal
 heap. Handshake, idle and absolute deadlines are cooperative, not crypto preemption.
 
 The bounded store has one transaction, exact-offset 4 KiB chunks, 8 KiB
-verification steps and sixteen shared client-scoped receipt slots. Ordinary
+verification steps and sixteen shared client-scoped receipt slots. A failed
+chunk write is tried up to three times before the transfer ends. Ordinary
 files never overwrite books. Push is at most 16 KiB Markdown in two owned SD
 slots; fixed `pushRead0`/`pushRead1` progress records bind digest/length, avoiding
 one NVS key per revision. Push bypasses ordinary page-cache/resident reuse.

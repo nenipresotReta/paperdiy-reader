@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <string>
 inline constexpr const char* FILE_READ="r";
+struct SerialStub{template<class... Args>void printf(const char*,Args...){}};
+inline SerialStub Serial;
 inline std::string testCardRoot;
 struct CardStub {
   unsigned calls=0,openFiles=0;
