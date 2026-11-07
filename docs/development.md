@@ -287,13 +287,16 @@ on the pinned SDK, plus TLS/crypto contexts. PSRAM cannot supply that internal
 heap. Handshake, idle and absolute deadlines are cooperative, not crypto preemption.
 
 The bounded store has one transaction, exact-offset 4 KiB chunks, 8 KiB
-verification steps and sixteen shared client-scoped receipt slots. Ordinary
-files never overwrite books. Push is at most 16 KiB Markdown in two owned SD
+verification steps and sixteen shared client-scoped receipt slots. A failed
+write to the stage file, a record or the final path is tried up to three times
+before the transfer ends. Ordinary files never overwrite books. Push is at most 16 KiB Markdown in two owned SD
 slots; fixed `pushRead0`/`pushRead1` progress records bind digest/length, avoiding
 one NVS key per revision. Push bypasses ordinary page-cache/resident reuse.
 Receipt replay precedes revision checks; identical validated Push content is a
 no-op preserving its revision/anchor. Unknown publication stays Uncertain,
-with recovery based on stored bytes, not an exactly-once FAT claim.
+with recovery based on stored bytes, not an exactly-once FAT claim. Recovery
+finishes an interrupted move from the checked stage file; with no intact stage
+file and no final file, nothing was published and the intent ends.
 Protocol/CLI/physical inventory are in [LAN protocol](lan-protocol.md).
 
 ## Pinned USB DCD correction

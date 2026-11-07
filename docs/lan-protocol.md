@@ -30,11 +30,14 @@ upload + commit per entry ───────▶  one active transaction at a 
 
 - **N reception is Settings-bound.** In N the receiver, its routes and its
   mDNS advertisement exist only while the reader shows Settings with N active.
-  [P](#p-live-push) is the one exception: it keeps the receiver up outside
-  Settings, but only for Push from senders paired earlier in N.
+  An accepted batch is the first exception: it continues after the reader leaves
+  Settings until it ends (see [background transfer](#background-transfer)).
+  [P](#p-live-push) is the second: it keeps the receiver up outside Settings,
+  but only for Push from senders paired earlier in N.
 - **Every batch needs consent on the reader.** One short A+B (released within
   2 s) accepts the whole batch. A keeps its meaning (next mode), so it switches
-  N off, which cancels; B rotates and redraws; leaving Settings cancels; 60 s
+  N off, which cancels; B rotates and redraws; leaving Settings before accepting
+  cancels; 60 s
   without action expires the prompt; holding A+B for 2 s shuts down and never
   accepts. Nothing reaches the card without acceptance.
 - **First delivery pairs.** An unknown sender's first batch carries a
@@ -147,6 +150,38 @@ encoding of a 4096-byte base64 chunk and of eight worst-case entries. Responses
 are bounded JSON with Content-Length. The sender rejects chunked responses,
 duplicate headers or JSON keys, redirects, headers over 8192 bytes and JSON
 over 16384 bytes. Errors use a stable snake_case `code`.
+
+### Background transfer
+
+After A+B accepts a batch with at least one file, leaving Settings keeps the
+receiver running. The library and reader show a dot with two arcs at the
+bottom-left. Opening a book pauses the receiver until the book is ready, and the
+sender keeps retrying each step of the transfer for up to 120 s. Publishing a
+file may make the open book reopen once at its next uncached page.
+
+N stops 10 s after the last file ends, which leaves time for the sender to read
+its result; opening a book restarts that wait. It also stops after 60 s with no
+request from the sender. If the batch did not finish, the icon changes to a
+struck-out arc until Settings is next opened. Returning to Settings shows the
+transfer again; A then stops it.
+
+Book caches and their journals are not written while a batch is in progress,
+because a failed cache write would also end the upload. A book opened for the
+first time during a batch that then publishes a file is imported again on its
+next open.
+
+An upload with no new data for 45 s, or still unfinished after 30 min, ends with
+its batch and leaves no receipt. The sender offers the file again, which needs a
+new A+B. Only `uploads/cancel` leaves a cancelled receipt.
+
+Each request normally has its own TLS connection. A chunk request may send
+`Connection: keep-alive`. The reader answers with the same header when the
+connection stays open for the next chunk, and with `Connection: close` after a
+non-2xx response, when another client is waiting, or when the receiver is
+stopping. It checks authorization on every request, still rejects pipelining,
+and closes a connection idle for 5 s. The sender closes the connection before
+any other request. If reuse fails, it resends the chunk once on a new
+connection; the reader acknowledges an identical accepted chunk.
 
 | Operation | Request and result |
 | --- | --- |
@@ -318,9 +353,12 @@ N` (default 600) bounds the whole run including uploads; `--wait ≤ --budget �
 | Waiting for A+B when the wait ends | `queued` | `awaiting_acceptance` / `awaiting_pairing_confirmation` | 0 |
 | Not accepted (cancelled, expired, connection lost) | `queued` | `not_accepted` | 0 |
 | Interrupted before `commit` | `queued` | `transfer_interrupted` / `budget_exhausted` | 0 |
+| Reader no longer holds the transfer and has no receipt | `queued` | `transfer_interrupted` | 0 |
 | Commit sent, no conclusive answer | `uncertain` | `commit_unconfirmed` / `receipt_unknown` | 2 |
 | Matching receipt | `delivered` | — | 0 |
 | Precheck or upload-time refusal | `blocked` | specific | 2 |
+
+A cancelled receipt on the reader settles only its own entry, as `cancelled`.
 
 Other states: `cancelled`, `abandoned`, `superseded`. Local and usage errors
 are `{"state":"error","code":…}` with exit 2: `label_required`,

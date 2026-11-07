@@ -197,9 +197,13 @@ class Reader:
             return self.status(key)
         if route == "/lan/v1/uploads/chunk":
             transaction = self.active[key]
-            assert int(args["offset"]) == len(transaction["body"])
+            at = int(args["offset"])
             data = base64.b64decode(args["data"], validate=True)
             assert len(data) <= 4096
+            if at < len(transaction["body"]):   # an identical replay is acknowledged
+                assert bytes(transaction["body"][at:at + len(data)]) == data
+                return self.status(key)
+            assert at == len(transaction["body"])
             transaction["body"].extend(data)
             return self.status(key)
         if route == "/lan/v1/uploads/commit":
@@ -753,21 +757,37 @@ class Paired(World):
         self.assertEqual(len(offers), 2)   # the original send, then exactly one re-offer
         self.assertEqual(result["items"][0]["code"], "not_accepted")
 
+    def test_short_chunk_stall_retries_the_same_offset(self):
+        self.run_cli("send", self.source("a.md", b"x" * 10000), "--json", "--wait", "1")
+        self.reader.accept()
+        self.net.lost["/lan/v1/uploads/chunk"] = 3
+        code, result = self.run_cli("sync", "--json", "--wait", "5")
+        self.assertEqual(result["summary"]["delivered"], 1)
+        self.assertEqual(self.reader.files[0][1], b"x" * 10000)
+
     def test_interruption_before_commit_is_queued_and_resumes(self):
         code, result = self.run_cli("send", self.source("a.md", b"x" * 10000), "--json", "--wait", "1")
         self.reader.accept()
-        self.net.lost["/lan/v1/uploads/chunk"] = 1
+        self.net.lost["/lan/v1/uploads/chunk"] = 1000
         code, result = self.run_cli("sync", "--json", "--wait", "5")
         self.assertEqual((code, result["items"][0]["state"], result["items"][0]["code"]), (0, "queued", "transfer_interrupted"))
+        self.net.lost.clear()
         self.assertEqual(self.reader.receipts, {})
         code, result = self.run_cli("sync", "--json", "--wait", "5")
         self.assertEqual(result["summary"]["delivered"], 1)
         self.assertEqual(self.reader.files[0][1], b"x" * 10000)
 
-    def test_lost_commit_is_uncertain_until_receipt_and_blocks_new_offers(self):
+    def test_one_lost_commit_answer_is_repeated(self):
         self.run_cli("send", self.source("a.md"), "--json", "--wait", "1")
         self.reader.accept()
         self.net.lost["/lan/v1/uploads/commit"] = 1
+        code, result = self.run_cli("sync", "--json", "--wait", "5")
+        self.assertEqual((code, result["summary"]["delivered"]), (0, 1))
+
+    def test_lost_commit_is_uncertain_until_receipt_and_blocks_new_offers(self):
+        self.run_cli("send", self.source("a.md"), "--json", "--wait", "1")
+        self.reader.accept()
+        self.net.lost["/lan/v1/uploads/commit"] = 1000
         self.net.lost["/lan/v1/receipts"] = 5
         code, result = self.run_cli("sync", "--json", "--wait", "5")
         self.assertEqual((code, result["items"][0]["state"], result["items"][0]["code"]), (2, "uncertain", "commit_unconfirmed"))
@@ -1076,6 +1096,129 @@ class Firmware(unittest.TestCase):
         self.assertEqual(result["summary"]["delivered"], 1, result)
         self.assertNotIn("/lan/v1/pair", self.wire.paths)
 
+    def paired(self):
+        self.wire.accept_at = self.clock()
+        self.run_cli("pair", "--label", "DSH", "--json", "--wait", "5")
+        code, result = self.run_cli("sync", "--json", "--wait", "30")
+        self.assertEqual(result["state"], "done", result)
+
+    def silent(self, marker, seconds, after=0):
+        """The reader stops answering once `marker` has been seen `after` times,
+        as it does while opening a book or when the network stalls."""
+        real, seen, until = self.wire.request, [], []
+
+        def request(address, method, path, form=None, *, pin, credentials=None, deadline):
+            if marker in path:
+                seen.append(path)
+                if len(seen) > after and not until:
+                    until.append(self.clock() + seconds)
+            if until and self.clock() < until[0]:
+                self.wire.sleep(6.0)
+                raise lan.Failure("device_unreachable")
+            return real(address, method, path, form, pin=pin, credentials=credentials, deadline=deadline)
+        self.wire.request = request
+
+    def test_book_open_does_not_end_any_step_of_a_transfer(self):
+        self.paired()
+        for number, (marker, after) in enumerate((("/uploads/status", 0), ("/uploads/commit", 0), ("/uploads/start", 1), ("/uploads/chunk", 2))):
+            with self.subTest(marker=marker):
+                self.silent(marker, 12, after)
+                self.wire.accept_at = self.clock() + 1
+                sources = [self.source("%d%s.md" % (number, name), name.encode() * 20000) for name in "ab"]
+                code, result = self.run_cli("send", *sources, "--json", "--wait", "60")
+                del self.wire.request
+                self.assertEqual((code, result["summary"]["delivered"]), (0, 2), result)
+
+    def test_sender_that_stops_can_offer_the_same_file_again(self):
+        self.paired()
+        self.silent("/uploads/chunk", 10000, after=3)
+        self.wire.accept_at = self.clock() + 1
+        code, result = self.run_cli("send", self.source("a.md", b"a" * 40000), "--json", "--wait", "30")
+        self.assertEqual((code, result["items"][0]["state"], result["items"][0]["code"]), (0, "queued", "transfer_interrupted"), result)
+        del self.wire.request
+        self.wire.accept_at = self.clock() + 1
+        code, result = self.run_cli("sync", "--json", "--wait", "30")
+        self.assertEqual((code, result["summary"]["delivered"]), (0, 1), result)
+
+    def test_stall_longer_than_the_reader_waits_queues_the_entry(self):
+        self.paired()
+        self.silent("/uploads/chunk", 50, after=3)
+        self.wire.accept_at = self.clock() + 1
+        code, result = self.run_cli("send", self.source("a.md", b"a" * 40000), "--json", "--wait", "30")
+        self.assertEqual((code, result["items"][0]["state"], result["items"][0]["code"]), (0, "queued", "transfer_interrupted"), result)
+        del self.wire.request
+        self.wire.accept_at = self.clock() + 1
+        code, result = self.run_cli("sync", "--json", "--wait", "30")
+        self.assertEqual((code, result["summary"]["delivered"]), (0, 1), result)
+
+    def test_n_restart_inside_the_retry_window_queues_the_entry(self):
+        self.paired()
+        chunks, down = [], []
+
+        def switch_off(path):
+            if "/uploads/chunk" in path:
+                chunks.append(path)
+                if len(chunks) == 3:
+                    assert self.wire.command("OFF") == "OK"
+                    down.append(self.clock())
+        real_sleep = self.wire.sleep
+
+        def sleep(seconds):
+            real_sleep(seconds)
+            if down and self.clock() - down[0] > 10:
+                assert self.wire.command("ON") == "OK"
+                down.clear()
+        self.wire.after_request, self.wire.sleep = switch_off, sleep
+        self.wire.accept_at = self.clock() + 1
+        code, result = self.run_cli("send", self.source("a.md", b"a" * 40000), "--json", "--wait", "30")
+        self.assertEqual((code, result["items"][0]["state"], result["items"][0]["code"]), (0, "queued", "transfer_interrupted"), result)
+        self.wire.after_request = None
+        del self.wire.sleep
+        self.wire.accept_at = self.clock() + 1
+        code, result = self.run_cli("sync", "--json", "--wait", "30")
+        self.assertEqual((code, result["summary"]["delivered"]), (0, 1), result)
+
+    def test_n_restart_during_the_check_queues_the_entry(self):
+        self.paired()
+
+        def restart(path):
+            if "/uploads/commit" in path:
+                assert self.wire.command("OFF") == "OK"
+                assert self.wire.command("ON") == "OK"
+        self.wire.after_request = restart
+        self.wire.accept_at = self.clock() + 1
+        code, result = self.run_cli("send", self.source("a.md", b"a" * 40000), "--json", "--wait", "30")
+        self.assertEqual((code, result["items"][0]["state"], result["items"][0]["code"]), (0, "queued", "transfer_interrupted"), result)
+        self.wire.after_request = None
+        self.wire.accept_at = self.clock() + 1
+        code, result = self.run_cli("sync", "--json", "--wait", "30")
+        self.assertEqual((code, result["summary"]["delivered"]), (0, 1), result)
+
+    def test_cancelled_receipt_settles_only_its_own_entry(self):
+        self.paired()
+        real, cancelled = self.wire.request, []
+
+        def request(address, method, path, form=None, *, pin, credentials=None, deadline):
+            if path.endswith("/uploads/commit"):
+                if not cancelled:
+                    cancelled.append(path)
+                    with self.assertRaises(lan.RemoteFailure):   # the reader reports it as an error
+                        real(address, "POST", "/lan/v1/uploads/cancel", {"requestId": form["requestId"]},
+                             pin=pin, credentials=credentials, deadline=deadline)
+                self.wire.sleep(6.0)
+                raise lan.Failure("connection_lost", sent=True)
+            return real(address, method, path, form, pin=pin, credentials=credentials, deadline=deadline)
+        self.wire.request = request
+        self.wire.accept_at = self.clock() + 1
+        code, result = self.run_cli("send", self.source("a.md", b"a" * 9000), "--json", "--wait", "30")
+        self.assertEqual((code, result["items"][0]["state"], result["items"][0]["code"]), (2, "uncertain", "commit_unconfirmed"), result)
+        del self.wire.request
+        self.wire.accept_at = self.clock() + 1
+        code, result = self.run_cli("send", self.source("b.md", b"b" * 9000), "--json", "--wait", "30")
+        self.assertEqual((code, result["summary"]["delivered"]), (0, 1), result)
+        code, result = self.run_cli("status", "--json")
+        self.assertEqual(sorted(i["state"] for i in result["items"]), ["cancelled", "delivered"], result)
+
     def test_expiry_and_n_restart_against_real_handlers(self):
         self.wire.accept_at = self.clock()
         self.run_cli("pair", "--label", "DSH", "--json", "--wait", "5")
@@ -1281,6 +1424,67 @@ class TLSFixture:
         assert not self.thread.is_alive(), "loopback fixture exceeded deadline"
 
 
+class ReusableTLSFixture:
+    """Answers every request on a connection until the plan says otherwise.
+    Each plan entry is one connection: (requests to answer, advertise keep-alive,
+    hold it open afterwards until the sender ends it)."""
+
+    def __init__(self, certificate, key, plan):
+        self.socket = socket.socket()
+        self.socket.bind(("127.0.0.1", 0)); self.socket.listen(4); self.socket.settimeout(3)
+        self.port = self.socket.getsockname()[1]
+        self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.context.load_cert_chain(certificate, key)
+        self.plan, self.requests, self.error = plan, [], None
+        self.thread = threading.Thread(target=self.run)
+
+    def read(self, stream):
+        data = b""
+        while b"\r\n\r\n" not in data:
+            block = stream.recv(8192)
+            if not block:
+                return None
+            data += block
+        head, body = data.split(b"\r\n\r\n", 1)
+        length = next(int(line.split(b":", 1)[1]) for line in head.split(b"\r\n")[1:]
+                      if line.lower().startswith(b"content-length:"))
+        while len(body) < length:
+            block = stream.recv(8192)
+            if not block:
+                return None
+            body += block
+        return head
+
+    def run(self):
+        try:
+            for connection, (answers, keep, hold) in enumerate(self.plan):
+                raw, _ = self.socket.accept()
+                with raw, self.context.wrap_socket(raw, server_side=True) as stream:
+                    stream.settimeout(3)
+                    for _ in range(answers):
+                        head = self.read(stream)
+                        if head is None:
+                            break
+                        self.requests.append((connection, head))
+                        stream.sendall(b'HTTP/1.1 200 OK\r\nConnection: %s\r\nContent-Length: 11\r\n\r\n{"ok":true}'
+                                       % (b"keep-alive" if keep else b"close"))
+                    else:
+                        if hold:
+                            self.read(stream)
+        except Exception as error:
+            self.error = error
+        finally:
+            self.socket.close()
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.thread.join(5)
+        assert not self.thread.is_alive(), "loopback fixture exceeded deadline"
+
+
 class TLSTests(unittest.TestCase):
     CREDENTIALS = ("b" * 16, "c" * 64)
 
@@ -1347,6 +1551,54 @@ class TLSTests(unittest.TestCase):
             with self.subTest(response=response[:20]), TLSFixture(self.cert, self.key, response) as server:
                 with self.assertRaisesRegex(lan.Failure, "invalid_response"):
                     self.request(server)
+
+    def send(self, http, server, path=lan.CHUNK_PATH):
+        result, observed = http.request(("127.0.0.1", server.port), "POST", path, {"offset": "0"}, pin=self.pin,
+                                        credentials=self.CREDENTIALS, deadline=lan.time.monotonic() + 5)
+        self.assertEqual((result, observed), ({"ok": True}, self.pin))
+
+    def test_chunks_share_a_connection_and_other_requests_end_it(self):
+        http = lan.HTTPS()
+        with ReusableTLSFixture(self.cert, self.key, [(3, True, True), (1, False, False)]) as server:
+            for _ in range(3):
+                self.send(http, server)
+            self.send(http, server, "/lan/v1/uploads/commit")
+        self.assertIsNone(server.error)
+        self.assertEqual([connection for connection, _ in server.requests], [0, 0, 0, 1])
+        self.assertIsNone(http.kept)
+        for connection, head in server.requests:
+            self.assertIn(b"Authorization: Bearer " + b"b" * 16 + b":" + b"c" * 64, head)
+            self.assertIn(b"Connection: keep-alive" if connection == 0 else b"Connection: close", head)
+
+    def test_reader_answering_close_gets_a_new_connection_per_chunk(self):
+        http = lan.HTTPS()
+        with ReusableTLSFixture(self.cert, self.key, [(1, False, False), (1, False, False)]) as server:
+            self.send(http, server)
+            self.assertIsNone(http.kept)
+            self.send(http, server)
+        self.assertIsNone(server.error)
+        self.assertEqual([connection for connection, _ in server.requests], [0, 1])
+
+    def test_dropped_kept_connection_resends_the_chunk_once(self):
+        http = lan.HTTPS()
+        # The first connection promises reuse, then closes after its answer.
+        with ReusableTLSFixture(self.cert, self.key, [(1, True, False), (1, False, False)]) as server:
+            self.send(http, server)
+            self.assertIsNotNone(http.kept)
+            self.send(http, server)
+        self.assertIsNone(server.error)
+        self.assertEqual([connection for connection, _ in server.requests], [0, 1])
+        self.assertIsNone(http.kept)
+
+    def test_chunk_never_reuses_a_connection_for_another_pin(self):
+        http = lan.HTTPS()
+        with ReusableTLSFixture(self.cert, self.key, [(1, True, True), (0, False, False)]) as server:
+            self.send(http, server)
+            with self.assertRaisesRegex(lan.Failure, "pin_mismatch"):
+                http.request(("127.0.0.1", server.port), "POST", lan.CHUNK_PATH, {"offset": "0"}, pin="0" * 64,
+                             credentials=self.CREDENTIALS, deadline=lan.time.monotonic() + 3)
+        self.assertIsNone(http.kept)
+        self.assertEqual(len(server.requests), 1)
 
     def test_remote_error_code_is_bounded(self):
         response = b'HTTP/1.1 409 Conflict\r\nContent-Length: 24\r\n\r\n{"code":"not_accepted"}\n'

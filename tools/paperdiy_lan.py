@@ -32,11 +32,15 @@ FILE_LIMITS = {".txt": 4 * 1024 * 1024, ".epub": 64 * 1024 * 1024,
 ARCHIVE_COUNT, ARCHIVE_BYTES = 256, 512 * 1024 * 1024
 OUTBOX_FILES, OUTBOX_BYTES = 16, 128 * 1024 * 1024
 RESPONSE_MAX, HEADER_MAX, CHUNK_MAX = 16384, 8192, 4096
+CHUNK_PATH = "/lan/v1/uploads/chunk"
 # Matches BoundedHttpRequest::MAX_BODY, including worst-case percent-encoded
 # base64 for a complete 4096-byte binary chunk.
 REQUEST_BODY_MAX = 17000
 BATCH_MAX, LABEL_MAX, TITLE_MAX = 8, 48, 96
 POLL_SECONDS, REACH_RETRY_SECONDS = 1.0, 2.0
+# The reader may be busy opening a book while it receives in the background.
+STALL_SECONDS = 120.0
+STALL_CODES = ("device_unreachable", "connection_lost", "timeout")
 
 STATES = ("queued", "delivered", "uncertain", "blocked", "cancelled", "abandoned", "superseded")
 TERMINAL = ("delivered", "cancelled", "abandoned", "superseded")
@@ -183,12 +187,22 @@ def parse_json(data, code="invalid_response"):
 # ------------------------------------------------------------------ transport
 
 class HTTPS:
-    """One request per TLS connection. The live certificate is checked against
-    the pin before any HTTP byte is written; only the identity probe may run
-    unpinned, and it never carries credentials."""
+    """One request per TLS connection, except that upload chunks may share one.
+    The live certificate is checked against the pin before any HTTP byte is
+    written; only the identity probe may run unpinned, and it never carries
+    credentials."""
 
     def __init__(self, timeout=6.0, clock=time.monotonic):
         self.timeout, self.clock = timeout, clock
+        self.kept = None  # ((host, port, pin), stream, observed) between chunks
+
+    def release(self):
+        kept, self.kept = self.kept, None
+        if kept:
+            try:
+                kept[1].close()
+            except OSError:
+                pass
 
     @staticmethod
     def packet(address, method, path, form=None, *, pin, credentials=None):
@@ -205,7 +219,8 @@ class HTTPS:
             raise Failure("request_too_large")
         host_header = "[%s]" % host if ":" in host else host
         headers = ["%s %s HTTP/1.1" % (method, path), "Host: %s:%d" % (host_header, port),
-                   "Connection: close", "Accept: application/json", "Content-Length: %d" % len(body)]
+                   "Connection: %s" % ("keep-alive" if path == CHUNK_PATH else "close"),
+                   "Accept: application/json", "Content-Length: %d" % len(body)]
         if form is not None:
             headers.append("Content-Type: application/x-www-form-urlencoded")
         if credentials is not None:
@@ -225,6 +240,30 @@ class HTTPS:
             if left <= 0:
                 raise Failure("budget_exhausted" if self.clock() >= deadline else "timeout")
             return left
+        # The reader has one connection slot, so anything but a chunk frees it.
+        key = (host, port, pin)
+        if path != CHUNK_PATH or (self.kept and self.kept[0] != key):
+            self.release()
+        if self.kept:
+            _, stream, observed = self.kept
+            try:
+                stream.settimeout(remaining())
+                stream.sendall(packet)
+                headers = {}
+                result = self._response(stream, remaining, headers)
+                if headers.get(b"connection", b"").lower() != b"keep-alive":
+                    self.release()
+                return result, observed
+            except RemoteFailure:
+                self.release()
+                raise
+            except Failure as error:
+                self.release()
+                if error.code != "connection_lost":
+                    raise
+            except (OSError, ssl.SSLError):
+                self.release()
+            # Resending is safe: the reader acknowledges an identical accepted chunk.
         sent = False
         try:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -235,14 +274,22 @@ class HTTPS:
             context.verify_mode = ssl.CERT_NONE
             with socket.create_connection((host, port), timeout=remaining()) as raw:
                 raw.settimeout(remaining())
-                with context.wrap_socket(raw, server_hostname=host) as stream:
+                stream = context.wrap_socket(raw, server_hostname=host)
+                try:
                     observed = hashlib.sha256(stream.getpeercert(binary_form=True)).hexdigest()
                     if pin is not None and not hmac.compare_digest(observed, pin):
                         raise Failure("pin_mismatch")
                     stream.settimeout(remaining())
                     sent = True
                     stream.sendall(packet)
-                    return self._response(stream, remaining), observed
+                    headers = {}
+                    result = self._response(stream, remaining, headers)
+                    if path == CHUNK_PATH and headers.get(b"connection", b"").lower() == b"keep-alive":
+                        self.kept, stream = (key, stream, observed), None
+                    return result, observed
+                finally:
+                    if stream is not None:
+                        stream.close()
         except Failure as error:
             error.sent = error.sent or sent
             raise
@@ -263,7 +310,7 @@ class HTTPS:
         return cls._response(Buffer(data), lambda: 1.0)
 
     @staticmethod
-    def _response(stream, remaining):
+    def _response(stream, remaining, headers=None):
         data = b""
         while b"\r\n\r\n" not in data:
             stream.settimeout(remaining())
@@ -288,6 +335,8 @@ class HTTPS:
             if key in parsed or not re.fullmatch(rb"[a-z0-9-]+", key):
                 raise Failure("invalid_response", sent=True)
             parsed[key] = value
+        if headers is not None:
+            headers.update(parsed)
         length = parsed.get(b"content-length", b"")
         if b"transfer-encoding" in parsed or not re.fullmatch(rb"[0-9]{1,6}", length):
             raise Failure("invalid_response", sent=True)
@@ -873,6 +922,24 @@ class Session:
         result, _ = self.transport.request(address, method, path, form, pin=pin, credentials=credentials, deadline=self.deadline)
         return result
 
+    def patient(self, address, method, path, form=None, *, pin, device):
+        """One step of an accepted transfer; the reader accepts each one repeated.
+        A silent reader may be opening a book, so it gets time to come back."""
+        stalled, sent = None, False
+        while True:
+            if self.clock() >= self.deadline:
+                raise Failure("budget_exhausted", sent=sent)
+            try:
+                return self.call(address, method, path, form, pin=pin, device=device)
+            except Failure as error:
+                error.sent = sent = sent or error.sent
+                if error.code not in STALL_CODES:
+                    raise
+                stalled = self.clock() if stalled is None else stalled
+                if self.clock() - stalled >= STALL_SECONDS:
+                    raise
+                self.sleep(REACH_RETRY_SECONDS)
+
     def hello(self, address):
         result, observed = self.transport.request(address, "GET", "/lan/v2/hello", pin=None, deadline=self.deadline)
         device_id = result.get("deviceId")
@@ -974,12 +1041,15 @@ class Session:
         set_state(item, "delivered")
         self.store.save()
 
+    def cancelled_on_reader(self, item):
+        item["batchId"] = None
+        set_state(item, "cancelled"); self.store.save()
+
     def progress(self, item, response):
         """Validate an upload status; return the next offset, None when done."""
         state = response.get("state")
         if state == "cancelled" and response.get("requestId") == item["requestId"]:
-            item["batchId"] = None
-            set_state(item, "cancelled"); self.store.save()
+            self.cancelled_on_reader(item)
             return None
         offset = response.get("offset")
         if state not in ("receiving", "checking") or response.get("requestId") != item["requestId"] or response.get("fingerprint") != item["fingerprint"] or response.get("size") != item["size"] or not integer(offset, item["size"]) or (state == "checking" and offset != item["size"]):
@@ -993,6 +1063,11 @@ class Session:
         try:
             response = self.call(address, "GET", "/lan/v1/receipts" + query, pin=device["certSha256"], device=device)
         except RemoteFailure as error:
+            # The reader answers a cancelled receipt with an error. It settles this
+            # entry, so it must not stop the sender from reaching the others.
+            if error.code == "cancelled":
+                self.cancelled_on_reader(item)
+                return {"state": "cancelled"}
             if error.status != 404:
                 raise
         else:
@@ -1047,10 +1122,15 @@ class Session:
                 set_state(item, "uncertain", "commit_unconfirmed"); return
             self.sleep(0.1)
             try:
-                response = self.call(address, "GET", "/lan/v1/uploads/status" + query, pin=device["certSha256"], device=device)
+                response = self.patient(address, "GET", "/lan/v1/uploads/status" + query, pin=device["certSha256"], device=device)
             except RemoteFailure as error:
+                if error.code == "cancelled":
+                    self.cancelled_on_reader(item); return
                 if error.status == 404:
-                    set_state(item, "uncertain", "receipt_unknown"); return
+                    # A publication leaves its receipt before the transfer ends, so
+                    # the check stopped without one. The same request can run again.
+                    item.update(commitSent=False, batchId=None, accepted=False)
+                    set_state(item, "queued", "transfer_interrupted"); return
                 raise
             except Failure:
                 set_state(item, "uncertain", "commit_unconfirmed"); return
@@ -1221,8 +1301,10 @@ class Session:
         item["startSent"] = True; self.store.save()
         pin = device["certSha256"]
         try:
-            response = self.call(address, "POST", "/lan/v1/uploads/start", form, pin=pin, device=device)
+            response = self.patient(address, "POST", "/lan/v1/uploads/start", form, pin=pin, device=device)
         except RemoteFailure as error:
+            if error.code == "cancelled":
+                self.cancelled_on_reader(item); return True
             if error.code == "not_accepted":
                 # The reader dropped the accepted batch (N was switched off).
                 item.update(batchId=None, accepted=False)
@@ -1245,14 +1327,12 @@ class Session:
             return True
         try:
             with path.open("rb") as stream:
-                stream.seek(offset)
                 while offset < item["size"]:
-                    if self.clock() >= self.deadline:
-                        raise Failure("budget_exhausted")
+                    stream.seek(offset)
                     data = stream.read(min(chunk, item["size"] - offset))
-                    response = self.call(address, "POST", "/lan/v1/uploads/chunk",
-                                         {"requestId": item["requestId"], "offset": offset, "data": base64.b64encode(data).decode("ascii")},
-                                         pin=pin, device=device)
+                    response = self.patient(address, "POST", CHUNK_PATH,
+                                            {"requestId": item["requestId"], "offset": offset, "data": base64.b64encode(data).decode("ascii")},
+                                            pin=pin, device=device)
                     next_offset = self.progress(item, response)
                     if next_offset != offset + len(data):
                         raise Failure("invalid_upload_status")
@@ -1260,6 +1340,11 @@ class Session:
         except RemoteFailure as error:
             if error.code in ("busy", "rate_limited"):
                 set_state(item, "queued", "transfer_interrupted"); self.store.save(); return True
+            if error.status == 404:
+                # The reader no longer holds this transfer: N restarted or it
+                # stopped waiting. Nothing was published, so offer it again.
+                item.update(batchId=None, accepted=False)
+                set_state(item, "queued", "transfer_interrupted"); self.store.save(); return False
             item["batchId"] = None
             set_state(item, "blocked", error.code); self.store.save(); return True
         except Failure as error:
@@ -1271,14 +1356,20 @@ class Session:
         # Persist before the request: from here a lost answer is uncertain.
         item["commitSent"] = True; self.store.save()
         try:
-            response = self.call(address, "POST", "/lan/v1/uploads/commit", {"requestId": item["requestId"]}, pin=pin, device=device)
-        except RemoteFailure:
+            response = self.patient(address, "POST", "/lan/v1/uploads/commit", {"requestId": item["requestId"]}, pin=pin, device=device)
+        except RemoteFailure as error:
+            absent = False
             try:
                 found = self.lookup(address, device, item)
+                absent = found is None and error.status == 404
             except Failure:
                 found = None
-            if item["state"] == "delivered":
+            if item["state"] in ("delivered", "cancelled"):
                 return True
+            if absent:
+                # Neither a receipt nor a transfer: nothing was committed.
+                item.update(commitSent=False, batchId=None, accepted=False)
+                set_state(item, "queued", "transfer_interrupted"); self.store.save(); return False
             if found is not None and found.get("state") == "receiving":
                 item["commitSent"] = False
                 set_state(item, "queued", "transfer_interrupted")

@@ -15,6 +15,7 @@
 #include "deferred_cache.h"
 #include "sd_checkpoint.h"
 #include "sd_extraction.h"
+#include "lan_service.h"
 #include <esp_heap_caps.h>
 static sd_speed::Policy sdSpeed;
 void resetSDSpeed(){sdSpeed.newCard();}
@@ -32,6 +33,9 @@ static uint32_t backgroundLayout=0;
 static bool backgroundIndex=false;
 bool sdReadFailure();
 void cancelContentPrefetch();
+// A failed cache write revokes SD trust, which would end an upload that is fine
+// on its own. Caches are optional, so none starts while a batch is in progress.
+static bool cacheWritesHeld(){return lan_service::transferring()||lan_service::batchPending();}
 void cancelSDBackground(){
   cancelContentPrefetch();
   // Writer owns a reference to the cache; release it first.
@@ -224,14 +228,14 @@ void pollSDBackground(){
     backgroundIndex=readerIndexPending();
     if(backgroundIndex){
       const auto* prefix=partialReaderPages();
-      if(backgroundCheckpoint&&prefix&&backgroundCheckpoint->due(prefix->size(),millis()))
+      if(backgroundCheckpoint&&prefix&&!cacheWritesHeld()&&backgroundCheckpoint->due(prefix->size(),millis()))
         backgroundCheckpoint->begin(*prefix,partialReaderCursor());
       return;
     }
     backgroundCheckpoint.reset();
     if(readerIndexFailed()){cancelSDBackground();return;}
   }
-  if(!backgroundCache)return;
+  if(!backgroundCache||cacheWritesHeld())return;
   if(!backgroundWrite){
     const auto* pages=canonicalReaderPages();
     // The exact bookmark must be durable before its migration cache rotates.
@@ -442,7 +446,7 @@ static bool openSDImmediate(size_t index,bool paginate,bool forceReflow){
     timing.indexMs=millis()-stage;stage=millis();
     bool saved=saveReadingProgress();
     if(progressive)queueBackground(cache,!forceReflow);
-    else if(saved&&!bookMarkupFallback&&!bookEpubTransientFallback&&!cache.save())Console.println("CACHE_SAVE_SKIPPED");
+    else if(saved&&!bookMarkupFallback&&!bookEpubTransientFallback&&(cacheWritesHeld()||!cache.save()))Console.println("CACHE_SAVE_SKIPPED");
     if(cache.ioFailed)return sdReadFailure();
     timing.saveMs=millis()-stage;timing.result="reflow";
     rememberResident();
@@ -503,7 +507,7 @@ static bool openSDImmediate(size_t index,bool paginate,bool forceReflow){
   // failed NVS write must leave the legacy cache available for another try.
   bool saved=saveReadingProgress();
   if(progressive)queueBackground(cache,!forceReflow);
-  else if(saved&&cache.enabled&&!bookMarkupFallback&&!bookEpubTransientFallback&&!cache.save())Console.println("CACHE_SAVE_SKIPPED");
+  else if(saved&&cache.enabled&&!bookMarkupFallback&&!bookEpubTransientFallback&&(cacheWritesHeld()||!cache.save()))Console.println("CACHE_SAVE_SKIPPED");
   if(cache.ioFailed)return sdReadFailure();
   timing.saveMs=millis()-stage;timing.result="import";
   rememberResident();

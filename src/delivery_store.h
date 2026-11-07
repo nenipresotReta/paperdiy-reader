@@ -12,6 +12,7 @@
 // concurrently mount or mutate its filesystem. All paths are assigned here.
 namespace delivery_store {
 constexpr uint32_t PUSH_LIMIT=16384,CHUNK_LIMIT=4096,POLL_BYTES=8192;
+constexpr unsigned WRITE_ATTEMPTS=3;
 constexpr unsigned RECEIPTS=16;
 enum class Kind : uint8_t { Push=1,File=2 };
 enum class State : uint8_t { Unknown,Receiving,Checking,Complete,Cancelled,Uncertain };
@@ -32,6 +33,8 @@ struct IO {
   Entry (*stat)(void*,const char*,uint32_t*)=nullptr;
   bool (*read)(void*,const char*,uint32_t,uint8_t*,size_t)=nullptr;
   bool (*write)(void*,const char*,uint32_t,const uint8_t*,size_t,bool truncate)=nullptr;
+  // Optional: runs before a failed write is repeated.
+  void (*writeRetry)(void*,unsigned attempt)=nullptr;
   bool (*rename)(void*,const char*,const char*,bool replaceOwned)=nullptr;
   bool (*remove)(void*,const char*)=nullptr;
   bool (*sync)(void*,const char*)=nullptr;
@@ -134,7 +137,7 @@ class Store {
     if(metadata.kind==Kind::Push&&metadata.baseRevision!=push_.revision)return error(Code::RevisionConflict);
     if(io_.admit&&!io_.admit(io_.context,metadata))return error(Code::LibraryFull);
     active_=Receipt();active_.metadata=metadata;active_.state=State::Receiving;offset_=0;lastCode_=Code::Ok;
-    if(!io_.write(io_.context,stage(),0,nullptr,0,true)){active_=Receipt();return error(Code::Storage);}
+    if(!repeated([&]{return io_.write(io_.context,stage(),0,nullptr,0,true);})){active_=Receipt();return error(Code::Storage);}
     return current();
   }
   Result status(const std::string& client,const std::string& request) const {
@@ -159,7 +162,7 @@ class Store {
       return current();
     }
     if(at!=offset_)return error(Code::Conflict);
-    if(!io_.write(io_.context,stage(),at,bytes,count,false))return fail(Code::Storage);
+    if(!writeChunk(at,bytes,count))return fail(Code::Storage);
     offset_+=uint32_t(count);return current();
   }
   Result commit(const std::string& client,const std::string& request){
@@ -168,7 +171,7 @@ class Store {
     if(uncertain_||checking_)return current();
     if(!ready())return fail(Code::Storage);
     if(offset_!=active_.metadata.size)return error(Code::Conflict);
-    if(!io_.sync(io_.context,stage())||!startHash(stage()))return fail(Code::Storage);
+    if(!repeated([&]{return io_.sync(io_.context,stage());})||!startHash(stage()))return fail(Code::Storage);
     checking_=true;active_.state=State::Checking;checkAt_=0;hashComplete_=false;
     if(active_.metadata.kind==Kind::Push){pushBuffer_.reset(new(std::nothrow) uint8_t[active_.metadata.size]);if(!pushBuffer_)return fail(Code::Storage);}
     return current();
@@ -249,7 +252,17 @@ class Store {
     if(!r.sequence||r.sequence==UINT64_MAX||!valid(r.metadata)||!label(r.finalName,true)||fingerprint(r.metadata,hash_)!=r.metadata.fingerprint)return false;
     return true;
   }
-  bool writeRecord(const std::string& path,const Receipt& r,uint8_t type){
+  // An SD write can fail once and succeed when repeated. Every action here is
+  // safe to repeat, and only one that succeeds lets the transaction move on.
+  template<class Action> bool repeated(Action action){
+    for(unsigned attempt=1;;++attempt){
+      if(action())return true;
+      if(attempt==WRITE_ATTEMPTS||!ready())return false;
+      if(io_.writeRetry)io_.writeRetry(io_.context,attempt);
+    }
+  }
+  bool writeRecord(const std::string& path,const Receipt& r,uint8_t type){return repeated([&]{return writeRecordOnce(path,r,type);});}
+  bool writeRecordOnce(const std::string& path,const Receipt& r,uint8_t type){
     auto* b=buffer_.data();std::memset(b,0,RECORD);std::memcpy(b,"PDL1",4);b[4]=type;b[5]=uint8_t(r.metadata.kind);
     number(b+8,r.sequence,8);number(b+16,r.metadata.size,4);number(b+20,r.metadata.baseRevision,4);number(b+24,r.revision,4);
     text(b+28,r.metadata.requestId,32);text(b+60,r.metadata.clientId,16);text(b+76,r.metadata.fingerprint,64);text(b+140,r.metadata.sha256,64);
@@ -258,6 +271,19 @@ class Store {
     constexpr const char* temporary="/.paperdiy/lan/record.tmp";
     if(!io_.write(io_.context,temporary,0,b,RECORD,true)||!io_.sync(io_.context,temporary)||!io_.rename(io_.context,temporary,path.c_str(),true)||!io_.sync(io_.context,path.c_str()))return false;
     Receipt verified;return readRecord(path,verified,type)&&same(verified,r.metadata)&&verified.sequence==r.sequence&&verified.revision==r.revision&&verified.finalName==r.finalName&&verified.state==r.state;
+  }
+  // Each attempt reopens the stage file, and the hash check before publishing
+  // covers the result. Only an attempt that succeeds advances the offset.
+  bool writeChunk(uint32_t at,const uint8_t* bytes,size_t count){
+    return repeated([&]{return io_.write(io_.context,stage(),at,bytes,count,false);});
+  }
+  // Moves the checked stage file to its final path. A repeat after a failed sync
+  // finds the file already moved, so it only checks the result again.
+  bool place(const std::string& target){
+    uint32_t size;const auto source=stat(stage(),size);
+    if(source==Entry::Error)return false;
+    if(source==Entry::File&&!io_.rename(io_.context,stage(),target.c_str(),active_.metadata.kind==Kind::Push))return false;
+    return io_.sync(io_.context,target.c_str())&&stat(target,size)==Entry::File&&size==active_.metadata.size;
   }
   bool startHash(const std::string& path){
     uint32_t size;if(stat(path,size)!=Entry::File||size!=active_.metadata.size)return false;
@@ -305,7 +331,7 @@ class Store {
     pending_=active_;
     const std::string target=finalPath(active_);uint32_t size;
     if(active_.metadata.kind==Kind::File&&stat(target,size)!=Entry::Missing){fail(Code::Storage);return;}
-    if(!io_.rename(io_.context,stage(),target.c_str(),active_.metadata.kind==Kind::Push)||!io_.sync(io_.context,target.c_str())||stat(target,size)!=Entry::File||size!=active_.metadata.size){fail(Code::Storage);return;}
+    if(!repeated([&]{return place(target);})){fail(Code::Storage);return;}
     if(active_.metadata.kind==Kind::Push){
       if(!writeRecord(managed("push",active_.revision&1),active_,3)){fail(Code::Storage);return;}
       push_=active_;pushRecords_[active_.revision&1]=active_;
@@ -315,6 +341,18 @@ class Store {
     clearPending();
     if(io_.published)io_.published(io_.context,active_,target.c_str());
     active_=Receipt();offset_=0;
+  }
+  // The final path does not hold what an intent describes, so its move never
+  // happened. Finish it from the stage file if that is intact. With no stage file
+  // nothing was published and the intent ends. An ordinary file already at the
+  // target is never replaced or explained away, so that stays Uncertain.
+  // Returns true when a check of the stage file has started.
+  bool resumeFromStage(const std::string& target){
+    uint32_t size;const auto entry=stat(target,size);
+    if(entry==Entry::Error||(entry!=Entry::Missing&&active_.metadata.kind!=Kind::Push)){uncertain_=true;recovering_=false;return false;}
+    if(checkPath_!=stage()&&startHash(stage()))return true;
+    clearPending();active_=Receipt();offset_=0;checkPath_.clear();hashComplete_=false;recovering_=false;
+    return false;
   }
   void recover(){
     if(recoverAt_<RECEIPTS){Receipt r;if(readRecord(managed("receipt",recoverAt_),r,1))remember(r);++recoverAt_;return;}
@@ -341,12 +379,12 @@ class Store {
     if(pending_.state!=State::Unknown){
       if(find(pending_.metadata.clientId,pending_.metadata.requestId)){clearPending();recovering_=false;active_=Receipt();return;}
       active_=pending_;offset_=active_.metadata.size;
-      if(checkPath_.empty()){
-        if(!startHash(finalPath(active_))){uncertain_=true;recovering_=false;return;}
-      }
+      const std::string target=finalPath(active_);
+      if(checkPath_.empty()&&!startHash(target)&&!resumeFromStage(target))return;
       if(!hashComplete_){hashComplete_=hashStep(active_);if(uncertain_)recovering_=false;return;}
       uint8_t digest[32];
-      if(!hash_.finish(hash_.context,digest)||hexadecimal(digest,32)!=active_.metadata.sha256){uncertain_=true;recovering_=false;return;}
+      if(!hash_.finish(hash_.context,digest)||hexadecimal(digest,32)!=active_.metadata.sha256){resumeFromStage(target);return;}
+      if(checkPath_==stage()&&!repeated([&]{return place(target);})){uncertain_=true;recovering_=false;return;}
       if(active_.metadata.kind==Kind::Push){
         if(!writeRecord(managed("push",active_.revision&1),active_,3)){uncertain_=true;recovering_=false;return;}
         pushRecords_[active_.revision&1]=active_;if(active_.revision>push_.revision)push_=active_;

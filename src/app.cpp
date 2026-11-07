@@ -18,6 +18,7 @@
 #include "usb_transport.h"
 #include "lan_service.h"
 #include "live_policy.h"
+#include "transfer_policy.h"
 #include <SD.h>
 #include <esp_heap_caps.h>
 #if defined(PAPERDIY_DIAGNOSTICS) && defined(PAPERDIY_NETWORK_TESTS)
@@ -134,6 +135,36 @@ void liveTick(){
     else if(screen==Screen::Reading)updateBookFooter();
   }
 }
+// ---- N: an accepted batch continues outside Settings -------------------------
+transfer_policy::Machine backgroundTransfer;
+void refreshStatusIcon(){
+  if(screen==Screen::Library)updateLibraryLive();
+  else if(screen==Screen::Reading)updateBookFooter();
+}
+// P outlives Settings by choice. N does so only for a batch the user accepted.
+void releaseNetwork(){
+  if(networkMode==NetworkMode::Live||backgroundTransfer.running())return;
+  if(networkMode==NetworkMode::Sta&&lan_service::batchPending()){
+    lan_service::holdTransfer();backgroundTransfer.start();liveIcon=LiveIcon::Transfer;
+    Console.println("LAN_BACKGROUND start");return;
+  }
+  networkStop();networkMode=NetworkMode::Off;
+}
+// Settings shows the transfer itself, and a past failure is no longer news.
+void backgroundTransferEnterSettings(){
+  backgroundTransfer.stop();
+  if(networkMode!=NetworkMode::Live)liveIcon=LiveIcon::None;
+}
+// Every loop outside Loading and Settings while the batch runs.
+void backgroundTransferTick(){
+  networkPoll();networkDeliveryChanged();
+  if(!backgroundTransfer.step(lan_service::batchState(),millis(),lan_service::lastRequestAt()))return;
+  const bool failed=backgroundTransfer.outcome()==transfer_policy::Outcome::Failed;
+  Console.printf("LAN_BACKGROUND end failed=%u\n",unsigned(failed));
+  networkStop();networkMode=NetworkMode::Off;
+  liveIcon=failed?LiveIcon::Off:LiveIcon::None;
+  refreshStatusIcon();
+}
 void IRAM_ATTR cardChanged(){storage_validation::signalCardEvent();}
 uint8_t keyMask(){
   uint8_t mask=(M5.BtnA.isPressed()?1:0)|(M5.BtnB.isPressed()?2:0);
@@ -164,8 +195,7 @@ bool leaveReading(){
   showError("Progress not saved; try again");return false;
 }
 void library(bool scene=true){
-  // P is the one network mode that outlives Settings.
-  if(networkMode!=NetworkMode::Live){networkStop();networkMode=NetworkMode::Off;}
+  releaseNetwork();
   if(!leaveReading())return;
   if(!sdOK&&digitalRead(48)==LOW){showLoading();scanSD();lan_service::storageChanged();}
   lan_service::storagePoll();lan_service::refreshLibrary();
@@ -214,6 +244,9 @@ void rememberRecentBook(){
   if(!recent_book::save(prefs,path.c_str()))Console.println("RECENT_SAVE_FAILED");
 }
 void finishOpen(SDOpenResult result){
+  // The receiver waits while a book opens, whether that took one step or many,
+  // and that time does not count against the sender.
+  lan_service::holdTransfer();backgroundTransfer.hold(millis());
   if(result==SDOpenResult::Pending)return;
   const int turn=reopenTurn;reopenTurn=0;
   if(result==SDOpenResult::Ready){
@@ -227,11 +260,11 @@ void finishOpen(SDOpenResult result){
 }
 void openSelected(bool forceReflow=false){
   if(screen==Screen::Loading||openSDPending())return;
-  if(settingsSelected){screen=Screen::Settings;showSettings(true);return;}
+  if(settingsSelected){backgroundTransferEnterSettings();screen=Screen::Settings;showSettings(true);return;}
   if(!leaveReading())return;
   if(!sdOK){showLoading();scanSD();library();discardLoadingInput();return;}
   if(selectedBook>=sdBooks.size())return;
-  if(networkMode!=NetworkMode::Live){networkStop();networkMode=NetworkMode::Off;}
+  releaseNetwork();
   screen=Screen::Loading;showLoading();
   finishOpen(beginOpenSD(selectedBook,true,forceReflow));
 }
@@ -257,6 +290,7 @@ void dispatch(controls::Action action){
   if(screen==Screen::Settings){
     // While a delivery prompt is shown, short A+B accepts it instead of leaving
     // Settings. A (next mode) and leaving Settings stop N, which cancels it.
+    // After acceptance, only A stops the batch: leaving lets it finish.
     if(action==Action::Confirm&&lan_service::promptPending()){
       lan_service::acceptPrompt();updateSettingsNetwork();return;
     }
@@ -582,6 +616,10 @@ void appLoop(){
     if(screen==Screen::Loading){delay(1);return;}
   }
   if(networkMode==NetworkMode::Live)liveTick();
+  if(backgroundTransfer.running()){
+    if(screen==Screen::Settings)backgroundTransferEnterSettings();
+    else backgroundTransferTick();
+  }
   // Network work cancels the fill. Busy storage, such as delivery recovery
   // after boot, only pauses it: the step below waits for storage, and nothing
   // restarts a cancelled fill while the book stays open.
@@ -657,6 +695,7 @@ void appLoop(){
   idlePower((screen==Screen::Library||screen==Screen::Reading||screen==Screen::Settings)&&
       pendingCardLevel==cardLevel&&
       idle_power::backgroundAllowsSleep(sdBackgroundPending(),contentPrefetchPending(),screen==Screen::Settings)&&
-      !lan_service::storageBusy(),buttons.idle(),cardLevel,networkActive()||usb_transport::blocksSleep());
+      !lan_service::storageBusy(),buttons.idle(),cardLevel,networkActive()||usb_transport::blocksSleep(),
+      lan_service::transferring());
   device_loop_trace::mark(Stage::AfterIdle);
 }

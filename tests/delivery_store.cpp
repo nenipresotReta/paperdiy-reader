@@ -11,9 +11,9 @@ struct Fixture {
   std::map<std::string,std::vector<uint8_t>> files;
   SHA256_CTX sha;
   bool available=true,admissible=true,parse=true;
-  unsigned mutations=0,failAt=0,published=0;
+  unsigned mutations=0,failAt=0,failRepeat=0,published=0,retries=0;
   size_t largestRead=0,readThisPoll=0;
-  bool change(){++mutations;return !failAt||mutations!=failAt;}
+  bool change(){++mutations;return !failAt||mutations<failAt||mutations>failAt+failRepeat;}
   Hash hash(){Hash h;h.context=this;
     h.begin=[](void* p){return SHA256_Init(&static_cast<Fixture*>(p)->sha)==1;};
     h.update=[](void* p,const uint8_t* b,size_t n){return SHA256_Update(&static_cast<Fixture*>(p)->sha,b,n)==1;};
@@ -23,6 +23,7 @@ struct Fixture {
     io.stat=[](void* p,const char* path,uint32_t* size){auto& f=*static_cast<Fixture*>(p);assert(f.available);auto it=f.files.find(path);if(it==f.files.end())return Entry::Missing;*size=it->second.size();return Entry::File;};
     io.read=[](void* p,const char* path,uint32_t at,uint8_t* out,size_t n){auto& f=*static_cast<Fixture*>(p);assert(f.available);f.largestRead=std::max(f.largestRead,n);f.readThisPoll+=n;auto it=f.files.find(path);if(it==f.files.end()||uint64_t(at)+n>it->second.size())return false;if(n)std::memcpy(out,it->second.data()+at,n);return true;};
     io.write=[](void* p,const char* path,uint32_t at,const uint8_t* bytes,size_t n,bool truncate){auto& f=*static_cast<Fixture*>(p);assert(f.available);if(!f.change())return false;auto& file=f.files[path];if(truncate)file.clear();if(uint64_t(at)+n>64*1024*1024)return false;file.resize(std::max(file.size(),size_t(at)+n));if(n)std::memcpy(file.data()+at,bytes,n);return true;};
+    io.writeRetry=[](void* p,unsigned){++static_cast<Fixture*>(p)->retries;};
     io.rename=[](void* p,const char* from,const char* to,bool replace){auto& f=*static_cast<Fixture*>(p);assert(f.available);assert(std::string(from).find("/.paperdiy/lan/")==0);if(replace)assert(std::string(to).find("/.paperdiy/lan/")==0);if(!f.change())return false;auto it=f.files.find(from);if(it==f.files.end()||(!replace&&f.files.count(to)))return false;f.files[to]=std::move(it->second);f.files.erase(it);return true;};
     io.remove=[](void* p,const char* path){auto& f=*static_cast<Fixture*>(p);assert(f.available);assert(std::string(path).find("/.paperdiy/lan/")==0);if(!f.change())return false;f.files.erase(path);return true;};
     io.sync=[](void* p,const char*){auto& f=*static_cast<Fixture*>(p);assert(f.available);return f.change();};
@@ -85,10 +86,11 @@ void invalidAndPreservation(){
   f.admissible=false;assert(store.begin(f.metadata(8,"file",Kind::File)).code==Code::LibraryFull);
 }
 void faultRecovery(Kind kind){
-  // Fail every publication mutation in turn, then reboot with persistent bytes
-  // left exactly as the failed callback left them. Never overwrite/delete an
-  // existing ordinary source; never create a second final file on replay.
-  for(unsigned fault=1;fault<=32;++fault){
+  // Fail every publication mutation in turn, once and then past every repeat,
+  // and reboot with persistent bytes left exactly as the failed callback left
+  // them. Never overwrite/delete an existing ordinary source; never create a
+  // second final file on replay; never leave the store stuck after the reboot.
+  for(unsigned repeat:{0u,WRITE_ATTEMPTS-1})for(unsigned fault=1;fault<=32;++fault){
     Fixture f;f.files["/Books/synthetic.md"]={'o','l','d'};
     Store store(f.io(),f.hash());f.recover(store);
     std::string old="Old complete Push",body(17000,'n');
@@ -97,15 +99,18 @@ void faultRecovery(Kind kind){
     assert(store.begin(m).code==Code::Ok);
     for(size_t at=0;at<body.size();at+=CHUNK_LIMIT){const size_t n=std::min(size_t(CHUNK_LIMIT),body.size()-at);assert(store.chunk(m.clientId,m.requestId,at,reinterpret_cast<const uint8_t*>(body.data()+at),n).code==Code::Ok);}
     assert(store.commit(m.clientId,m.requestId).state==State::Checking);
-    f.mutations=0;f.failAt=fault;
+    f.mutations=0;f.failAt=fault;f.failRepeat=repeat;
     for(unsigned n=0;n<20&&store.activeState()==State::Checking;++n)store.poll();
+    // A single failure inside publication is absorbed by its repeat.
+    if(!repeat)assert(store.activeState()!=State::Uncertain&&store.receipt(m.clientId,m.requestId).state==State::Complete);
     f.failAt=0;Store reboot(f.io(),f.hash());f.recover(reboot);
     assert(f.files["/Books/synthetic.md"]==std::vector<uint8_t>({'o','l','d'}));
+    assert(reboot.activeState()!=State::Uncertain&&!reboot.busy());
     const auto result=reboot.status(m.clientId,m.requestId);
     if(result.state==State::Complete){
       const auto replay=reboot.begin(m);assert(replay.state==State::Complete);
       if(kind==Kind::File)assert(result.receipt.finalName=="synthetic (2).md");
-    }else if(result.state==State::Uncertain){assert(reboot.begin(m).state==State::Uncertain);}
+    }
     if(kind==Kind::Push){
       assert(reboot.pushMetadata().revision>=1&&reboot.pushMetadata().revision<=2);
       const auto& bytes=f.files[reboot.pushPath()];
@@ -115,6 +120,63 @@ void faultRecovery(Kind kind){
       assert(books<=2);
     }
   }
+}
+// Fails only the given publication step, past every repeat, leaving the intent.
+void failPublicationAt(Fixture& f,Store& store,const Metadata& m,const std::string& body,unsigned fault){
+  assert(store.begin(m).code==Code::Ok);
+  for(size_t at=0;at<body.size();at+=CHUNK_LIMIT){const size_t n=std::min(size_t(CHUNK_LIMIT),body.size()-at);assert(store.chunk(m.clientId,m.requestId,at,reinterpret_cast<const uint8_t*>(body.data()+at),n).code==Code::Ok);}
+  assert(store.commit(m.clientId,m.requestId).state==State::Checking);
+  f.mutations=0;f.failAt=fault;f.failRepeat=WRITE_ATTEMPTS-1;
+  for(unsigned n=0;n<20&&store.activeState()==State::Checking;++n)store.poll();
+  assert(store.activeState()==State::Uncertain);f.failAt=0;f.failRepeat=0;
+}
+void interruptedPublicationFinishesAfterReboot(){
+  // Publication writes two intent copies (four steps each), then moves the file.
+  // Fault 5 keeps only the first intent; fault 9 keeps both, with the move undone.
+  for(unsigned fault:{5u,9u}){
+    Fixture f;Store store(f.io(),f.hash());f.recover(store);
+    const std::string body(9000,'s');const auto m=f.metadata(2,body,Kind::File);
+    failPublicationAt(f,store,m,body,fault);
+    assert(f.files.count("/.paperdiy/lan/pending0.rec")&&f.files.count("/.paperdiy/lan/upload.bin")&&!f.files.count("/Books/synthetic.md"));
+    Store reboot(f.io(),f.hash());f.recover(reboot);
+    assert(!reboot.busy()&&reboot.receipt(m.clientId,m.requestId).state==State::Complete&&f.published==1);
+    const auto& saved=f.files["/Books/synthetic.md"];assert(std::string(saved.begin(),saved.end())==body);
+    assert(!f.files.count("/.paperdiy/lan/pending0.rec")&&!f.files.count("/.paperdiy/lan/upload.bin"));
+    assert(reboot.begin(f.metadata(3,"Next",Kind::File)).code==Code::Ok);
+  }
+}
+void interruptedPushReusesItsOldSlot(){
+  // Revision 3 goes to the slot revision 1 still occupies, with the same length.
+  Fixture f;Store store(f.io(),f.hash());f.recover(store);
+  const std::string one="Push body one",two="Push body two",three="Push body 333";
+  f.send(store,f.metadata(1,one),one);f.send(store,f.metadata(2,two,Kind::Push,1),two);
+  failPublicationAt(f,store,f.metadata(3,three,Kind::Push,2),three,9);
+  assert(f.files["/.paperdiy/lan/push1.md"]==std::vector<uint8_t>(one.begin(),one.end()));
+  Store reboot(f.io(),f.hash());f.recover(reboot);
+  assert(!reboot.busy()&&reboot.pushMetadata().revision==3);
+  assert(f.files[reboot.pushPath()]==std::vector<uint8_t>(three.begin(),three.end()));
+}
+void intentWithNothingToFinish(){
+  // A bad or missing stage file with no final file means nothing was published.
+  for(bool removed:{true,false}){
+    Fixture f;Store store(f.io(),f.hash());f.recover(store);
+    const std::string body(9000,'s');const auto m=f.metadata(2,body,Kind::File);
+    failPublicationAt(f,store,m,body,9);
+    if(removed)f.files.erase("/.paperdiy/lan/upload.bin");else f.files["/.paperdiy/lan/upload.bin"][0]='x';
+    Store reboot(f.io(),f.hash());f.recover(reboot);
+    assert(!reboot.busy()&&reboot.status(m.clientId,m.requestId).code==Code::Unknown&&!f.published);
+    assert(!f.files.count("/Books/synthetic.md")&&!f.files.count("/.paperdiy/lan/pending0.rec")&&!f.files.count("/.paperdiy/lan/upload.bin"));
+  }
+}
+void foreignFileAtTargetStaysUncertain(){
+  // Something else now occupies the name. It is never replaced or removed.
+  Fixture f;Store store(f.io(),f.hash());f.recover(store);
+  const std::string body(9000,'s');const auto m=f.metadata(2,body,Kind::File);
+  failPublicationAt(f,store,m,body,9);
+  f.files["/Books/synthetic.md"]={'o','t','h','e','r'};
+  Store reboot(f.io(),f.hash());f.recover(reboot);
+  assert(reboot.activeState()==State::Uncertain&&!f.published);
+  assert(f.files["/Books/synthetic.md"]==std::vector<uint8_t>({'o','t','h','e','r'}));
 }
 void boundedLedgerAndCorruption(){
   Fixture f;Store store(f.io(),f.hash());f.recover(store);
@@ -159,15 +221,54 @@ void canonical(){
   Fixture f;Metadata m;m.kind=Kind::Push;m.name="Push.md";m.title="Synthetic";m.size=3;m.sha256=std::string(64,'0');
   assert(fingerprint(m,f.hash())=="7c5dc380b37e359158a305fc6aff88f3397a4c8a7d1b8a2d00c89c3fd0016d74");
 }
+void chunkWritesRetry(){
+  Fixture f;Store store(f.io(),f.hash());f.recover(store);
+  const std::string body(3*CHUNK_LIMIT,'r');const auto m=f.metadata(98,body,Kind::File);
+  const auto bytes=reinterpret_cast<const uint8_t*>(body.data());
+  assert(store.begin(m).code==Code::Ok);
+  // One failed attempt is repeated and the transfer carries on.
+  f.mutations=0;f.failAt=1;
+  auto result=store.chunk(m.clientId,m.requestId,0,bytes,CHUNK_LIMIT);
+  assert(result.state==State::Receiving&&result.offset==CHUNK_LIMIT&&f.retries==1&&f.mutations==2);
+  // The last permitted attempt can still succeed.
+  f.mutations=0;f.failAt=1;f.failRepeat=1;f.retries=0;
+  result=store.chunk(m.clientId,m.requestId,CHUNK_LIMIT,bytes+CHUNK_LIMIT,CHUNK_LIMIT);
+  assert(result.state==State::Receiving&&result.offset==2*CHUNK_LIMIT&&f.retries==2&&f.mutations==3);
+  f.failAt=f.failRepeat=0;
+  result=store.chunk(m.clientId,m.requestId,2*CHUNK_LIMIT,bytes+2*CHUNK_LIMIT,CHUNK_LIMIT);
+  assert(result.offset==3*CHUNK_LIMIT);
+  assert(store.commit(m.clientId,m.requestId).state==State::Checking);
+  for(unsigned i=0;i<20&&store.activeState()==State::Checking;++i)store.poll();
+  assert(store.receipt(m.clientId,m.requestId).state==State::Complete);
+  const auto& saved=f.files["/Books/synthetic.md"];
+  assert(std::string(saved.begin(),saved.end())==body);
+
+  // Every attempt failing keeps the accepted offset and ends the transfer.
+  Fixture g;Store exhausted(g.io(),g.hash());g.recover(exhausted);
+  assert(exhausted.begin(m).code==Code::Ok);
+  g.mutations=0;g.failAt=1;g.failRepeat=WRITE_ATTEMPTS-1;
+  result=exhausted.chunk(m.clientId,m.requestId,0,bytes,CHUNK_LIMIT);
+  assert(result.state==State::Uncertain&&result.offset==0&&result.code==Code::Uncertain);
+  assert(g.retries==WRITE_ATTEMPTS-1&&g.mutations==WRITE_ATTEMPTS&&exhausted.lastCode()==Code::Storage);
+}
+void startWriteRetries(){
+  Fixture f;Store store(f.io(),f.hash());f.recover(store);
+  const auto m=f.metadata(97,"Start",Kind::File);
+  f.mutations=0;f.failAt=1;
+  assert(store.begin(m).state==State::Receiving&&f.retries==1);
+  Fixture g;Store exhausted(g.io(),g.hash());g.recover(exhausted);
+  g.mutations=0;g.failAt=1;g.failRepeat=WRITE_ATTEMPTS-1;
+  assert(exhausted.begin(m).code==Code::Storage&&exhausted.activeState()==State::Unknown);
+}
 void pushRecoveryDoesNotWaitForLargeFile(){
   Fixture f;Store store(f.io(),f.hash());f.recover(store);
   const std::string body(40000,'q');const auto m=f.metadata(99,body,Kind::File);
   assert(store.begin(m).code==Code::Ok);
   for(size_t at=0;at<body.size();at+=CHUNK_LIMIT){const auto n=std::min(size_t(CHUNK_LIMIT),body.size()-at);store.chunk(m.clientId,m.requestId,at,reinterpret_cast<const uint8_t*>(body.data()+at),n);}
   assert(store.commit(m.clientId,m.requestId).state==State::Checking);
-  f.mutations=0;f.failAt=11; // final file exists; receipt write fails
+  f.mutations=0;f.failAt=11;f.failRepeat=WRITE_ATTEMPTS-1; // final file exists; receipt write fails
   for(unsigned i=0;i<20&&store.activeState()==State::Checking;++i)store.poll();
-  assert(store.activeState()==State::Uncertain);f.failAt=0;
+  assert(store.activeState()==State::Uncertain);f.failAt=0;f.failRepeat=0;
   Store reboot(f.io(),f.hash());reboot.beginRecovery();
   for(unsigned i=0;i<100&&!reboot.pushRecovered();++i){f.readThisPoll=0;reboot.poll();assert(f.readThisPoll<=POLL_BYTES);}
   assert(reboot.pushRecovered()&&!reboot.recovered());
@@ -175,4 +276,4 @@ void pushRecoveryDoesNotWaitForLargeFile(){
   assert(reboot.recovered()&&reboot.receipt(m.clientId,m.requestId).state==State::Complete);
 }
 }
-int main(){canonical();basic();pushPosition();unalignedDuplicateAndGuards();invalidAndPreservation();faultRecovery(Kind::File);faultRecovery(Kind::Push);boundedLedgerAndCorruption();pushRecoveryDoesNotWaitForLargeFile();std::puts("delivery_store tests passed");}
+int main(){canonical();basic();chunkWritesRetry();startWriteRetries();pushPosition();unalignedDuplicateAndGuards();invalidAndPreservation();faultRecovery(Kind::File);faultRecovery(Kind::Push);interruptedPublicationFinishesAfterReboot();interruptedPushReusesItsOldSlot();intentWithNothingToFinish();foreignFileAtTargetStaysUncertain();boundedLedgerAndCorruption();pushRecoveryDoesNotWaitForLargeFile();std::puts("delivery_store tests passed");}

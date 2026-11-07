@@ -8,6 +8,11 @@
 // mounted card exclusively. A mount, removal, I/O failure or host handoff must
 // invalidate that lease. Every firmware source mutation clears the records
 // before writing, including writes which later fail. No trust survives boot.
+//
+// A sleep window is the one exception that keeps custody of the card: it expires
+// every proof and moves the lease, because it cannot prove the same card survived,
+// but the mount is untouched and any detected change still takes the other paths.
+// Long-lived metadata binds to custody() and rereads before it is next relied on.
 namespace storage_validation {
 // Card-detect CHANGE may happen while synchronous loading blocks the app loop.
 // The ISR only raises this lock-free latch. It never touches allocation, tables,
@@ -27,22 +32,26 @@ struct Fingerprint {
 };
 struct Graph {uint8_t path[32]={},digest[32]={};bool used=false;};
 struct State {
-  uint64_t generation=1;
+  uint64_t generation=1,custody=1,sleepWindows=0;
   bool exclusive=false;
   size_t next=0;
   Fingerprint records[CAPACITY];
   Graph graphs[CAPACITY];size_t nextGraph=0;
 };
 inline State& state(){static State value;return value;}
-inline void clear(){
+inline void dropProofs(){
   auto& s=state();++s.generation;s.next=0;s.nextGraph=0;
   for(auto& record:s.records)record.used=false;
   for(auto& graph:s.graphs)graph.used=false;
 }
+inline void clear(){dropProofs();++state().custody;}
 inline void invalidate(){clear();state().exclusive=false;}
 inline void beginExclusive(){cardEventLatch().store(false,std::memory_order_relaxed);clear();state().exclusive=true;}
 inline void sourceChanged(){clear();}
+inline void revokeProofs(){dropProofs();++state().sleepWindows;}
 inline uint64_t lease(){return state().exclusive&&!cardEventPending()?state().generation:0;}
+inline uint64_t custody(){return state().exclusive&&!cardEventPending()?state().custody:0;}
+inline uint64_t sleepWindows(){return state().sleepWindows;}
 inline bool verifiedGraph(const uint8_t path[32],const uint8_t digest[32]){
   const auto& s=state();if(!s.exclusive||cardEventPending())return false;
   for(const auto& graph:s.graphs)if(graph.used&&!memcmp(graph.path,path,32)&&!memcmp(graph.digest,digest,32))return !cardEventPending();

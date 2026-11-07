@@ -7,24 +7,38 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cerrno>
+#include "console.h"
 #include "storage_validation.h"
 #include "markdown_document.h"
+#include "managed_progress.h"
+
+// Arduino SD's default VFS mount point; host tests use a directory.
+#ifndef PAPERDIY_SD_VFS_ROOT
+#define PAPERDIY_SD_VFS_ROOT "/sd"
+#endif
 
 namespace delivery_store {
 namespace {
 struct Context {
   bool enabled=false;
-  uint64_t lease=0;
+  // Access follows custody, which a sleep window leaves alone. sleepWindows
+  // dates the records in memory: mutations must not make older records current.
+  uint64_t custody=0,sleepWindows=0;
   SDHooks hooks;
   mbedtls_sha256_context hash;
   Context(){mbedtls_sha256_init(&hash);}
   ~Context(){mbedtls_sha256_free(&hash);}
 } context;
-bool ready(void*){return context.enabled&&context.lease&&context.lease==storage_validation::lease()&&!storage_validation::cardEventPending();}
-void mutation(){storage_validation::sourceChanged();context.lease=storage_validation::lease();}
+bool ready(void*){return context.enabled&&context.custody&&context.custody==storage_validation::custody()&&!storage_validation::cardEventPending();}
+void mutation(){storage_validation::sourceChanged();context.custody=storage_validation::custody();}
+bool owned(const char* path){constexpr char prefix[]="/.paperdiy/lan/";return path&&std::strncmp(path,prefix,sizeof(prefix)-1)==0;}
+// The stage and record files are never read as books. A write to them must not
+// revoke the proof an open book relies on, or reading during a transfer would
+// reopen the book again and again. Only Push slots and the library can change.
+void mutationOf(const char* path){if(!owned(path)||managed_progress::isPushPath(path))mutation();}
 Entry statFile(void*,const char* path,uint32_t* size){
   if(!ready(nullptr))return Entry::Error;
-  struct stat info;const std::string full=std::string("/sd")+path;
+  struct stat info;const std::string full=std::string(PAPERDIY_SD_VFS_ROOT)+path;
   if(::stat(full.c_str(),&info)){return errno==ENOENT?Entry::Missing:Entry::Error;}
   if(S_ISDIR(info.st_mode))return Entry::Directory;
   if(!S_ISREG(info.st_mode)||info.st_size<0||uint64_t(info.st_size)>UINT32_MAX)return Entry::Error;
@@ -37,29 +51,29 @@ bool readFile(void*,const char* path,uint32_t at,uint8_t* bytes,size_t count){
   return ok&&ready(nullptr);
 }
 bool writeFile(void*,const char* path,uint32_t at,const uint8_t* bytes,size_t count,bool truncate){
-  if(!ready(nullptr))return false;mutation();
+  if(!ready(nullptr))return false;mutationOf(path);
   File file=SD.open(path,truncate?"w":"r+");
   const bool ok=file&&!file.isDirectory()&&file.seek(at)&&(!count||file.write(bytes,count)==count);
   if(file)file.flush();file.close();return ok&&ready(nullptr);
 }
-bool owned(const char* path){constexpr char prefix[]="/.paperdiy/lan/";return path&&std::strncmp(path,prefix,sizeof(prefix)-1)==0;}
+void writeRetry(void*,unsigned attempt){Console.printf("LAN_WRITE_RETRY attempt=%u\n",attempt);delay(attempt*50);}
 bool renameFile(void*,const char* from,const char* to,bool replaceOwned){
   if(!ready(nullptr)||!owned(from)||(replaceOwned&&!owned(to)))return false;
   uint32_t size;const auto entry=statFile(nullptr,to,&size);
   if(!replaceOwned&&entry!=Entry::Missing)return false;
   if(replaceOwned&&entry!=Entry::Missing&&entry!=Entry::File)return false;
-  if(replaceOwned&&entry==Entry::File){mutation();if(!SD.remove(to)||!ready(nullptr))return false;}
-  mutation();return SD.rename(from,to)&&ready(nullptr);
+  if(replaceOwned&&entry==Entry::File){mutationOf(to);if(!SD.remove(to)||!ready(nullptr))return false;}
+  mutationOf(to);return SD.rename(from,to)&&ready(nullptr);
 }
 bool removeFile(void*,const char* path){
   if(!ready(nullptr)||!owned(path))return false;
   uint32_t size;const auto entry=statFile(nullptr,path,&size);
   if(entry==Entry::Missing)return true;if(entry!=Entry::File)return false;
-  mutation();return SD.remove(path)&&ready(nullptr);
+  mutationOf(path);return SD.remove(path)&&ready(nullptr);
 }
 bool syncFile(void*,const char* path){
   if(!ready(nullptr))return false;
-  const std::string full=std::string("/sd")+path;
+  const std::string full=std::string(PAPERDIY_SD_VFS_ROOT)+path;
   const int file=::open(full.c_str(),O_RDONLY);if(file<0)return false;
   const bool ok=::fsync(file)==0;const bool closed=::close(file)==0;
   return ok&&closed&&ready(nullptr);
@@ -77,7 +91,7 @@ bool hashUpdate(void*,const uint8_t* bytes,size_t count){return mbedtls_sha256_u
 bool hashFinish(void*,uint8_t out[32]){return mbedtls_sha256_finish_ret(&context.hash,out)==0;}
 bool digest(void*,const uint8_t* bytes,size_t count,uint8_t out[32]){return mbedtls_sha256_ret(bytes,count,out,0)==0;}
 IO makeIO(){
-  IO io;io.stat=statFile;io.read=readFile;io.write=writeFile;io.rename=renameFile;io.remove=removeFile;io.sync=syncFile;
+  IO io;io.stat=statFile;io.read=readFile;io.write=writeFile;io.writeRetry=writeRetry;io.rename=renameFile;io.remove=removeFile;io.sync=syncFile;
   io.ready=ready;io.admit=admit;io.validatePush=validatePush;io.published=published;return io;
 }
 Hash makeHash(){Hash hash;hash.begin=hashBegin;hash.update=hashUpdate;hash.finish=hashFinish;hash.digest=digest;return hash;}
@@ -89,13 +103,13 @@ bool directory(const char* path){
 }
 Store& sdStore(){static Store store(makeIO(),makeHash());return store;}
 bool beginSDStore(SDHooks hooks){
-  context.hooks=hooks;context.lease=storage_validation::lease();context.enabled=context.lease!=0;
+  context.hooks=hooks;context.custody=storage_validation::custody();context.sleepWindows=storage_validation::sleepWindows();context.enabled=context.custody!=0;
   if(!ready(nullptr)||!directory("/.paperdiy")||!directory("/.paperdiy/lan")||!directory("/Books")){context.enabled=false;return false;}
   sdStore().beginRecovery();return true;
 }
 void pollSDStore(){if(context.enabled)sdStore().poll();}
-void stopSDStore(){if(context.enabled)sdStore().stop();context.enabled=false;context.lease=0;}
-void invalidateSDStore(){context.enabled=false;context.lease=0;sdStore().stop();}
+void stopSDStore(){if(context.enabled)sdStore().stop();context.enabled=false;context.custody=0;}
+void invalidateSDStore(){context.enabled=false;context.custody=0;sdStore().stop();}
 }
 namespace delivery_store_sd {
 delivery_store::Store& store(){return delivery_store::sdStore();}
@@ -103,6 +117,7 @@ void setHooks(delivery_store::SDHooks hooks){delivery_store::context.hooks=hooks
 bool mount(){return delivery_store::beginSDStore(delivery_store::context.hooks);}
 void unmount(){delivery_store::stopSDStore();}
 bool mounted(){return delivery_store::ready(nullptr);}
+bool metadataCurrent(){return mounted()&&delivery_store::context.sleepWindows==storage_validation::sleepWindows();}
 void poll(){delivery_store::pollSDStore();}
 void invalidate(){delivery_store::invalidateSDStore();}
 }
