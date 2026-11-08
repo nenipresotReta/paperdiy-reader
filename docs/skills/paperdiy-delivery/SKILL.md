@@ -29,11 +29,11 @@ and report receipts.
 
    | `next` | Say to the user | Then run |
    |---|---|---|
-   | `device_not_found`, `device_unreachable` | "On the reader: Settings → press A until N." | the same command again, or `sync --json --wait 300` |
+   | `device_not_found`, `device_unreachable` | "On the reader: Settings → press A until N." | `sync --json --wait 300` once. It keeps trying for the whole wait. If it ends the same way, say the reader is not answering, ask the user to check that it shows N, and run nothing more until they reply. |
    | `multiple_devices` | "I see more than one reader. Which IP does yours show on its N screen?" | retry with `--host IP` |
    | `awaiting_acceptance` | "On the reader, short-press A+B to accept the files from LABEL. You can leave Settings after that." | `sync --batch-id ID --json --wait 300` |
    | `awaiting_pairing_confirmation` | "The reader should show *New sender LABEL · SAS* and the files. If the number matches, short-press A+B. If it doesn't, switch off N." | `sync --batch-id ID --json --wait 300` |
-   | `batch_busy` | "The reader still holds a transfer, possibly one of ours that stopped. I'll keep trying for a few minutes." If it persists and no other sender is active: "Leave N and enter it again." | `sync --json --wait 300` |
+   | `batch_busy` | "The reader still holds a transfer, possibly one of ours that stopped. I'll keep trying for 5 minutes." | `sync --json --wait 300` once. It retries for the whole wait, and the reader drops a stopped upload after 45 s. If it still ends with `batch_busy`: "Leave N and enter it again", then `sync --json --wait 300`. |
 
    Relay `sas` exactly as returned (e.g. `506 740`).
 
@@ -46,6 +46,7 @@ and report receipts.
    | `queued` + `not_accepted` | "It wasn't accepted on the reader (cancelled, timed out, or the connection dropped). Do you want me to offer it again?" Only if yes: `sync --reoffer --json --wait 300`. |
    | `queued` + `transfer_interrupted` / `budget_exhausted` | "The transfer stopped before completion; nothing was published. Return to N and I'll offer the rest again." → `sync` |
    | `uncertain` | "The reader may or may not have published "name". Return to N and I'll check its receipt." → `sync` |
+   | `uncertain` + `receipt_unknown`, `invalid_receipt` or `invalid_upload_status` | The receipt can't settle this entry, and every later run stops at `next: uncertain`, so nothing else reaches this reader. Ask: "Is "name" in the reader's library?" After the user answers, run `abandon --request-id ID --json`, and if it is missing and they still want it, send it again. |
    | `blocked` + code | The specific reason and the decision needed (below). |
 
    When more than 8 entries are queued, they go in batches of 8; each batch
@@ -54,11 +55,12 @@ and report receipts.
 
 ## Long transfers
 
-A foreground `send` or `sync` can hold back your reply, so the user never sees
-the A+B instruction, and a host tool timeout can kill it mid-upload. If your host
-has either limit, send with a short `--wait`, relay `next`, then run
+Always send with `--wait 5`, relay `next`, then run
 `sync --batch-id ID --json --wait 300` as a background process with a completion
-notification, and report from its receipts.
+notification, and report from its receipts. A long foreground `send` or `sync`
+holds back your reply, so the user never sees the A+B instruction and the offer
+times out. A tool timeout (for example 150 s) kills it mid-upload; the reader
+then drops the upload after 45 s and the next run needs a new A+B.
 
 - A killed `send` or `sync` is not a dead offer. Run `status --json`. An entry
   with a `batchId` may still be live on the reader, so resume it with
@@ -136,6 +138,9 @@ python3 tools/paperdiy_lan.py push board.md --title "Today" --live --position ke
 - Automatically re-offer, rebase a Push in N, `abandon`, `prune`, `revoke` or
   `pair` again to make a retry pass — each needs the user's intent. (`--live`
   rebasing onto the reader's current Push is the documented P behavior.)
+  `abandon` only forgets the entry here. It neither cancels nor checks anything
+  on the reader, so afterwards you cannot tell the user whether that file
+  arrived. Never use it to clear the queue before a send.
 - Claim success without a `delivered` receipt, claim what the screen shows,
   or call `not_accepted` a rejection (switching off N and a dropped
   connection look the same to the sender).
